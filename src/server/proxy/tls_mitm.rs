@@ -411,32 +411,6 @@ pub async fn perform_mitm(
                     body_replacements,
                 }) => {
                     info!("LLM decision: Modify response");
-                    // Apply modifications
-                    let mut modified_response = String::new();
-
-                    // Status line
-                    let final_status = new_status.unwrap_or(status_code);
-                    modified_response.push_str(&format!("HTTP/1.1 {} OK\r\n", final_status));
-
-                    // Headers
-                    let remove_set: std::collections::HashSet<String> = remove_headers
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|h| h.to_lowercase())
-                        .collect();
-
-                    for (name, value) in &response_headers {
-                        if !remove_set.contains(&name.to_lowercase()) {
-                            modified_response.push_str(&format!("{}: {}\r\n", name, value));
-                        }
-                    }
-
-                    // Add new headers
-                    if let Some(headers) = add_headers {
-                        for (name, value) in headers {
-                            modified_response.push_str(&format!("{}: {}\r\n", name, value));
-                        }
-                    }
 
                     // Body: full replacement first, then regex replacements over
                     // whatever body results. body_replacements was previously
@@ -467,12 +441,13 @@ pub async fn perform_mitm(
                         }
                     }
 
-                    // Update Content-Length
-                    modified_response
-                        .push_str(&format!("Content-Length: {}\r\n\r\n", final_body.len()));
-                    modified_response.push_str(&final_body);
-
-                    Some(modified_response.into_bytes())
+                    Some(rebuild_modified_response(
+                        new_status.unwrap_or(status_code),
+                        &response_headers,
+                        add_headers.as_ref(),
+                        remove_headers.as_deref().unwrap_or(&[]),
+                        final_body.as_bytes(),
+                    ))
                 }
                 Err(e) => {
                     // Fail closed, same reasoning as the request side. Returning `None` here
@@ -762,6 +737,79 @@ fn failure_response(status: u16, body: &str) -> Vec<u8> {
         body
     )
     .into_bytes()
+}
+
+/// Rebuild a modified upstream response as one HTTP/1.1 message the proxy frames itself.
+///
+/// The upstream's `Content-Length` and `Transfer-Encoding` are dropped: the body is written
+/// whole after a single `Content-Length` the proxy computes, so re-emitting the upstream's
+/// framing produced two `Content-Length` values, or `chunked` over an unchunked body — the
+/// ambiguity response-desync attacks exploit. Model-added headers go through the same
+/// checks as the executor (token name, no CR/LF, no framing header), so a value that still
+/// carries a line break is dropped rather than written.
+pub fn rebuild_modified_response(
+    status: u16,
+    upstream_headers: &HashMap<String, String>,
+    add_headers: Option<&HashMap<String, String>>,
+    remove_headers: &[String],
+    body: &[u8],
+) -> Vec<u8> {
+    use crate::server::proxy::filter::{check_header_name, check_header_value, FRAMING_HEADERS};
+
+    let remove_set: std::collections::HashSet<String> =
+        remove_headers.iter().map(|h| h.to_lowercase()).collect();
+    let added: std::collections::HashSet<String> = add_headers
+        .map(|h| h.keys().map(|k| k.to_lowercase()).collect())
+        .unwrap_or_default();
+
+    // The previous rebuild wrote "OK" for every status; a 404 "OK" is at best confusing.
+    let reason = http::StatusCode::from_u16(status)
+        .ok()
+        .and_then(|s| s.canonical_reason())
+        .unwrap_or("OK");
+    let mut out = format!("HTTP/1.1 {} {}\r\n", status, reason);
+
+    // Upstream headers, minus removed, minus framing, minus any the model replaces.
+    let mut upstream: Vec<(&String, &String)> = upstream_headers.iter().collect();
+    upstream.sort();
+    for (name, value) in upstream {
+        let key = name.to_lowercase();
+        if remove_set.contains(&key)
+            || added.contains(&key)
+            || FRAMING_HEADERS.contains(&key.as_str())
+        {
+            continue;
+        }
+        if check_header_name(name)
+            .and_then(|_| check_header_value(name, value))
+            .is_err()
+        {
+            continue;
+        }
+        out.push_str(&format!("{}: {}\r\n", name, value));
+    }
+
+    if let Some(add) = add_headers {
+        let mut add: Vec<(&String, &String)> = add.iter().collect();
+        add.sort();
+        for (name, value) in add {
+            let key = name.to_lowercase();
+            if FRAMING_HEADERS.contains(&key.as_str()) {
+                warn!("Dropping response header {name:?}: the proxy frames the body itself");
+                continue;
+            }
+            if let Err(e) = check_header_name(name).and_then(|_| check_header_value(name, value)) {
+                warn!("Dropping response header modification: {}", e);
+                continue;
+            }
+            out.push_str(&format!("{}: {}\r\n", name, value));
+        }
+    }
+
+    out.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
+    let mut bytes = out.into_bytes();
+    bytes.extend_from_slice(body);
+    bytes
 }
 
 /// Extract HTTP status code from response line

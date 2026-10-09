@@ -172,6 +172,18 @@ link-local included.
 7. Parse response → Check `response_filter_mode`
 8. Return response to client (with optional modifications)
 
+**Model-supplied header names, values, `new_path` and `query_params` are validated twice**
+(`filter.rs`: `check_modify_headers`, `check_request_target_part`, `check_query_params`) —
+at the executor, where a refusal is an error the repair loop can see, and again where the
+bytes are written, where a value that still arrives is dropped with a warning. A name must
+be an RFC 9110 token, a value may contain no CR/LF/control (HTAB excepted), and a path or
+query part no whitespace. The model reads the peer's own request, so without this a
+prompt-injected `"x\r\nContent-Length: 0\r\n\r\nGET /admin HTTP/1.1"` header became a
+second request upstream. `Content-Length` and `Transfer-Encoding` cannot be *added* (they
+may be removed): the proxy frames the body it writes, and `tls_mitm::rebuild_modified_response`
+also drops the upstream's own framing headers — re-emitting them beside the computed
+`Content-Length` was a response desync. `tests/server/proxy/header_injection_test.rs`.
+
 **HTTPS CONNECT Flow** (Pass-Through):
 
 1. Client sends `CONNECT host:port` → Parse destination

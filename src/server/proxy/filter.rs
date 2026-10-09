@@ -345,6 +345,78 @@ pub enum FilterMode {
 }
 
 // Default values for serde
+/// Headers the proxy frames itself when it rewrites a message. A model-added
+/// `Content-Length` beside the one the proxy computes, or a `Transfer-Encoding: chunked`
+/// over a body the proxy writes whole, is the ambiguity request-smuggling and
+/// response-desync attacks are built on, so neither may be added through `headers`
+/// (`remove_headers` may still name them).
+pub const FRAMING_HEADERS: [&str; 2] = ["content-length", "transfer-encoding"];
+
+/// A header name is an RFC 9110 token.
+///
+/// The names and values in `handle_request_modify` / `handle_response_modify` come from the
+/// model, and the model reads the peer's own request, so a prompt-injected value such as
+/// `"x\r\nContent-Length: 0\r\n\r\nGET /admin HTTP/1.1"` would otherwise be written into
+/// the forwarded message verbatim — one header turning into a second request upstream, or a
+/// second response to the client. These checks are applied where the action is executed and
+/// again where the bytes are written.
+pub fn check_header_name(name: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !name.is_empty()
+            && name.len() <= 256
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)),
+        "header name {name:?} is not an HTTP token"
+    );
+    Ok(())
+}
+
+/// A header value carries no CR, LF or other control character (HTAB excepted).
+pub fn check_header_value(name: &str, value: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        value.len() <= 8192 && !value.chars().any(|c| c.is_control() && c != '\t'),
+        "header {name:?} contains a control character (CR/LF would split the message)"
+    );
+    Ok(())
+}
+
+/// Every added header is a token with a control-free value and is not a framing header.
+pub fn check_modify_headers(headers: &HashMap<String, String>) -> anyhow::Result<()> {
+    anyhow::ensure!(headers.len() <= 64, "at most 64 headers");
+    for (name, value) in headers {
+        check_header_name(name)?;
+        check_header_value(name, value)?;
+        anyhow::ensure!(
+            !FRAMING_HEADERS.contains(&name.to_ascii_lowercase().as_str()),
+            "header {name:?} is set by the proxy from the body it writes; it cannot be added \
+             (it may be named in remove_headers)"
+        );
+    }
+    Ok(())
+}
+
+/// A piece of the request target (`new_path`, a query name or value) carries no whitespace
+/// or control character: the request line is space-delimited and CRLF-terminated, so either
+/// would end the line early.
+pub fn check_request_target_part(what: &str, value: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        value.len() <= 8192 && !value.chars().any(|c| c.is_ascii_whitespace() || c.is_control()),
+        "{what} {value:?} contains whitespace or a control character; it would end the request line"
+    );
+    Ok(())
+}
+
+/// Every query name and value passes `check_request_target_part`.
+pub fn check_query_params(params: &HashMap<String, String>) -> anyhow::Result<()> {
+    anyhow::ensure!(params.len() <= 64, "at most 64 query_params");
+    for (name, value) in params {
+        check_request_target_part("query_params name", name)?;
+        check_request_target_part("query_params value", value)?;
+    }
+    Ok(())
+}
+
 fn default_block_status() -> u16 {
     403
 }
