@@ -33,17 +33,47 @@ pub const SENSITIVE_KEY_PARTS: &[&str] = &[
     "authtoken",
     "authorization",
     "cookie",
+    // Credentials that are not called one: STOMP's `passcode`, the SNMP `community` string
+    // (the whole of v1/v2c authentication), and the HTTP proxy client's `proxy_auth`
+    // (`user:password`). Each was printed verbatim in the `open_client` summary and the
+    // executor's DEBUG line until October 2026.
+    "passcode",
+    "community",
+    "proxy_auth",
 ];
 
 /// What a redacted value is shown as.
 pub const REDACTED: &str = "<redacted>";
 
 /// Whether a key names a credential.
+///
+/// Bare `key` is not matched: `routing_key`, `access_key_id` and `key_type` are not secrets,
+/// and the ones that are (`api_key`, `private_key`, `secret_access_key`) match on their own
+/// part. Bare `auth` is a value-shaped case, see [`is_sensitive_entry`].
 pub fn is_sensitive_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase().replace('-', "_");
     key == "token"
         || key.ends_with("_token")
         || SENSITIVE_KEY_PARTS.iter().any(|part| key.contains(part))
+}
+
+/// Whether a key/value pair holds a credential.
+///
+/// [`is_sensitive_key`] on the name, plus one case the name alone cannot decide: a key that
+/// is exactly `auth` holding a **string** is a credential (the WebDAV client's `auth` is
+/// `username:password`), while an `auth` **object** is a block to walk — Vault's answer
+/// carries `auth.client_token` beside `auth.token_type`, and only the first is hidden.
+/// `auth_type`, `auth_url`, `authenticated` and `auth_method` describe a mechanism and are
+/// shown, which a substring match would have hidden for nothing.
+pub fn is_sensitive_entry(key: &str, value: &Value) -> bool {
+    if value.is_null() {
+        return false;
+    }
+    if is_sensitive_key(key) {
+        return true;
+    }
+    let key = key.to_ascii_lowercase();
+    key == "auth" && value.is_string()
 }
 
 /// Whether this request offers an action that can carry credentials. Such model
@@ -89,7 +119,7 @@ pub fn contains_credentials(value: &Value) -> bool {
                     if bytes > MAX_BYTES {
                         return true;
                     }
-                    if !value.is_null() && is_sensitive_key(key) {
+                    if is_sensitive_entry(key, value) {
                         return true;
                     }
                     pending.push((value, depth + 1));
@@ -133,7 +163,7 @@ fn redact_at(value: &Value, depth: usize) -> Value {
         Value::Object(map) => Value::Object(
             map.iter()
                 .map(|(k, v)| {
-                    let shown = if is_sensitive_key(k) && !v.is_null() {
+                    let shown = if is_sensitive_entry(k, v) {
                         Value::String(REDACTED.to_string())
                     } else {
                         redact_at(v, depth + 1)
