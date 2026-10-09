@@ -1,4 +1,4 @@
-// NetGet in the browser: the live demo on the landing page.
+// NetGet in the browser: the standalone interactive demo.
 //
 // Three machines run here, and none of them is a mock of NetGet:
 //
@@ -74,9 +74,8 @@ const CLIENT_AFTER_MS = 2000;   // after NetGet boots, connect the Telnet client
 // handler adds its instruction to that event's prompt alone, after the event's data, as the
 // last thing the model reads (web/README.md has the measurements).
 //
-// - The banner. An instruction that opened with "when a visitor connects, send a banner that
-//   asks for their name; after that, answer every line" had llama3.1:8b and qwen2.5:1.5b send
-//   the banner again for a typed "hello" nearly every time.
+// Connection-open is handled statically; only typed lines reach the model.
+//
 // - The adventure. Room transitions are applied by adventure.js before a request reaches a
 //   model or the manual composer. The model receives the current room and command result on
 //   every turn, so a model that never calls set_memory can still play the whole map.
@@ -93,10 +92,7 @@ const TELNET_GAME_RULE = 'Answer with send_telnet_line. The demo owns the advent
     + 'A blocked move stays in the same room. Anything else is chat.';
 const TELNET_EVENT_HANDLERS = [{
     event_pattern: 'telnet_connection_opened',
-    handler: {
-        type: 'llm',
-        instruction: 'Send a short welcome banner (two lines at most) that ends by asking for their name.',
-    },
+    handler: { type: 'static', actions: [] },
 }, {
     event_pattern: 'telnet_message_received',
     handler: { type: 'llm', instruction: TELNET_GAME_RULE },
@@ -193,12 +189,6 @@ function makeTerm(el, opts = {}, onFit = () => {}, { cols = null } = {}) {
     return term;
 }
 
-// Focus a terminal without scrolling the page to it.
-function focusTerm(term) {
-    if (term.textarea) term.textarea.focus({ preventScroll: true });
-    else term.focus();
-}
-
 function escapeHtml(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -257,9 +247,8 @@ function wireDashboardInput(term, netget) {
 // How long a request waits for a model that is still loading before the visitor gets it.
 //
 // NetGet waits for the page's answer to a request for LLM_TIMEOUT (900 s, in
-// crates/netget-web/src/lib.rs) and then fails it closed; for the Telnet connect event that
-// means no banner at all (the server logs `decision=connect_event_failed` and moves on). And
-// NetGet hands the page one request at a time (its rate limiter has a single permit), so a
+// crates/netget-web/src/lib.rs) and then fails it closed. NetGet hands the page one request
+// at a time (its rate limiter has a single permit), so a
 // second network request waits behind this one for at most 300 s (the limiter's queue
 // timeout) before it fails. Two minutes is well inside both, and leaves the visitor the rest.
 // A model that becomes ready later still takes the request over if the visitor has not
@@ -369,57 +358,42 @@ function paintControl() {
     btn.hidden = true;
     btn.disabled = false;
     setProgress(null);
-    const you = 'each request opens a form below.';
     if (app.selected === YOU) {
-        const loaded = app.models.find((m) => m.state === 'ready');
-        status.innerHTML = !app.models.some((m) => m.state !== 'unsupported')
-            ? `This browser has neither a built-in model nor WebGPU (Chrome or Edge on a desktop, or Safari 26, have one of them), so <b>you</b> are the model: ${you}`
-            : `<b>You</b> are the model: ${you}`
-              + (loaded ? ` ${escapeHtml(loaded.name)} stays loaded; choose it above to hand requests back.` : '');
+        status.textContent = app.models.some((m) => m.state !== 'unsupported')
+            ? 'You are the model.' : 'Local models unavailable. Reply manually.';
         return;
     }
     const m = selectedModel();
-    if (!m) { status.innerHTML = `<b>You</b> are the model: ${you}`; return; }
+    if (!m) { status.textContent = 'You are the model.'; return; }
     const name = escapeHtml(m.name);
     const other = app.active && app.active !== m ? escapeHtml(app.active.name) : null;
-    // While it is on its way, requests wait for it (unless another model is answering).
-    const waits = other ? `${other} keeps answering until it is ready.` : 'Requests wait for it.';
-    // While it needs the visitor, the visitor (or the model answering now) answers.
-    const until = other ? `${other} keeps answering until it is ready.` : `Until it is ready, <b>you</b> are the model: ${you}`;
-    const where = m.kind === BUILTIN ? 'on this device' : 'on your GPU';
+    const fallback = other ? ` ${other} keeps answering.` : '';
     switch (m.state) {
     case 'ready':
-        status.innerHTML = `Ready: ${name} runs ${where} and answers every request.`;
+        status.innerHTML = `Ready: ${name}.`;
         break;
     case 'loading': {
         const known = typeof m.progress === 'number';
         setProgress(known ? m.progress : null);
-        status.innerHTML = `${m.verb} ${name}${known ? percent(m) + '.' : '…'} ${waits}`;
+        status.innerHTML = `${m.verb} ${name}${known ? percent(m) + '.' : '…'}${fallback}`;
         break;
     }
     case 'checking':
     case 'loadable':
-        status.innerHTML = `Looking for ${name} on this device… ${waits}`;
+        status.innerHTML = `Checking ${name}…${fallback}`;
         break;
     case 'needs-click':
         btn.hidden = false;
-        if (m.kind === BUILTIN) {
-            btn.textContent = `Download ${m.name}`;
-            status.innerHTML = (m.note ? escapeHtml(m.note) + ' '
-                : m.availability === 'downloading' ? `${m.where} is downloading it; it starts on your first click or keypress on this page. `
-                : `Needs a download, once, by ${m.where}: it starts on your first click or keypress on this page. `) + until;
-        } else {
-            btn.textContent = `Download ${m.name} · ${m.size}`;
-            status.innerHTML = `Needs a click to download (${m.size}, once, from Hugging Face; then cached by your browser). ${until}`;
-        }
+        btn.textContent = m.kind === BUILTIN ? `Download ${m.name}` : `Download ${m.name} · ${m.size}`;
+        status.innerHTML = `Download to use this model.${fallback}`;
         break;
     case 'failed':
         btn.hidden = false;
         btn.textContent = 'Try again';
-        status.innerHTML = `Could not load ${name} (${escapeHtml(m.error || 'unknown error')}). ${until}`;
+        status.innerHTML = `Could not load ${name} (${escapeHtml(m.error || 'unknown error')}).${fallback}`;
         break;
     default:
-        status.innerHTML = until;
+        status.textContent = 'Choose a model or reply manually.';
     }
 }
 
@@ -749,9 +723,7 @@ function leftBy(m) {
 }
 
 function renderIdle() {
-    $('#llm-current').innerHTML = `<div class="llm-idle">Nothing to answer right now. ${app.telnet.conn === null
-        ? 'When the Telnet server needs to say something, the request lands here.'
-        : 'Type a line in the Telnet terminal: whatever the server says back is decided here.'}</div>`;
+    $('#llm-current').innerHTML = '<div class="llm-idle">Send a Telnet message to begin.</div>';
 }
 
 function renderQueueCount() {
@@ -830,7 +802,7 @@ function answerManually(entry, note = '') {
     for (const type of ['input', 'change', 'click']) composerRoot.addEventListener(type, touch);
     mountComposer(composerRoot, entry.req, {
         autofocus: false,
-        onSend: (reply) => { finish(entry, reply); if (app.telnet.term) focusTerm(app.telnet.term); },
+        onSend: (reply) => { finish(entry, reply); },
         onRefuse: () => { finish(entry, { error: 'refused by the person at the keyboard' }); },
     });
 }
@@ -1293,7 +1265,6 @@ function startTelnetServer(attempt = 0) {
             return;
         }
         app.telnet.serverId = r.id;
-        refreshServers();
     });
 }
 
@@ -1307,19 +1278,10 @@ function whenListening(port, then, deadline = performance.now() + 15000) {
     setTimeout(() => whenListening(port, then, deadline), 100);
 }
 
-function refreshServers() {
+// The adventure's game state is per connection; drop it for peers that have gone.
+function pruneAdventure() {
     if (!app.netget) return;
-    const udpPorts = new Set(Array.from(app.netget.bound_udp_ports()));
-    app.netget.servers((json) => {
-        const rows = JSON.parse(json);
-        app.adventure.prune(rows);
-        const el = $('#server-list');
-        if (!rows.length) { el.innerHTML = '<span class="muted">nothing yet</span>'; return; }
-        el.innerHTML = rows.map((r) => {
-            const transport = udpPorts.has(r.port) ? 'udp' : 'tcp';
-            return `<span class="server-chip ${r.status === 'Running' ? 'is-up' : ''}">#${r.id} ${escapeHtml(r.protocol)} ${transport}/${r.port} <small>${escapeHtml(r.status)}${transport === 'tcp' ? ' · ' + r.connections + ' conn' : ''}</small></span>`;
-        }).join('');
-    });
+    app.netget.servers((json) => app.adventure.prune(JSON.parse(json)));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1376,11 +1338,9 @@ async function main() {
         Math.max(0, CLIENT_AFTER_MS - TELNET_COMMAND.length * TYPE_MS - 100)));
     setTimeout(() => whenListening(TELNET_PORT, () => typed.then(() => {
         telnetConnect();
-        focusTerm(app.telnet.term);
     })), CLIENT_AFTER_MS);
 
-    setInterval(refreshServers, 2000);
-    refreshServers();
+    setInterval(pruneAdventure, 2000);
 
     $('#theme-toggle')?.addEventListener('click', () => {
         setTimeout(() => { for (const t of [app.dash, app.telnet.term]) t.options.theme = xtermTheme(); }, 0);

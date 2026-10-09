@@ -10,6 +10,13 @@ document.querySelectorAll('.copy-btn').forEach(function (btn) {
                 btn.textContent = 'Copy';
                 btn.classList.remove('copied');
             }, 2000);
+        }).catch(function () {
+            btn.textContent = 'Select to copy';
+            var selection = window.getSelection();
+            var range = document.createRange();
+            range.selectNodeContents(code);
+            selection.removeAllRanges();
+            selection.addRange(range);
         });
     });
 });
@@ -28,6 +35,7 @@ document.querySelectorAll('.copy-btn').forEach(function (btn) {
 
     function render() {
         btn.textContent = current() === 'light' ? '☾' : '☀';
+        btn.setAttribute('aria-label', 'Switch to ' + (current() === 'light' ? 'dark' : 'light') + ' theme');
     }
 
     btn.addEventListener('click', function () {
@@ -38,4 +46,5 @@ document.querySelectorAll('.copy-btn').forEach(function (btn) {
     });
 
     render();
+    window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', render);
 })();

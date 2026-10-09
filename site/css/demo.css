@@ -6,8 +6,6 @@
  * fits, the model panel grows with what it shows, and the Telnet terminal fills whatever
  * height the model panel gives the row (never less than its own floor). */
 
-.hero-demo { padding-bottom: 0.5rem; }
-
 .demo {
     margin: 0 auto;
     max-width: 1320px;
@@ -27,15 +25,6 @@
 
 .muted { color: var(--text); opacity: 0.55; }
 .spacer { flex: 1; }
-
-/* ---- the diagram, in the machines' colours --------------------------------------------- */
-
-.section-how { max-width: 780px; margin: 0 auto; padding: 0.5rem 1.25rem 1rem; }
-
-.dg .box.client { stroke: var(--cyan); stroke-width: 2; }
-.dg .client-t { fill: var(--cyan); }
-.dg .box.model { stroke: var(--yellow); stroke-width: 2; }
-.dg .model-t { fill: var(--yellow); }
 
 /* ---- layout --------------------------------------------------------------------------- */
 
@@ -151,42 +140,6 @@
 }
 .conn-badge.is-up { border-color: var(--green); color: var(--green); }
 
-.machine-base {
-    padding: 0.4rem 0.9rem 0.6rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.45rem;
-    font-size: 0.85rem;
-}
-
-.base-row {
-    display: flex;
-    align-items: baseline;
-    gap: 0.6rem;
-    flex-wrap: wrap;
-}
-
-.base-key {
-    font-family: var(--mono);
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--muted);
-    min-width: 6.5rem;
-}
-
-.base-row.keys { color: var(--muted); }
-
-.demo kbd {
-    font-family: var(--mono);
-    font-size: 0.72rem;
-    border: 1px solid var(--border);
-    border-bottom-width: 2px;
-    border-radius: 4px;
-    padding: 0 0.3rem;
-    color: var(--text);
-}
-
 /* ---- the cables: Telnet and the model, each down to NetGet (on a narrow screen, NetGet
    down to the model) ------------------------------------------------------------------- */
 
@@ -235,7 +188,7 @@
 
 .btn:hover { border-color: var(--cyan); }
 .btn:disabled { opacity: 0.5; cursor: default; }
-.btn-primary { background: var(--cyan); color: #0b0e14; border-color: transparent; font-weight: 600; }
+.btn-primary { background: var(--cyan); color: var(--bg); border-color: transparent; font-weight: 600; }
 .btn[hidden] { display: none; }
 
 .demo input[type="text"],
@@ -257,19 +210,6 @@
 .demo select[hidden] { display: none; }
 .demo textarea { width: 100%; box-sizing: border-box; resize: vertical; }
 .demo label { font-size: 0.85rem; color: var(--muted); display: inline-flex; gap: 0.35rem; align-items: center; }
-
-.server-list { display: flex; flex-wrap: wrap; gap: 0.4rem; font-size: 0.8rem; align-items: center; }
-
-.server-chip {
-    font-family: var(--mono);
-    padding: 0.15rem 0.5rem;
-    border-radius: 999px;
-    border: 1px solid var(--border);
-    color: var(--muted);
-}
-
-.server-chip.is-up { border-color: var(--green); color: var(--text); }
-.server-chip small { color: var(--muted); }
 
 /* ---- the model ------------------------------------------------------------------------ */
 
@@ -353,24 +293,15 @@
 }
 .llm-role { display: block; padding: 0.2rem 0.6rem 0; font-family: var(--mono); font-size: 0.7rem; text-transform: uppercase; color: var(--muted); }
 
-.llm-reply-label { padding: 0.35rem 0.6rem 0.2rem; font-size: 0.78rem; color: var(--muted); }
-.llm-hint { margin: 0; padding: 0 0.6rem 0.4rem; color: var(--muted); font-size: 0.78rem; }
-.llm-hint code { font-family: var(--mono); }
 .llm-input { margin: 0 0.6rem 0.4rem; width: calc(100% - 1.2rem); }
 .llm-actions { display: flex; gap: 0.4rem; padding: 0 0.6rem 0.6rem; }
 
 /* ---- the "you are the model" composer (js/composer.js) ------------------------------- */
 
-.cmp-tabs { display: flex; gap: 0.25rem; padding: 0 0.6rem 0.4rem; }
-.cmp-tabs button {
-    font: inherit; font-size: 0.78rem; padding: 0.2rem 0.6rem; border-radius: 6px; cursor: pointer;
-    border: 1px solid var(--border); background: transparent; color: var(--muted);
-}
-.cmp-tabs button.is-active { background: var(--panel); color: var(--text); border-color: var(--yellow); }
-.cmp-tabs button:focus-visible, .cmp-entry :focus-visible, .llm-actions .btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+.cmp-entry :focus-visible, .llm-actions .btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
 
 .cmp-form { display: flex; flex-direction: column; gap: 0.5rem; padding: 0 0.6rem 0.5rem; }
-.cmp-form[hidden], .cmp-raw[hidden] { display: none; }
+.cmp-form[hidden] { display: none; }
 .cmp-entry { margin: 0; padding: 0.45rem 0.55rem 0.5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); min-width: 0; }
 .cmp-entry legend { padding: 0 0.3rem; font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .cmp-pick { display: flex; gap: 0.4rem; align-items: center; }
@@ -397,11 +328,6 @@
 .cmp-schema pre { margin: 0.3rem 0 0; padding: 0.45rem 0.6rem; font-family: var(--mono); font-size: 0.72rem; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--term-bg); }
 .cmp-add { align-self: flex-start; }
 
-.cmp-raw { padding: 0; }
-.cmp-raw-input[aria-invalid="true"] { border-color: var(--red); }
-.cmp-raw-status { padding: 0 0.6rem 0.4rem; font-size: 0.74rem; color: var(--muted); }
-.cmp-raw-status.is-bad { color: var(--red); }
-.cmp-raw-status.is-ok { color: var(--green); }
 .cmp-error { padding: 0 0.6rem; color: var(--red); font-size: 0.78rem; }
 .cmp-error:empty { display: none; }
 .llm-actions { flex-wrap: wrap; }
@@ -410,4 +336,3 @@
     .cmp-field { grid-template-columns: minmax(0, 1fr); }
     .cmp-desc { grid-column: 1; }
 }
-
