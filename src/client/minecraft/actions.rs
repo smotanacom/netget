@@ -110,8 +110,18 @@ pub static STATUS_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             "Protocol number the server reports",
             false,
         ),
-        parameter("online_players", "number", "Number of players online now", false),
-        parameter("max_players", "number", "Maximum number of player slots", false),
+        parameter(
+            "online_players",
+            "number",
+            "Number of players online now",
+            false,
+        ),
+        parameter(
+            "max_players",
+            "number",
+            "Maximum number of player slots",
+            false,
+        ),
         parameter("motd", "string", "Message of the day as plain text", true),
         parameter("sample", "array", "Players listed: [{name, id}]", false),
         parameter(
