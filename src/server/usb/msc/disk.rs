@@ -118,14 +118,23 @@ impl DiskImage {
         let bytes_per_sector: u32 = 512;
 
         // Open or create file
-        let file = OpenOptions::new()
+        let mut options = OpenOptions::new();
+        options
             .read(true)
             .write(true)
             .create(true)
             // Explicit: this opens an existing disk image or creates a new one.
             // Truncating would destroy the image's contents, and leaving it
             // unstated is what clippy's suspicious_open_options flags.
-            .truncate(false)
+            .truncate(false);
+        // A symlink planted at the image path must not redirect the mapping outside
+        // `image_dir`; `ImageDir::resolve` refuses one it can see, this refuses the race.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let file = options
             .open(path)
             .context("Failed to open/create disk image file")?;
 
