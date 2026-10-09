@@ -1338,6 +1338,8 @@ pub mod lmtp;
 pub mod lpd;
 #[cfg(feature = "lwm2m")]
 pub mod lwm2m;
+#[cfg(feature = "rcon")]
+pub mod rcon;
 #[cfg(feature = "restconf")]
 pub mod restconf;
 #[cfg(feature = "webtransport")]

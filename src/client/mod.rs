@@ -774,6 +774,8 @@ pub mod lpd;
 pub mod lwm2m;
 #[cfg(feature = "oci-registry")]
 pub mod oci_registry;
+#[cfg(feature = "rcon")]
+pub mod rcon;
 #[cfg(feature = "restconf")]
 pub mod restconf;
 #[cfg(feature = "webtransport")]

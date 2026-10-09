@@ -114,6 +114,7 @@ fn golden_duals_map() {
         "QOTD",
         "Chargen",
         "Time",
+        "RCON",
         "Nostr",
         "Vault",
         "Bolt",
