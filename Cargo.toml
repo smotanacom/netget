@@ -126,6 +126,7 @@ portable-base = [
     "lmtp",
     "lpd",
     "inetd",
+    "rcon",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -354,6 +355,7 @@ epp = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "dep
 lmtp = [] # LMTP (RFC 2033) local delivery server and client
 lpd = [] # LPD (RFC 1179) line printer daemon server and client
 inetd = [] # Classic inetd services: Echo, Discard, Daytime, QOTD, Chargen and Time (RFC 862-868), servers and clients
+rcon = [] # Source/Minecraft RCON server and client
 jmap = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"] # JMAP (RFC 8620/8621) server and client
 webtransport = ["dep:rustls", "dep:wtransport", "dep:wtransport-proto", "dep:sha2"] # WebTransport over HTTP/3 (draft-02) server and client
 graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
@@ -662,6 +664,7 @@ dist-windows = [
     "lmtp",
     "lpd",
     "inetd",
+    "rcon",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -868,6 +871,7 @@ all-protocols = [
     "lmtp",
     "lpd",
     "inetd",
+    "rcon",
     "sflow",
     "prometheus-remote-write",
     "ssh",
