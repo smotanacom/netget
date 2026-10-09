@@ -5,7 +5,7 @@
 //! Test strategy: Use netget binary to start ARP client, < 10 LLM calls total.
 //!
 //! IMPORTANT: ARP tests require root privileges for packet capture and injection.
-//! Run tests with: sudo ./cargo-isolated.sh test --no-default-features --features arp --test client::arp::e2e_test
+//! Run tests with: sudo ./cargo-isolated.sh test --no-default-features --features arp --test client -- client::arp::e2e_test
 
 #[cfg(all(test, feature = "arp"))]
 mod arp_client_tests {

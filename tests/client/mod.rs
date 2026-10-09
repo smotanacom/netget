@@ -16,6 +16,8 @@ pub mod bootp;
 pub mod cassandra;
 #[cfg(feature = "coap")]
 pub mod coap;
+#[cfg(feature = "connect_rpc")]
+pub mod connect_rpc;
 #[cfg(feature = "couchdb")]
 pub mod couchdb;
 #[cfg(feature = "datalink")]
@@ -42,10 +44,14 @@ pub mod finger;
 pub mod ftp;
 #[cfg(feature = "git")]
 pub mod git;
+#[cfg(feature = "gnmi")]
+pub mod gnmi;
 #[cfg(feature = "gopher")]
 pub mod gopher;
 #[cfg(feature = "grpc")]
 pub mod grpc;
+#[cfg(feature = "grpc-web")]
+pub mod grpc_web;
 #[cfg(feature = "http")]
 pub mod http;
 #[cfg(feature = "http2")]
@@ -206,3 +212,208 @@ pub mod xmlrpc;
 pub mod xmpp;
 #[cfg(feature = "zookeeper")]
 pub mod zookeeper;
+
+#[cfg(feature = "doq")]
+pub mod doq;
+#[cfg(feature = "nut")]
+pub mod nut;
+#[cfg(feature = "statsd")]
+pub mod statsd;
+
+#[cfg(feature = "gemini")]
+pub mod gemini;
+
+#[cfg(feature = "dict")]
+pub mod dict;
+
+#[cfg(feature = "beanstalkd")]
+pub mod beanstalkd;
+#[cfg(feature = "graphite")]
+pub mod graphite;
+
+#[cfg(feature = "quic")]
+pub mod quic;
+
+#[cfg(feature = "gelf")]
+pub mod gelf;
+
+#[cfg(feature = "fluent-forward")]
+pub mod fluent_forward;
+#[cfg(feature = "nsq")]
+pub mod nsq;
+
+#[cfg(feature = "gearman")]
+pub mod gearman;
+
+#[cfg(feature = "docker")]
+pub mod docker;
+#[cfg(feature = "prometheus")]
+pub mod prometheus;
+
+#[cfg(feature = "influxdb")]
+pub mod influxdb;
+
+#[cfg(feature = "ipfix")]
+pub mod ipfix;
+
+#[cfg(feature = "loki")]
+pub mod loki;
+
+#[cfg(feature = "otlp")]
+pub mod otlp;
+
+#[cfg(feature = "sflow")]
+pub mod sflow;
+
+#[cfg(feature = "vault")]
+pub mod vault;
+
+#[cfg(feature = "prometheus-remote-write")]
+pub mod prometheus_remote_write;
+
+#[cfg(feature = "nostr")]
+pub mod nostr;
+
+#[cfg(feature = "netflow-v9")]
+pub mod netflow_v9;
+
+#[cfg(feature = "tacacs")]
+pub mod tacacs;
+
+#[cfg(feature = "netconf")]
+pub mod netconf;
+
+#[cfg(feature = "rpki_rtr")]
+pub mod rpki_rtr;
+
+#[cfg(feature = "rdap")]
+pub mod rdap;
+
+#[cfg(feature = "hl7")]
+pub mod hl7;
+
+#[cfg(feature = "icap")]
+pub mod icap;
+
+#[cfg(feature = "ocpp")]
+pub mod ocpp;
+
+#[cfg(feature = "a2a")]
+pub mod a2a;
+
+#[cfg(feature = "graphql")]
+pub mod graphql;
+
+#[cfg(feature = "fastcgi")]
+pub mod fastcgi;
+
+#[cfg(feature = "redfish")]
+pub mod redfish;
+
+#[cfg(feature = "scim")]
+pub mod scim;
+
+#[cfg(feature = "socketio")]
+pub mod socketio;
+
+#[cfg(feature = "caldav")]
+pub mod caldav;
+
+#[cfg(feature = "carddav")]
+pub mod carddav;
+
+#[cfg(feature = "dicom")]
+pub mod dicom;
+
+#[cfg(feature = "acme")]
+pub mod acme;
+
+#[cfg(feature = "fix")]
+pub mod fix;
+
+#[cfg(feature = "wamp")]
+pub mod wamp;
+
+#[cfg(feature = "rtmp")]
+pub mod rtmp;
+
+#[cfg(feature = "srt")]
+pub mod srt;
+
+#[cfg(feature = "amqp1")]
+pub mod amqp1;
+
+#[cfg(feature = "thrift")]
+pub mod thrift;
+
+#[cfg(feature = "bmp")]
+pub mod bmp;
+
+#[cfg(feature = "mqtt_sn")]
+pub mod mqtt_sn;
+
+#[cfg(feature = "nbd")]
+pub mod nbd;
+
+#[cfg(feature = "managesieve")]
+pub mod managesieve;
+
+#[cfg(feature = "zenoh")]
+pub mod zenoh;
+
+#[cfg(feature = "lwm2m")]
+pub mod lwm2m;
+
+#[cfg(feature = "epp")]
+pub mod epp;
+#[cfg(feature = "jmap")]
+pub mod jmap;
+#[cfg(feature = "restconf")]
+pub mod restconf;
+#[cfg(feature = "webtransport")]
+pub mod webtransport;
+
+#[cfg(feature = "diameter")]
+pub mod diameter;
+
+#[cfg(feature = "bolt")]
+pub mod bolt;
+
+#[cfg(feature = "oci-registry")]
+pub mod oci_registry;
+
+#[cfg(feature = "s7comm")]
+pub mod s7comm;
+
+#[cfg(feature = "ethernet_ip")]
+pub mod ethernet_ip;
+
+#[cfg(feature = "dnp3")]
+pub mod dnp3;
+
+#[cfg(feature = "iec104")]
+pub mod iec104;
+
+#[cfg(feature = "bacnet")]
+pub mod bacnet;
+
+#[cfg(feature = "opcua")]
+pub mod opcua;
+
+#[cfg(feature = "soulseek")]
+pub mod soulseek;
+
+#[cfg(feature = "soulseek_peer")]
+pub mod soulseek_peer;
+
+#[cfg(feature = "adc")]
+pub mod adc;
+
+#[cfg(feature = "adc_peer")]
+pub mod adc_peer;
+
+#[cfg(feature = "dc_peer")]
+pub mod dc_peer;
+
+#[cfg(feature = "gnutella")]
+pub mod gnutella;

@@ -74,6 +74,36 @@ impl ClientRegistry {
             crate::client::datalink::DataLinkClientProtocol::new(),
         ));
 
+        #[cfg(feature = "dc_peer")]
+        self.register(Arc::new(
+            crate::client::dc_peer::actions::DcPeerClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "adc")]
+        self.register(Arc::new(
+            crate::client::adc::actions::AdcClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "adc_peer")]
+        self.register(Arc::new(
+            crate::client::adc_peer::actions::AdcPeerClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "soulseek")]
+        self.register(Arc::new(
+            crate::client::soulseek::actions::SoulseekClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "soulseek_peer")]
+        self.register(Arc::new(
+            crate::client::soulseek_peer::actions::SoulseekPeerClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "gnutella")]
+        self.register(Arc::new(
+            crate::client::gnutella::actions::GnutellaClientProtocol::new(),
+        ));
+
         #[cfg(feature = "dc")]
         self.register(Arc::new(crate::client::dc::DcClientProtocol::new()));
 
@@ -85,6 +115,11 @@ impl ClientRegistry {
 
         #[cfg(feature = "doh")]
         self.register(Arc::new(crate::client::doh::DohClientProtocol::new()));
+
+        #[cfg(feature = "doq")]
+        self.register(Arc::new(
+            crate::client::doq::actions::DoqClientProtocol::new(),
+        ));
 
         #[cfg(feature = "dot")]
         self.register(Arc::new(crate::client::dot::DotClientProtocol::new()));
@@ -112,6 +147,18 @@ impl ClientRegistry {
 
         #[cfg(feature = "grpc")]
         self.register(Arc::new(crate::client::grpc::GrpcClientProtocol::new()));
+        #[cfg(feature = "gnmi")]
+        self.register(Arc::new(
+            crate::client::gnmi::actions::GnmiClientProtocol::new(),
+        ));
+        #[cfg(feature = "grpc-web")]
+        self.register(Arc::new(
+            crate::client::grpc_web::actions::GrpcWebClientProtocol::new(),
+        ));
+        #[cfg(feature = "connect_rpc")]
+        self.register(Arc::new(
+            crate::client::connect_rpc::actions::ConnectRpcClientProtocol::new(),
+        ));
 
         #[cfg(feature = "http")]
         {
@@ -123,9 +170,12 @@ impl ClientRegistry {
         #[cfg(feature = "http2")]
         self.register(Arc::new(crate::client::http2::Http2ClientProtocol::new()));
 
-        // Real RFC 9114 HTTP/3 (the `h3` crate), so it keeps the `http3` name.
-        // The `http3` feature no longer builds a server - NetGet's QUIC server
-        // lives behind `quic` and cannot be spoken to by this client.
+        // Raw QUIC and RFC 9114 HTTP/3 have distinct client/server registrations.
+        #[cfg(feature = "quic")]
+        self.register(Arc::new(
+            crate::client::quic::actions::QuicClientProtocol::new(),
+        ));
+
         #[cfg(feature = "http3")]
         self.register(Arc::new(crate::client::http3::Http3ClientProtocol::new()));
 
@@ -225,6 +275,11 @@ impl ClientRegistry {
         #[cfg(feature = "ospf")]
         self.register(Arc::new(crate::client::ospf::OspfClientProtocol::new()));
 
+        #[cfg(feature = "otlp")]
+        self.register(Arc::new(
+            crate::client::otlp::actions::OtlpClientProtocol::new(),
+        ));
+
         #[cfg(feature = "postgresql")]
         self.register(Arc::new(
             crate::client::postgresql::PostgresqlClientProtocol::new(),
@@ -302,6 +357,239 @@ impl ClientRegistry {
         #[cfg(feature = "stun")]
         self.register(Arc::new(crate::client::stun::StunClientProtocol::new()));
 
+        #[cfg(feature = "diameter")]
+        self.register(Arc::new(
+            crate::client::diameter::actions::DiameterClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "tacacs")]
+        self.register(Arc::new(
+            crate::client::tacacs::actions::TacacsClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "netconf")]
+        self.register(Arc::new(
+            crate::client::netconf::actions::NetconfClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "rpki_rtr")]
+        self.register(Arc::new(
+            crate::client::rpki_rtr::actions::RpkiRtrClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "rdap")]
+        self.register(Arc::new(
+            crate::client::rdap::actions::RdapClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "hl7")]
+        self.register(Arc::new(
+            crate::client::hl7::actions::Hl7ClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "icap")]
+        self.register(Arc::new(
+            crate::client::icap::actions::IcapClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "s7comm")]
+        self.register(Arc::new(
+            crate::client::s7comm::actions::S7commClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "ethernet_ip")]
+        self.register(Arc::new(
+            crate::client::ethernet_ip::actions::EthernetIpClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "dnp3")]
+        self.register(Arc::new(
+            crate::client::dnp3::actions::Dnp3ClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "iec104")]
+        self.register(Arc::new(
+            crate::client::iec104::actions::Iec104ClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "bacnet")]
+        self.register(Arc::new(
+            crate::client::bacnet::actions::BacnetClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "opcua")]
+        self.register(Arc::new(
+            crate::client::opcua::actions::OpcuaClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "ocpp")]
+        self.register(Arc::new(
+            crate::client::ocpp::actions::OcppClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "a2a")]
+        self.register(Arc::new(
+            crate::client::a2a::actions::A2aClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "graphql")]
+        self.register(Arc::new(
+            crate::client::graphql::actions::GraphqlClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "fastcgi")]
+        self.register(Arc::new(
+            crate::client::fastcgi::actions::FastcgiClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "redfish")]
+        self.register(Arc::new(
+            crate::client::redfish::actions::RedfishClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "scim")]
+        self.register(Arc::new(
+            crate::client::scim::actions::ScimClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "socketio")]
+        self.register(Arc::new(
+            crate::client::socketio::actions::SocketIoClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "caldav")]
+        self.register(Arc::new(
+            crate::client::caldav::actions::CalDavClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "carddav")]
+        self.register(Arc::new(
+            crate::client::carddav::actions::CardDavClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "dicom")]
+        self.register(Arc::new(
+            crate::client::dicom::actions::DicomClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "acme")]
+        self.register(Arc::new(
+            crate::client::acme::actions::AcmeClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "fix")]
+        self.register(Arc::new(
+            crate::client::fix::actions::FixClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "wamp")]
+        self.register(Arc::new(
+            crate::client::wamp::actions::WampClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "rtmp")]
+        self.register(Arc::new(
+            crate::client::rtmp::actions::RtmpClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "srt")]
+        self.register(Arc::new(
+            crate::client::srt::actions::SrtClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "amqp1")]
+        self.register(Arc::new(
+            crate::client::amqp1::actions::Amqp1ClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "thrift")]
+        self.register(Arc::new(
+            crate::client::thrift::actions::ThriftClientProtocol::new(),
+        ));
+        #[cfg(feature = "bmp")]
+        self.register(Arc::new(
+            crate::client::bmp::actions::BmpClientProtocol::new(),
+        ));
+        #[cfg(feature = "mqtt_sn")]
+        self.register(Arc::new(
+            crate::client::mqtt_sn::actions::MqttSnClientProtocol::new(),
+        ));
+        #[cfg(feature = "nbd")]
+        self.register(Arc::new(
+            crate::client::nbd::actions::NbdClientProtocol::new(),
+        ));
+        #[cfg(feature = "managesieve")]
+        self.register(Arc::new(
+            crate::client::managesieve::actions::ManageSieveClientProtocol::new(),
+        ));
+        #[cfg(feature = "zenoh")]
+        self.register(Arc::new(
+            crate::client::zenoh::actions::ZenohClientProtocol::new(),
+        ));
+        #[cfg(feature = "lwm2m")]
+        self.register(Arc::new(
+            crate::client::lwm2m::actions::Lwm2mClientProtocol::new(),
+        ));
+        #[cfg(feature = "restconf")]
+        self.register(Arc::new(
+            crate::client::restconf::actions::RestconfClientProtocol::new(),
+        ));
+        #[cfg(feature = "webtransport")]
+        self.register(Arc::new(
+            crate::client::webtransport::actions::WebTransportClientProtocol::new(),
+        ));
+        #[cfg(feature = "jmap")]
+        self.register(Arc::new(
+            crate::client::jmap::actions::JmapClientProtocol::new(),
+        ));
+        #[cfg(feature = "epp")]
+        self.register(Arc::new(
+            crate::client::epp::actions::EppClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "netflow-v9")]
+        self.register(Arc::new(
+            crate::client::netflow_v9::actions::NetflowV9ClientProtocol::new(),
+        ));
+        #[cfg(feature = "ipfix")]
+        self.register(Arc::new(
+            crate::client::ipfix::actions::IpfixClientProtocol::new(),
+        ));
+        #[cfg(feature = "loki")]
+        self.register(Arc::new(
+            crate::client::loki::actions::LokiClientProtocol::new(),
+        ));
+        #[cfg(feature = "influxdb")]
+        self.register(Arc::new(
+            crate::client::influxdb::actions::InfluxDbClientProtocol::new(),
+        ));
+        #[cfg(feature = "prometheus-remote-write")]
+        self.register(Arc::new(crate::client::prometheus_remote_write::actions::PrometheusRemoteWriteClientProtocol::new()));
+        #[cfg(feature = "sflow")]
+        self.register(Arc::new(
+            crate::client::sflow::actions::SflowClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "fluent-forward")]
+        self.register(Arc::new(
+            crate::client::fluent_forward::actions::FluentForwardClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "gelf")]
+        self.register(Arc::new(
+            crate::client::gelf::actions::GelfClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "graphite")]
+        self.register(Arc::new(
+            crate::client::graphite::actions::GraphiteClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "statsd")]
+        self.register(Arc::new(
+            crate::client::statsd::actions::StatsdClientProtocol::new(),
+        ));
+
         #[cfg(feature = "syslog")]
         self.register(Arc::new(crate::client::syslog::SyslogClientProtocol::new()));
 
@@ -353,6 +641,51 @@ impl ClientRegistry {
         #[cfg(feature = "websocket")]
         self.register(Arc::new(
             crate::client::websocket::WebSocketClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "gemini")]
+        self.register(Arc::new(crate::client::gemini::GeminiClientProtocol::new()));
+
+        #[cfg(feature = "dict")]
+        self.register(Arc::new(crate::client::dict::DictClientProtocol::new()));
+
+        #[cfg(feature = "beanstalkd")]
+        self.register(Arc::new(
+            crate::client::beanstalkd::BeanstalkdClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "vault")]
+        self.register(Arc::new(crate::client::vault::VaultClientProtocol::new()));
+
+        #[cfg(feature = "bolt")]
+        self.register(Arc::new(crate::client::bolt::BoltClientProtocol::new()));
+
+        #[cfg(feature = "oci-registry")]
+        self.register(Arc::new(
+            crate::client::oci_registry::OciRegistryClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "nostr")]
+        self.register(Arc::new(crate::client::nostr::NostrClientProtocol::new()));
+
+        #[cfg(feature = "prometheus")]
+        self.register(Arc::new(
+            crate::client::prometheus::PrometheusClientProtocol::new(),
+        ));
+        #[cfg(feature = "docker")]
+        self.register(Arc::new(crate::client::docker::DockerClientProtocol::new()));
+
+        #[cfg(feature = "gearman")]
+        self.register(Arc::new(
+            crate::client::gearman::GearmanClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "nsq")]
+        self.register(Arc::new(crate::client::nsq::NsqClientProtocol::new()));
+
+        #[cfg(feature = "nut")]
+        self.register(Arc::new(
+            crate::client::nut::actions::NutClientProtocol::new(),
         ));
 
         #[cfg(feature = "whois")]
@@ -683,17 +1016,61 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("BOOTP", "bootp"),
     ("Cassandra", "cassandra"),
     ("DataLink", "datalink"),
+    ("NMDC Peer", "dc_peer"),
+    ("ADC", "adc"),
+    ("ADC Peer", "adc_peer"),
+    ("Soulseek", "soulseek"),
+    ("Soulseek Peer", "soulseek_peer"),
+    ("Gnutella", "gnutella"),
     ("DC", "dc"),
     ("DHCP", "dhcp"),
     ("DNS", "dns"),
     ("DNS-over-HTTPS", "doh"),
     ("DoT", "dot"),
+    ("DoQ", "doq"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("gRPC", "grpc"),
+    ("gRPC-Web", "grpc-web"),
+    ("gNMI", "gnmi"),
+    ("ConnectRPC", "connect_rpc"),
+    ("TACACS", "tacacs"),
+    ("NETCONF", "netconf"),
+    ("RPKI-RTR", "rpki_rtr"),
+    ("RDAP", "rdap"),
+    ("HL7", "hl7"),
+    ("ICAP", "icap"),
+    ("OCPP", "ocpp"),
+    ("A2A", "a2a"),
+    ("GraphQL", "graphql"),
+    ("FastCGI", "fastcgi"),
+    ("Redfish", "redfish"),
+    ("SCIM", "scim"),
+    ("Socket.IO", "socketio"),
+    ("CalDAV", "caldav"),
+    ("CardDAV", "carddav"),
+    ("DICOM", "dicom"),
+    ("ACME", "acme"),
+    ("FIX", "fix"),
+    ("WAMP", "wamp"),
+    ("RTMP", "rtmp"),
+    ("SRT", "srt"),
+    ("AMQP1", "amqp1"),
+    ("Thrift", "thrift"),
+    ("BMP", "bmp"),
+    ("MQTT-SN", "mqtt_sn"),
+    ("NBD", "nbd"),
+    ("ManageSieve", "managesieve"),
+    ("Zenoh", "zenoh"),
+    ("LwM2M", "lwm2m"),
+    ("RESTCONF", "restconf"),
+    ("WebTransport", "webtransport"),
+    ("JMAP", "jmap"),
+    ("EPP", "epp"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),
+    ("QUIC", "quic"),
     ("igmp", "igmp"),
     ("IPP", "ipp"),
     ("IS-IS", "isis"),
@@ -705,6 +1082,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("nfc", "nfc-client"),
     ("NTP", "ntp"),
     ("OpenAI", "openai"),
+    ("OTLP", "otlp"),
     ("PostgreSQL", "postgresql"),
     ("PyPI", "pypi"),
     ("MSSQL", "mssql"),
@@ -722,6 +1100,25 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("SSH", "ssh"),
     ("SSH Agent", "ssh-agent"),
     ("Syslog", "syslog"),
+    ("FluentForward", "fluent-forward"),
+    ("NETFLOWV9", "netflow-v9"),
+    ("NETFLOW-V9", "netflow-v9"),
+    ("NETFLOW_V9", "netflow-v9"),
+    ("IPFIX", "ipfix"),
+    ("IPFIX-UDP", "ipfix"),
+    ("PrometheusRemoteWrite", "prometheus-remote-write"),
+    ("RemoteWrite", "prometheus-remote-write"),
+    ("sFlow", "sflow"),
+    ("sFlow-v5", "sflow"),
+    ("Loki", "loki"),
+    ("LokiPush", "loki"),
+    ("InfluxDB", "influxdb"),
+    ("InfluxDB2", "influxdb"),
+    ("GELF", "gelf"),
+    ("Graylog", "gelf"),
+    ("Graphite", "graphite"),
+    ("StatsD", "statsd"),
+    ("DogStatsD", "statsd"),
     ("TCP", "tcp"),
     ("Telnet", "telnet"),
     ("TLS", "tls"),
@@ -731,6 +1128,18 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("BitTorrent Tracker", "torrent-tracker"),
     ("TURN", "turn"),
     ("UDP", "udp"),
+    ("Gemini", "gemini"),
+    ("DICT", "dict"),
+    ("Beanstalkd", "beanstalkd"),
+    ("Gearman", "gearman"),
+    ("Prometheus", "prometheus"),
+    ("Docker", "docker"),
+    ("Vault", "vault"),
+    ("Nostr", "nostr"),
+    ("Bolt", "bolt"),
+    ("OCI-Registry", "oci-registry"),
+    ("NSQ", "nsq"),
+    ("NUT", "nut"),
     ("WHOIS", "whois"),
     ("STOMP", "stomp"),
     ("NetBIOS-NS", "netbios-ns"),
@@ -739,6 +1148,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("Modbus", "modbus"),
     ("CoAP", "coap"),
     ("RADIUS", "radius"),
+    ("DIAMETER", "diameter"),
     ("SSDP", "ssdp"),
     ("Gopher", "gopher"),
     ("Finger", "finger"),

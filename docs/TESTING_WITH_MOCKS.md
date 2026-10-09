@@ -62,12 +62,12 @@ Run with:
 ./test-e2e.sh tcp
 
 # Or with cargo test
-cargo test --no-default-features --features tcp --test server::tcp::e2e_test
+cargo test --no-default-features --features tcp --test server -- server::tcp::e2e_test
 
 # To use real Ollama instead:
 ./test-e2e.sh --use-ollama tcp
 # Or:
-NETGET_USE_OLLAMA=1 cargo test --no-default-features --features tcp --test server::tcp::e2e_test
+NETGET_USE_OLLAMA=1 cargo test --no-default-features --features tcp --test server -- server::tcp::e2e_test
 ```
 
 ## Why Use Mocks?

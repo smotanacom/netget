@@ -166,6 +166,12 @@ pub struct ConversationHandler {
     /// client with every request so a bridge host can show them as structured data.
     offered_actions: Vec<ActionDefinition>,
 
+    /// Structured metadata for a single network event, retained across all retries.
+    bridge_event: Option<crate::llm::bridge::BridgeEventContext>,
+
+    /// Conversation-local policy retained once credential parameters are offered.
+    private_payloads: bool,
+
     /// Cap on `messages.len()` — see [`DEFAULT_MAX_HISTORY_MESSAGES`]
     max_history_messages: usize,
 
@@ -220,10 +226,36 @@ impl ConversationHandler {
             tool_schemas: Vec::new(),
             use_native_tools: false,
             offered_actions: Vec::new(),
+            bridge_event: None,
+            private_payloads: false,
             max_history_messages: DEFAULT_MAX_HISTORY_MESSAGES,
             max_history_chars: DEFAULT_MAX_HISTORY_CHARS,
             trim_generation: 0,
         }
+    }
+
+    /// Attach the event for a bridge host without making it recover context from prompt text.
+    pub fn with_bridge_event(
+        mut self,
+        server_id: crate::state::ServerId,
+        connection_id: Option<crate::server::connection::ConnectionId>,
+        protocol: &str,
+        event: &crate::protocol::Event,
+    ) -> Self {
+        // Native transports already render event data into the prompt and never consume
+        // this metadata. Avoid another potentially large clone for every native request.
+        if self.client.backend_type() != "bridge" {
+            return self;
+        }
+        self.bridge_event = Some(crate::llm::bridge::BridgeEventContext {
+            token: self.conversation_id.clone(),
+            server_id: server_id.as_u32(),
+            connection_id: connection_id.map(|id| id.as_u32()),
+            protocol: protocol.to_string(),
+            event_type: event.id().to_string(),
+            data: event.data.clone(),
+        });
+        self
     }
 
     /// Override the conversation-history caps (see [`DEFAULT_MAX_HISTORY_MESSAGES`] and
@@ -241,7 +273,15 @@ impl ConversationHandler {
     /// narrates it to the TUI. Wire facts (sizes, tokens) belong to the transport
     /// (`OllamaClient`) and stay file-only. Full payloads are TRACE/file-only.
     fn log(&self) -> Log<'_> {
-        Log::new(self.status_tx.as_ref())
+        Log::new(self.status_tx.as_ref()).with_payloads(!self.private_payloads)
+    }
+
+    fn display_payload(&self, text: &str) -> String {
+        if self.private_payloads {
+            crate::utils::redact::REDACTED.into()
+        } else {
+            text.into()
+        }
     }
 
     /// Total characters of everything but the system message.
@@ -333,6 +373,13 @@ impl ConversationHandler {
             .as_millis();
         let random: u32 = rand::random();
         format!("conv-{}-{:x}", timestamp, random)
+    }
+
+    /// Hide incidental payload/error diagnostics when structured request input
+    /// contains credentials. Sticky only within this conversation's history.
+    pub fn with_private_payloads(mut self, private: bool) -> Self {
+        self.private_payloads |= private;
+        self
     }
 
     /// Set the status channel for user-visible logs
@@ -661,6 +708,7 @@ impl ConversationHandler {
         web_search_mode: WebSearchMode,
         available_actions: Vec<ActionDefinition>,
     ) -> Result<Vec<serde_json::Value>> {
+        self.private_payloads |= crate::utils::redact::actions_have_credentials(&available_actions);
         // This handle belongs to this generation, including its tool/retry loop.
         // Dropping the future (e.g. stopping a server) also clears its activity.
         let _activity = self
@@ -668,10 +716,27 @@ impl ConversationHandler {
             .as_ref()
             .zip(self.source.as_ref())
             .map(|(state, source)| {
-                state
-                    .llm_activity
-                    .begin(source.clone(), self.details.clone().unwrap_or_default())
+                state.llm_activity.begin(
+                    source.clone(),
+                    self.display_payload(self.details.as_deref().unwrap_or_default()),
+                )
             });
+        let result = self
+            .generate_until_final_response(approval_tx, web_search_mode, available_actions)
+            .await;
+        if result.is_err() {
+            // Rejected/exhausted responses must not leave a live conversation in the UI.
+            self.end_tracking().await;
+        }
+        result
+    }
+
+    async fn generate_until_final_response(
+        &mut self,
+        approval_tx: Option<tokio::sync::mpsc::UnboundedSender<WebApprovalRequest>>,
+        web_search_mode: WebSearchMode,
+        available_actions: Vec<ActionDefinition>,
+    ) -> Result<Vec<serde_json::Value>> {
         // Register conversation if tracking is enabled and not already registered
         if !self.registered {
             if let (Some(state), Some(source), Some(details)) =
@@ -688,7 +753,7 @@ impl ConversationHandler {
             }
         }
 
-        let mut all_actions = Vec::new();
+        let mut final_actions = None;
         let mut tool_results = Vec::new();
         // Index of the oldest rejected assistant response not yet superseded by a valid one.
         // Everything from there up to the current response is dropped once the model gets it
@@ -707,6 +772,8 @@ impl ConversationHandler {
             available_actions.iter().map(|a| a.name.clone()).collect();
         let mut valid_action_names_list: Vec<String> =
             available_actions.iter().map(|a| a.name.clone()).collect();
+        // History can retain a credential after the currently offered actions are narrowed.
+        self.private_payloads |= crate::utils::redact::actions_have_credentials(&available_actions);
         self.offered_actions = available_actions.clone();
 
         for iteration in 1..=self.max_tool_iterations {
@@ -731,7 +798,7 @@ impl ConversationHandler {
                 crate::llm::reference_parser::extract_references(&cleaned_response)
                     .context("Failed to extract XML references from response")?;
 
-            if !references.is_empty() {
+            if !references.is_empty() && !self.private_payloads {
                 debug!(
                     "Extracted {} XML references from LLM response",
                     references.len()
@@ -785,12 +852,11 @@ impl ConversationHandler {
             let unknown_actions: Vec<String> = action_response
                 .actions
                 .iter()
+                .chain(action_response.tools.iter())
                 .filter_map(|action| {
-                    let action_type = action.get("type").and_then(|v| v.as_str())?;
-                    // Skip tool actions - they're validated separately
-                    if ToolAction::is_tool_action(action) {
-                        return None;
-                    }
+                    let Some(action_type) = action.get("type").and_then(|v| v.as_str()) else {
+                        return Some("(missing or non-string action type)".to_string());
+                    };
                     // Check if action exists in valid actions
                     if !valid_action_names.contains(action_type) {
                         Some(action_type.to_string())
@@ -802,18 +868,23 @@ impl ConversationHandler {
 
             if !unknown_actions.is_empty() {
                 unknown_action_retries += 1;
+                let shown_unknown_actions = if self.private_payloads {
+                    vec![crate::utils::redact::REDACTED.to_string(); unknown_actions.len()]
+                } else {
+                    unknown_actions.clone()
+                };
 
                 // Log warning with the actual response
                 warn!(
                     "LLM returned unknown action(s): {:?}. Response was: {}",
-                    unknown_actions,
-                    crate::utils::truncate_for_log(&cleaned_response, 500)
+                    shown_unknown_actions,
+                    self.display_payload(&crate::utils::truncate_for_log(&cleaned_response, 500))
                 );
 
                 if let Some(ref tx) = self.status_tx {
                     let _ = tx.send(format!(
                         "[WARN] LLM returned unknown action(s): {:?}",
-                        unknown_actions
+                        shown_unknown_actions
                     ));
                 }
 
@@ -821,7 +892,7 @@ impl ConversationHandler {
                     // All retries exhausted - log error
                     error!(
                         "LLM failed to use valid actions after {} retries. Unknown actions: {:?}",
-                        unknown_action_retries, unknown_actions
+                        unknown_action_retries, shown_unknown_actions
                     );
                     if let Some(ref tx) = self.status_tx {
                         let _ = tx.send(format!(
@@ -833,7 +904,7 @@ impl ConversationHandler {
                     anyhow::bail!(
                         "LLM returned unknown action(s) after {} retries: {:?}",
                         unknown_action_retries,
-                        unknown_actions
+                        shown_unknown_actions
                     );
                 }
 
@@ -854,7 +925,10 @@ impl ConversationHandler {
                         "[TRACE] → Sending correction to LLM for unknown action...".to_string(),
                     );
                     // Show the correction message being sent (indented and dimmed)
-                    for line in crate::llm::format_indented_dimmed_lines(&correction, 8) {
+                    for line in crate::llm::format_indented_dimmed_lines(
+                        &self.display_payload(&correction),
+                        8,
+                    ) {
                         let _ = tx.send(format!("[TRACE] {}", line));
                     }
                 }
@@ -913,7 +987,12 @@ impl ConversationHandler {
                     match crate::llm::actions::common::CommonAction::from_json(&action) {
                         Ok(_) => valid_regular.push(action),
                         Err(e) => {
-                            malformed_actions.push((action, e.to_string()));
+                            let error = if self.private_payloads {
+                                "invalid credential-bearing action".into()
+                            } else {
+                                e.to_string()
+                            };
+                            malformed_actions.push((action, error));
                         }
                     }
                 } else {
@@ -935,8 +1014,10 @@ impl ConversationHandler {
                             .and_then(|t| t.as_str())
                             .unwrap_or("unknown"),
                         error,
-                        serde_json::to_string(action_json)
-                            .unwrap_or_else(|_| action_json.to_string())
+                        self.display_payload(
+                            &serde_json::to_string(action_json)
+                                .unwrap_or_else(|_| action_json.to_string())
+                        )
                     );
                 }
 
@@ -953,8 +1034,10 @@ impl ConversationHandler {
                         // Show the actual JSON that was returned
                         let _ = tx.send(format!(
                             "[ERROR]   JSON: {}",
-                            serde_json::to_string(action_json)
-                                .unwrap_or_else(|_| action_json.to_string())
+                            self.display_payload(
+                                &serde_json::to_string(action_json)
+                                    .unwrap_or_else(|_| action_json.to_string())
+                            )
                         ));
                     }
                 }
@@ -1056,11 +1139,13 @@ impl ConversationHandler {
                 // prefix; `tests/llm_log_prefix_guard_test.rs` fails the build on any
                 // new one of those in src/llm/. (That guard counts substrings without
                 // parsing, so even naming the pattern in a comment trips it.)
-                Log::new(self.status_tx.as_ref()).warn(format!(
-                    "LLM action(s) {:?} reference a tool result that has not been produced \
+                Log::new(self.status_tx.as_ref())
+                    .with_payloads(!self.private_payloads)
+                    .warn(format!(
+                        "LLM action(s) {:?} reference a tool result that has not been produced \
                      yet; holding them back until the tool(s) have run",
-                    names
-                ));
+                        names
+                    ));
 
                 if tools.is_empty() {
                     // No tool call to wait for: the placeholder can never be filled in,
@@ -1089,34 +1174,22 @@ impl ConversationHandler {
                 )));
             }
 
-            // Collect validated regular actions
-            all_actions.extend(ready.clone());
-            let regular = ready;
-
-            // Add acknowledgment message for regular actions so LLM knows they were collected
-            if !regular.is_empty() {
-                let action_summary = regular
-                    .iter()
-                    .filter_map(|a| a.get("type").and_then(|t| t.as_str()))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-
-                debug!(
-                    "Acknowledging {} regular actions in conversation: {}",
-                    regular.len(),
-                    action_summary
-                );
-
-                self.messages.push(Message::user(format!(
-                    "Actions acknowledged and will be executed: [{}]",
-                    action_summary
-                )));
-            }
-
-            // If no tool calls, we're done
+            // Only a final response commits actions. An intermediate tool round can
+            // contain a draft answer, which the next response may repeat or replace.
+            // Keeping it would execute both drafts (for example, two IMAP greetings).
             if tools.is_empty() {
+                final_actions = Some(ready);
                 debug!("No tool calls in response, finishing conversation");
                 break;
+            }
+
+            if !ready.is_empty() {
+                self.messages.push(Message::user(
+                    "Actions in a response with tool calls are drafts and have not been executed. \
+                     After reading the tool results, return all actions to execute in one \
+                     final response with no tool calls."
+                        .to_string(),
+                ));
             }
 
             // If this is the last iteration, warn about unused tool calls
@@ -1132,7 +1205,7 @@ impl ConversationHandler {
                         tools.len()
                     ));
                 }
-                break;
+                anyhow::bail!("Tool iteration limit reached before a final action response");
             }
 
             // Execute tool calls
@@ -1145,11 +1218,14 @@ impl ConversationHandler {
             for tool_json in tools {
                 match ToolAction::from_json(&tool_json) {
                     Ok(tool_action) => {
-                        info!("→ Executing tool: {}", tool_action.describe());
+                        info!(
+                            "→ Executing tool: {}",
+                            self.display_payload(&tool_action.describe())
+                        );
                         if let Some(ref tx) = self.status_tx {
                             let _ = tx.send(format!(
                                 "[INFO] → Executing tool: {}",
-                                tool_action.describe()
+                                self.display_payload(&tool_action.describe())
                             ));
                         }
 
@@ -1174,7 +1250,10 @@ impl ConversationHandler {
                                 #[cfg(feature = "sqlite")]
                                 ToolAction::ListDatabases => "list_databases",
                             };
-                            state.add_tool_call(tool_name.to_string(), tool_action.describe());
+                            state.add_tool_call(
+                                tool_name.to_string(),
+                                self.display_payload(&tool_action.describe()),
+                            );
                         }
 
                         // Check if this is a doc reading tool
@@ -1187,13 +1266,24 @@ impl ConversationHandler {
                         let is_read_docs =
                             matches!(tool_action, ToolAction::ReadDocumentation { .. });
 
-                        let result =
-                            execute_tool(&tool_action, approval_tx.as_ref(), web_search_mode, None)
-                                .await;
-                        info!("  Result: {}", result.summary());
+                        let execution =
+                            execute_tool(&tool_action, approval_tx.as_ref(), web_search_mode, None);
+                        let result = if self.private_payloads {
+                            use tracing::instrument::WithSubscriber;
+                            execution
+                                .with_subscriber(tracing::subscriber::NoSubscriber::default())
+                                .await
+                        } else {
+                            execution.await
+                        };
+                        info!("  Result: {}", self.display_payload(&result.summary()));
                         if let Some(ref tx) = self.status_tx {
                             let status = if result.success { "✓" } else { "✗" };
-                            let _ = tx.send(format!("[INFO]   {} {}", status, result.summary()));
+                            let _ = tx.send(format!(
+                                "[INFO]   {} {}",
+                                status,
+                                self.display_payload(&result.summary())
+                            ));
                         }
 
                         // Mark protocol docs as read if the tool succeeded
@@ -1337,14 +1427,20 @@ impl ConversationHandler {
                         tool_results.push(result);
                     }
                     Err(e) => {
-                        error!("Failed to parse tool action: {}", e);
+                        let error = if self.private_payloads {
+                            "invalid credential-bearing tool action".to_string()
+                        } else {
+                            e.to_string()
+                        };
+                        error!("Failed to parse tool action: {}", error);
                         if let Some(ref tx) = self.status_tx {
-                            let _ = tx.send(format!("[ERROR] Failed to parse tool action: {}", e));
+                            let _ =
+                                tx.send(format!("[ERROR] Failed to parse tool action: {}", error));
                         }
                         tool_results.push(ToolResult::error(
                             "unknown",
                             "parse_error",
-                            format!("Failed to parse tool action: {}", e),
+                            format!("Failed to parse tool action: {}", error),
                         ));
                     }
                 }
@@ -1410,6 +1506,10 @@ impl ConversationHandler {
                 ));
             }
         }
+
+        let all_actions = final_actions.context(
+            "Conversation ended without a final action response; no draft actions executed",
+        )?;
 
         // Log details for each action (validation already happened above)
         for action in &all_actions {
@@ -1493,6 +1593,7 @@ impl ConversationHandler {
                 }
             };
 
+            let details = self.display_payload(&details);
             let log_msg = if details.is_empty() {
                 format!("[INFO]   → {}", action_type)
             } else {
@@ -1601,7 +1702,7 @@ impl ConversationHandler {
 
                 let chat_response = self
                     .client
-                    .chat_with_tools(&chat_request)
+                    .chat_with_tools(&chat_request, self.private_payloads)
                     .await
                     .context("Chat API call failed")?;
 
@@ -1657,7 +1758,14 @@ impl ConversationHandler {
                 // as some models (e.g., gpt-oss) don't support Ollama's JSON format mode
                 let generate_response = self
                     .client
-                    .generate_offering(&self.model, &full_prompt, None, &self.offered_actions)
+                    .generate_offering_with_event(
+                        &self.model,
+                        &full_prompt,
+                        None,
+                        &self.offered_actions,
+                        self.bridge_event.as_ref(),
+                        self.private_payloads,
+                    )
                     .await
                     .context("Generate API call failed")?;
 
@@ -1758,6 +1866,11 @@ impl ConversationHandler {
                     return Ok((response_text.clone(), normalized_response));
                 }
                 Err(e) => {
+                    let e = if self.private_payloads {
+                        anyhow::anyhow!("invalid credential-bearing model response")
+                    } else {
+                        e
+                    };
                     if attempt <= self.max_retries {
                         // We have retries left, send corrective feedback
                         warn!("✗ Parse error on attempt {}: {}", attempt, e);
@@ -1766,7 +1879,10 @@ impl ConversationHandler {
                             if response_text.is_empty() {
                                 "(empty response)".to_string()
                             } else {
-                                crate::utils::truncate_for_log(&response_text, 500)
+                                self.display_payload(&crate::utils::truncate_for_log(
+                                    &response_text,
+                                    500,
+                                ))
                             }
                         );
 
@@ -1774,7 +1890,10 @@ impl ConversationHandler {
                             let error_preview = if normalized_response.is_empty() {
                                 "(empty)".to_string()
                             } else {
-                                crate::utils::truncate_for_log(&normalized_response, 100)
+                                self.display_payload(&crate::utils::truncate_for_log(
+                                    &normalized_response,
+                                    100,
+                                ))
                             };
                             let _ = tx.send(format!(
                                 "[WARN] ✗ Invalid format (attempt {}): {}. Response: {}",
@@ -1811,7 +1930,10 @@ impl ConversationHandler {
                         if let Some(ref tx) = self.status_tx {
                             let _ = tx.send("[INFO] → Sending correction to LLM...".to_string());
                             // Show the correction message being sent (indented and dimmed)
-                            for line in crate::llm::format_indented_dimmed_lines(&correction, 8) {
+                            for line in crate::llm::format_indented_dimmed_lines(
+                                &self.display_payload(&correction),
+                                8,
+                            ) {
                                 let _ = tx.send(format!("[INFO] {}", line));
                             }
                         }

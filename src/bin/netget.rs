@@ -17,17 +17,33 @@ async fn main() -> Result<()> {
     // 15 before anyone noticed. `tests/rustls_provider_gate_test.rs` derives the true
     // set from Cargo.toml and fails if this list falls behind again.
     #[cfg(any(
+        feature = "adc",
+        feature = "adc_peer",
+        feature = "dc_peer",
+        feature = "gnutella",
+        feature = "nntp",
+        feature = "soulseek",
+        feature = "bolt",
         feature = "dc",
         feature = "doh",
+        feature = "doq",
         feature = "dot",
+        feature = "epp",
         feature = "gemini",
+        feature = "gnmi",
+        feature = "acme",
+        feature = "grpc",
         feature = "http",
         feature = "http2",
         feature = "http3",
         feature = "http_proxy",
+        feature = "jmap",
         feature = "kubernetes",
         feature = "kubernetes-server",
+        feature = "nostr",
+        feature = "oci-registry",
         feature = "openvpn",
+        feature = "otlp",
         feature = "pop3",
         feature = "proxy",
         feature = "quic",
@@ -35,6 +51,7 @@ async fn main() -> Result<()> {
         feature = "tls",
         feature = "tor",
         feature = "webrtc",
+        feature = "webtransport",
     ))]
     {
         use rustls::crypto::CryptoProvider;

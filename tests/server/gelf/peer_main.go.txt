@@ -1,0 +1,12 @@
+package main
+import ("encoding/json"; "fmt"; "os"; "strconv"; "time"; "netget-peer/gelf")
+func main() {
+ if len(os.Args) != 3 { panic("transport count required") }
+ count,err:=strconv.Atoi(os.Args[2]); if err!=nil {panic(err)}
+ var addr string; var read func()(*gelf.Message,error)
+ if os.Args[1]=="udp" {r,err:=gelf.NewReader("127.0.0.1:0");if err!=nil {panic(err)};addr=r.Addr();read=r.ReadMessage
+ } else {r,err:=gelf.NetgetTCPStart("127.0.0.1:0");if err!=nil {panic(err)};defer r.Close();addr=r.NetgetAddr();read=r.NetgetRead}
+ fmt.Println("NETGET_ADDR "+addr)
+ time.AfterFunc(30*time.Second,func(){os.Exit(2)})
+ for i:=0;i<count;i++ {m,err:=read();if err!=nil {panic(err)};out:=map[string]interface{}{"version":m.Version,"host":m.Host,"short_message":m.Short,"full_message":m.Full,"timestamp":m.TimeUnix,"level":m.Level,"additional_fields":m.Extra};b,err:=json.Marshal(out);if err!=nil {panic(err)};fmt.Println("NETGET_MESSAGE "+string(b))}
+}

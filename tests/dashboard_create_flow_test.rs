@@ -644,3 +644,191 @@ fn send_first_help_describes_the_protocols_that_honour_it() {
     );
     assert!(send_first.help.contains("declare a `send_first`"));
 }
+
+#[cfg(feature = "openapi")]
+#[test]
+fn openapi_pair_inherits_spec_and_missing_spec_opens_the_right_field() {
+    use netget::tui::actions::client_form_for_server;
+    let spec = "openapi: 3.0.0\ninfo:\n  title: Pair\n  version: 1.0.0\npaths: {}";
+    let params = serde_json::json!({"spec": spec});
+    let mut form = client_form_for_server(
+        ServerId::new(4),
+        "OpenAPI",
+        Some("0.0.0.0:4321"),
+        0,
+        Some(&params),
+    )
+    .unwrap();
+    assert!(form.missing_required().is_none());
+    let submitted = form.to_client_form().unwrap();
+    let params = submitted.startup_params.unwrap();
+    assert_eq!(params["spec"], spec);
+    assert_eq!(params["base_url"], "http://127.0.0.1:4321");
+    let json_spec = r#"{"openapi":"3.0.0","info":{"title":"Pair","version":"1.0.0"},"paths":{}}"#;
+    form.set_field_value(&FieldTarget::StartupParam("spec".into()), json_spec.into());
+    assert_eq!(
+        form.to_client_form().unwrap().startup_params.unwrap()["spec"],
+        json_spec,
+        "inline JSON specs must be submitted as declared strings"
+    );
+
+    let mut missing =
+        client_form_for_server(ServerId::new(4), "OpenAPI", None, 4321, None).unwrap();
+    assert_eq!(
+        missing.missing_required().as_deref(),
+        Some("spec or spec_file")
+    );
+    missing.focus_first_missing_required();
+    assert_eq!(missing.selected_field().unwrap().label, "spec");
+    missing.set_field_value(
+        &FieldTarget::StartupParam("spec_file".into()),
+        "/tmp/pair.yaml".into(),
+    );
+    assert!(
+        missing.missing_required().is_none(),
+        "either spec input satisfies the form"
+    );
+    let server = FormModel::for_create(Section::Servers, "OpenAPI", None);
+    assert_eq!(server.missing_required().as_deref(), Some("spec"));
+}
+
+#[cfg(feature = "oauth2")]
+#[test]
+fn oauth_pair_knows_endpoints_and_requests_credentials() {
+    let mut form = netget::tui::actions::client_form_for_server(
+        ServerId::new(4),
+        "OAuth2",
+        Some("0.0.0.0:4321"),
+        0,
+        None,
+    )
+    .unwrap();
+    assert_eq!(form.missing_required().as_deref(), Some("client_id"));
+    form.focus_first_missing_required();
+    assert_eq!(form.selected_field().unwrap().label, "client_id");
+    form.set_field_value(&FieldTarget::StartupParam("client_id".into()), "123".into());
+    assert!(form.missing_required().is_none());
+    let params = form.to_client_form().unwrap().startup_params.unwrap();
+    assert_eq!(params["client_id"], "123", "numeric IDs remain strings");
+    assert_eq!(params["auth_url"], "http://127.0.0.1:4321/authorize");
+    assert_eq!(params["token_url"], "http://127.0.0.1:4321/token");
+    assert!(
+        params.get("client_secret").is_none(),
+        "do not invent credentials"
+    );
+}
+
+#[cfg(feature = "openidconnect")]
+#[test]
+fn oidc_pair_uses_an_absolute_provider_url_and_acknowledges_discovery() {
+    let mut form = netget::tui::actions::client_form_for_server(
+        ServerId::new(4),
+        "OpenID",
+        Some("0.0.0.0:4321"),
+        0,
+        None,
+    )
+    .unwrap();
+    assert_eq!(form.missing_required().as_deref(), Some("client_id"));
+    form.set_field_value(&FieldTarget::StartupParam("client_id".into()), "123".into());
+    let submitted = form.to_client_form().unwrap();
+    assert_eq!(
+        submitted.remote_addr.as_deref(),
+        Some("http://127.0.0.1:4321")
+    );
+    let rules = submitted.event_handlers.unwrap();
+    assert_eq!(rules[0]["event_pattern"], "oidc_discovered");
+    assert_eq!(rules[0]["handler"]["actions"], serde_json::json!([]));
+    assert_eq!(rules.last().unwrap()["handler"]["type"], "manual");
+}
+
+#[cfg(any(feature = "npm", feature = "pypi", feature = "maven"))]
+async fn registry_pair_exchanges_plain_http(
+    protocol: &str,
+    response: serde_json::Value,
+    request: serde_json::Value,
+    response_event: &str,
+) {
+    let state = new_state().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut server = FormModel::for_create(Section::Servers, protocol, Some(0));
+    server.set_field_value(
+        &FieldTarget::EventHandlersJson,
+        serde_json::json!([{
+            "event_pattern": "*", "handler": {"type": "static", "actions": [response]}
+        }])
+        .to_string(),
+    );
+    server.apply(&state, llm(), &tx).await.unwrap();
+    let server_id = state.get_all_server_ids().await[0];
+    let port = wait_for_port(&state, server_id).await;
+    let form = netget::tui::actions::client_form_for_server(
+        server_id,
+        protocol,
+        Some(&format!("0.0.0.0:{port}")),
+        0,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        form.to_client_form().unwrap().remote_addr.unwrap(),
+        format!("http://127.0.0.1:{port}")
+    );
+    tokio::time::timeout(Duration::from_secs(20), form.apply(&state, llm(), &tx))
+        .await
+        .unwrap()
+        .unwrap();
+    let client_id = state.get_all_client_ids().await[0];
+    let sent = state
+        .send_to_client(client_id, request, Duration::from_secs(20))
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            sent,
+            netget::state::client_handles::ClientSendOutcome::Executed { .. }
+        ),
+        "{sent:?}"
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if state.list_intercepts().await.iter().any(|entry| {
+                entry.owner == netget::state::intercepts::InterceptOwner::Client(client_id)
+                    && entry.event_type == response_event
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the HTTP response must reach the client's manual handler");
+    state.remove_client(client_id).await;
+    state.remove_server(server_id).await;
+}
+
+#[cfg(feature = "npm")]
+#[tokio::test]
+async fn npm_dashboard_pair_round_trips_over_http() {
+    registry_pair_exchanges_plain_http("NPM", serde_json::json!({
+        "type": "npm_package_metadata", "metadata": {"name": "pair", "description": "local", "versions": {}, "dist-tags": {}}
+    }), serde_json::json!({"type": "get_package_info", "package_name": "pair"}), "npm_package_info_received").await;
+}
+
+#[cfg(feature = "pypi")]
+#[tokio::test]
+async fn pypi_dashboard_pair_round_trips_over_http() {
+    registry_pair_exchanges_plain_http("PyPI", serde_json::json!({
+        "type": "send_pypi_response", "status": 200, "headers": {"Content-Type": "application/json"},
+        "body": "{\"info\":{\"name\":\"pair\",\"version\":\"1.0\"},\"releases\":{},\"urls\":[]}"
+    }), serde_json::json!({"type": "get_package_info", "package_name": "pair"}), "pypi_package_info_received").await;
+}
+
+#[cfg(feature = "maven")]
+#[tokio::test]
+async fn maven_dashboard_pair_round_trips_over_http() {
+    registry_pair_exchanges_plain_http("Maven", serde_json::json!({
+        "type": "send_maven_artifact", "status": 200, "content_type": "application/xml",
+        "body": "<project><modelVersion>4.0.0</modelVersion><groupId>net.netget</groupId><artifactId>pair</artifactId><version>1.0</version></project>"
+    }), serde_json::json!({"type": "download_pom", "group_id": "net.netget", "artifact_id": "pair", "version": "1.0"}), "maven_pom_received").await;
+}

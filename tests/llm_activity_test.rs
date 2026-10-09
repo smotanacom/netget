@@ -141,6 +141,34 @@ async fn legacy_script_tracking_does_not_show_as_model_generation() {
     assert_eq!(snapshot.active_conversations, 0);
 }
 
+#[tokio::test]
+async fn private_generations_keep_sensitive_details_out_of_ui_snapshots() {
+    let state = AppState::new();
+    let (bridge, mut requests) = LlmBridge::new();
+    let client = OllamaClient::new_bridge(bridge, Duration::from_secs(5));
+    let mut handler =
+        conversation(&state, client, ConversationSource::User).with_private_payloads(true);
+    let task = tokio::spawn(async move {
+        handler
+            .generate_with_tools_and_retry(
+                None,
+                WebSearchMode::Off,
+                vec![netget::llm::actions::common::show_message_action()],
+            )
+            .await
+    });
+    let request = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let activity = state.llm_activity.snapshot();
+    assert_eq!(activity.len(), 1);
+    assert_eq!(activity[0].details, netget::utils::redact::REDACTED);
+    request.reply.send(Ok(reply())).unwrap();
+    task.await.unwrap().unwrap();
+    assert!(state.llm_activity.snapshot().is_empty());
+}
+
 #[cfg(feature = "tcp")]
 #[tokio::test]
 async fn client_calls_are_attributed_to_the_client() {

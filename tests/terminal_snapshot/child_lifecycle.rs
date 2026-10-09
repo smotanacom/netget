@@ -1,5 +1,5 @@
 //! PTY guard regressions using sleep, without starting the application or a model.
-use super::{open_pty_retrying, NetGetChild};
+use super::{child_guard, open_pty_retrying, NetGetChild};
 use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
@@ -7,16 +7,21 @@ use std::time::{Duration, Instant};
 #[path = "../helpers/wrapper_lifecycle.rs"]
 mod fixture;
 
-fn spawn_fixture() -> (pty_process::blocking::Pty, NetGetChild, u32) {
+fn spawn_fixture(
+    leased_program: Option<&std::path::Path>,
+) -> (pty_process::blocking::Pty, NetGetChild, u32) {
     let pair = open_pty_retrying();
     let mut pty = unsafe { pty_process::blocking::Pty::from_fd(pair.master) };
     let pts = unsafe { pty_process::blocking::Pts::from_fd(pair.slave) };
     // Ignore terminal hangup before announcing readiness. Otherwise closing the
     // dead parent's PTY could make this pass even without a death tie.
-    let child = pty_process::blocking::Command::new("/bin/sh")
-        .args(["-c", "trap '' HUP; printf 'READY\\n'; exec /bin/sleep 600"])
-        .spawn(pts)
-        .unwrap();
+    let command = if let Some(program) = leased_program {
+        pty_process::blocking::Command::new("/bin/sh").arg(program)
+    } else {
+        pty_process::blocking::Command::new("/bin/sh")
+            .args(["-c", "trap '' HUP; printf 'READY\\n'; exec /bin/sleep 600"])
+    };
+    let child = command.spawn(pts).unwrap();
     let pid = child.id();
     let child = NetGetChild::new(child).unwrap();
     let fd = pty.as_raw_fd();
@@ -29,7 +34,12 @@ fn spawn_fixture() -> (pty_process::blocking::Pty, NetGetChild, u32) {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut output = Vec::new();
     let mut buffer = [0; 64];
-    while !output.windows(5).any(|part| part == b"READY") {
+    let ready: &[u8] = if leased_program.is_some() {
+        b"FIXTURE_PID="
+    } else {
+        b"READY"
+    };
+    while !output.windows(ready.len()).any(|part| part == ready) {
         match pty.read(&mut buffer) {
             Ok(n) if n > 0 => output.extend_from_slice(&buffer[..n]),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -44,7 +54,8 @@ fn spawn_fixture() -> (pty_process::blocking::Pty, NetGetChild, u32) {
 #[test]
 fn hard_killed_pty_parent_cannot_leave_child() {
     if let Some(marker) = fixture::worker_state() {
-        let (_pty, _guard, pid) = spawn_fixture();
+        let script = fixture::inert_script(marker.parent().unwrap(), false);
+        let (_pty, _guard, pid) = spawn_fixture(Some(&script));
         fixture::announce_and_wait(&marker, pid);
     }
     fixture::assert_parent_death_cleans_child(
@@ -54,7 +65,7 @@ fn hard_killed_pty_parent_cannot_leave_child() {
 
 #[test]
 fn normal_pty_teardown_is_bounded_and_reaps_child() {
-    let (_pty, child, pid) = spawn_fixture();
+    let (_pty, child, pid) = spawn_fixture(None);
     let started = Instant::now();
     drop(child);
     assert!(started.elapsed() < Duration::from_secs(3));
@@ -66,7 +77,7 @@ fn normal_pty_teardown_is_bounded_and_reaps_child() {
 
 #[test]
 fn already_reaped_pty_child_does_not_break_teardown() {
-    let (_pty, mut child, pid) = spawn_fixture();
+    let (_pty, mut child, pid) = spawn_fixture(None);
     let process = child.0.as_mut().unwrap();
     process.kill().unwrap();
     process.wait().unwrap();

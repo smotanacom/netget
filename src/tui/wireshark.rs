@@ -178,9 +178,9 @@ const ARP_LOOPBACK_NOTE: &str = "`arp` is an Ethernet-only BPF keyword and is re
     loopback, which is DLT_NULL on macOS. Capture on a real interface; ARP is not carried on lo0 \
     at all, so there would be nothing to see there anyway. Same trap as isis.";
 
-const QUIC_ALPN_NOTE: &str = "NetGet's QUIC server negotiates ALPN `h3` while sending raw stream \
-    bytes rather than RFC 9114 frames, so Wireshark hands the payload to its HTTP/3 sub-dissector \
-    and reports malformed frames. That is expected - read the QUIC stream payload directly.";
+const QUIC_ALPN_NOTE: &str = "NetGet's raw QUIC protocol negotiates ALPN `netget-quic`. \
+    Its bidirectional streams contain application bytes delimited by FIN. HTTP/3 uses \
+    the separate `http3` protocol and ALPN `h3`.";
 
 const USB_NOTE: &str = "USB is not network traffic. Wireshark can capture it from usbmon on \
                         Linux (tshark -D lists usbmonN) or the XHC20 device on macOS after \
@@ -204,8 +204,19 @@ pub fn wire_for(protocol: &str) -> Wire {
     match name.as_str() {
         // ---- transports --------------------------------------------------
         "tcp" | "reverse_shell" | "dc" | "zookeeper" | "svn" => PLAIN_TCP,
-        "udp" => PLAIN_UDP,
+        "udp" | "statsd" | "dogstatsd" => PLAIN_UDP,
+        "gelf" | "graylog" => Wire {
+            transport: Transport::TcpOrUdp,
+            decode_as: None,
+            display: None,
+            note: Some("GELF supports UDP and TCP on this port. For UDP add `-d udp.port==PORT,gelf`; the GELF dissector does not accept TCP decode-as. TCP messages are NUL-delimited JSON."),
+        },
         "tls" | "dot" | "tor_relay" => tcp("tls"),
+        "doq" => udp("quic"),
+        // RFC 7011 version 10 over UDP. Decode-as and display syntax checked with tshark.
+        "ipfix" => udp("cflow"),
+        "sflow" => udp("sflow"),
+        "netflow_v9" | "netflowv9" => udp("cflow"),
         "quic" => with_note(udp("quic"), QUIC_ALPN_NOTE),
         // The discovery family. All three are UDP and all three were falling through to the
         // PLAIN_TCP default, which is simply the wrong transport. Dissector names checked
@@ -228,6 +239,14 @@ pub fn wire_for(protocol: &str) -> Wire {
         // protocols` lists none and `-d tcp.port==2628,dict` is rejected as an unknown
         // protocol. Plain TCP is the honest answer; "Follow TCP Stream" reads it fine.
         "dict" => PLAIN_TCP,
+        "tacacs" | "tacacs+" | "tacacs_plus" | "tacacsplus" => with_note(
+            tcp("tacplus"),
+            "This feature speaks legacy RFC 8907 TACACS+. Its obfuscated body requires the configured shared secret in Wireshark to decode; it does not speak the TLS profile.",
+        ),
+        "diameter" => with_note(
+            tcp("diameter"),
+            "This binding uses clear TCP for the selected stateless NASREQ application. TLS, SCTP and vendor applications are outside its implemented surface.",
+        ),
         // Neo4j's Bolt (TCP 7687) has no dissector in this Wireshark build (4.6.8): `tshark -G
         // protocols` lists nothing matching bolt, neo4j or packstream. Plain TCP; the chunked
         // PackStream is binary, so "Follow TCP Stream" in hex is what a capture offers.
@@ -249,31 +268,70 @@ pub fn wire_for(protocol: &str) -> Wire {
         // dissector (`tshark -G protocols` lists none), so the TLS layer is the most any
         // capture can show without the session keys.
         "gemini" => tcp("tls"),
+        // EPP is RFC 5734 length-prefixed XML inside TLS; this build has no EPP dissector.
+        "epp" => with_note(tcp("tls"), "EPP frames are a 4-byte length and an XML document inside TLS. Without the TLS session keys only the handshake shows; with tls: false follow the TCP stream to read the XML."),
         // Nostr relay: NIP-01 JSON in WebSocket text frames after an HTTP/1.1 upgrade. There is
         // no nostr dissector in this Wireshark build (`tshark -G protocols` lists none); decoded
         // as `http`, the 101 hands the stream to Wireshark's own `websocket` dissector, whose
         // payload it reads as JSON — checked with `-d tcp.port==N,http -Y websocket`.
         "nostr" => with_display(tcp("http"), "websocket"),
+        // OCPP-J is JSON text in WebSocket frames; no OCPP dissector exists in this build.
+        "ocpp" => with_note(with_display(tcp("http"), "websocket"), "OCPP-J messages are JSON arrays in WebSocket text frames; the websocket filter shows each CALL, CALLRESULT and CALLERROR."),
+        // A2A is JSON-RPC over plain HTTP (SSE for streams); no A2A dissector exists.
+        "a2a" => with_note(tcp("http"), "A2A 1.0 is JSON-RPC 2.0 in HTTP POST bodies to /, with streamed answers as text/event-stream; the agent card is GET /.well-known/agent-card.json."),
+        // GraphQL is JSON over plain HTTP; no GraphQL dissector exists in this build.
+        "graphql" => with_note(tcp("http"), "GraphQL requests are JSON POST bodies (or GET query strings) to the endpoint path; answers are application/graphql-response+json or application/json. Subscriptions are graphql-transport-ws JSON in WebSocket text frames on the same path: add the websocket display filter."),
         "ssdp" => udp("ssdp"),
         "llmnr" => udp("llmnr"),
         "netbios_ns" => udp("nbns"),
-        // http3 is a client-only protocol name, and it reaches wire_for through
-        // CaptureTarget::client. Without an arm it defaulted to plain TCP; it is QUIC.
-        "http3" => with_display(udp("quic"), "http3 || quic"),
+        // Both HTTP/3 roles use QUIC. Application fields require TLS secrets.
+        "http3" | "http/3" | "h3" => with_note(
+            with_display(udp("quic"), "http3 || quic"),
+            "HTTP/3 uses ALPN h3 over UDP. Wireshark needs TLS session secrets to inspect HTTP/3 headers and data; otherwise the capture shows QUIC.",
+        ),
+        // WebTransport sessions are HTTP/3 extended CONNECT; streams and datagrams ride QUIC.
+        "webtransport" => with_note(
+            with_display(udp("quic"), "http3 || quic"),
+            "WebTransport is an HTTP/3 extended CONNECT (ALPN h3) whose streams and datagrams are QUIC payload. Wireshark needs the TLS session secrets to show the CONNECT and the session's data; otherwise the capture shows QUIC.",
+        ),
+        "fluentforward" | "fluent_forward" | "fluentd" => with_note(
+            PLAIN_TCP,
+            "Fluent Forward uses MessagePack over TCP. This Wireshark build has no Forward dissector; inspect the stream bytes and correlated ACKs.",
+        ),
         // ---- web ---------------------------------------------------------
         "http" | "websocket" | "proxy" | "webdav" | "jsonrpc" | "xmlrpc" | "openapi" | "openai"
         | "ollama" | "mcp" | "oauth2" | "openid" | "saml_idp" | "saml_sp" | "s3" | "sqs"
         | "dynamo" | "elasticsearch" | "couchdb" | "kubernetes" | "oci_registry" | "npm"
         | "pypi" | "maven" | "rss" | "hls" | "yarn" | "spark" | "snowflake" | "mercurial"
-        | "webrtc_signaling" | "torrent_tracker" | "prometheus" | "docker" | "vault" => tcp("http"),
-        // OTLP/HTTP (TCP 4318) is HTTP to Wireshark: `tshark -G protocols` has no otlp dissector.
-        // Its `protobuf` dissector reads an application/x-protobuf body only once the
-        // OpenTelemetry .proto files are on its protobuf search path, so HTTP is what a capture
-        // shows by default; the JSON encoding reads as text.
-        "otlp" => tcp("http"),
+        | "webrtc_signaling" | "torrent_tracker" | "prometheus" | "prometheus_remote_write" | "prometheusremotewrite"
+        | "remote_write" | "prometheus_write" | "vault" | "influxdb" | "loki" => tcp("http"),
+        "docker" => with_note(
+            tcp("http"),
+            "This captures Docker HTTP TCP connections. A native Unix socket has no IP packets to capture.",
+        ),
+        // The receiver admits both HTTP/1.1 and gRPC/HTTP2 on the same port. Do not
+        // force one dissector before the instance's selected transport is known.
+        "otlp" => Wire {
+            transport: Transport::Tcp,
+            decode_as: None,
+            display: Some("http || http2 || grpc"),
+            note: Some("Choose HTTP for OTLP/HTTP or HTTP/2 for OTLP/gRPC in Wireshark Decode As. TLS exports require TLS session keys."),
+        },
         "doh" => tcp("tls"),
         "http2" => tcp("http2"),
         "grpc" | "etcd" => with_display(tcp("http2"), "grpc || http2"),
+        "gnmi" => with_note(
+            with_display(tcp("http2"), "grpc || http2"),
+            "gNMI uses native HTTP/2 and the OpenConfig gNMI protobuf schema. This recipe decodes the cleartext carrier; explicitly enabled TLS requires session keys and TLS Decode As in Wireshark.",
+        ),
+        "connect_rpc" | "connectrpc" | "connect rpc" => with_note(
+            tcp("http"),
+            "This binding uses binary protobuf ConnectRPC over cleartext HTTP/1.1. The HTTP carrier is decoded; protobuf bodies require the matching schema and streamed replies end with a Connect EndStream envelope.",
+        ),
+        "grpc_web" | "grpcweb" | "grpc web" => with_note(
+            tcp("http"),
+            "This binding uses binary gRPC-Web over cleartext HTTP/1.1. The HTTP carrier is decoded; protobuf body interpretation requires the matching schema.",
+        ),
         // ---- mail / text -------------------------------------------------
         "smtp" => tcp("smtp"),
         "pop3" => tcp("pop"),
@@ -283,6 +341,35 @@ pub fn wire_for(protocol: &str) -> Wire {
         "xmpp" => tcp("xmpp"),
         "telnet" => tcp("telnet"),
         "ssh" => tcp("ssh"),
+        // No NETCONF dissector exists in this Wireshark build (4.6.8: `tshark -G protocols`
+        // lists none), and NETCONF over SSH is inside the encrypted channel anyway, so the
+        // honest recipe decodes the SSH transport on the NETCONF port.
+        // `rpkirtr` is in the tcp.port decode-as table (tshark -G decodes: tcp.port 323).
+        "rpki_rtr" | "rpki-rtr" | "rpki" => tcp("rpkirtr"),
+        // RDAP is JSON over HTTP; Wireshark has no RDAP dissector, the HTTP one shows it all.
+        // `hl7` decodes MLLP-framed HL7 v2 on tcp.port (tshark -G decodes: tcp.port 2575).
+        "hl7" | "mllp" => tcp("hl7"),
+        // `icap` is in the tcp.port decode-as table (tshark -G decodes: tcp.port 1344).
+        "icap" => tcp("icap"),
+        "fastcgi" => tcp("fcgi"),
+        // `dicom` is in the tcp.port decode-as table (tshark -G decodes: tcp.port 104).
+        "dicom" => tcp("dicom"),
+        // CalDAV and CardDAV are WebDAV verbs (PROPFIND, REPORT, MKCALENDAR) over HTTP.
+        // ACME is JWS-signed JSON over HTTP(S); there is no ACME dissector.
+        "acme" => with_note(tcp("http"), "ACME is application/jose+json over HTTP: JWS-signed POSTs to the directory's URLs, application/problem+json errors and PEM certificate chains; with tls_cert_file the listener is HTTPS and Wireshark shows only TLS without the key."),
+        "caldav" => with_note(tcp("http"), "CalDAV is WebDAV over HTTP: PROPFIND, REPORT and MKCALENDAR with XML bodies, iCalendar in GET and PUT; production servers use HTTPS."),
+        "carddav" => with_note(tcp("http"), "CardDAV is WebDAV over HTTP: PROPFIND, REPORT and extended MKCOL with XML bodies, vCards in GET and PUT; production servers use HTTPS."),
+        // Socket.IO is Engine.IO text over HTTP long-polling or WebSocket; no dedicated dissector.
+        "socketio" => with_note(with_display(tcp("http"), "http || websocket"), "Engine.IO packets are text: long-polling bodies split on U+001E, or one packet per WebSocket text frame (4 = message; 42 = a Socket.IO event)."),
+        // SCIM is JSON (application/scim+json) over HTTP; there is no SCIM dissector.
+        "scim" => with_note(tcp("http"), "SCIM is application/scim+json over HTTP under the service's base path (often /scim/v2); production services use HTTPS."),
+        // Redfish is JSON over HTTP(S); there is no Redfish dissector.
+        "redfish" => with_note(tcp("http"), "Redfish is JSON over HTTP under /redfish/v1; real BMCs use HTTPS, so capture shows TLS unless the service runs plain HTTP as NetGet's does."),
+        "rdap" => with_note(tcp("http"), "RDAP is JSON over HTTP (application/rdap+json); the HTTP dissector shows each query and answer. Production RDAP is HTTPS."),
+        "netconf" => with_note(
+            tcp("ssh"),
+            "NETCONF runs inside an encrypted SSH channel (RFC 6242). Wireshark shows the SSH handshake and encrypted packets; the XML is not visible without the session keys.",
+        ),
         "ftp" => tcp("ftp"),
         "whois" => tcp("whois"),
         "socks5" => tcp("socks"),
@@ -301,12 +388,37 @@ pub fn wire_for(protocol: &str) -> Wire {
         // DRDA registers only a heuristic dissector — it is not in the
         // `tcp.port` decode-as table, so name it in the display filter alone.
         "db2" => with_display(PLAIN_TCP, "drda"),
+        // `srt` is a heuristic UDP dissector (srt_udp, on by default).
+        "srt" => with_display(PLAIN_UDP, "srt"),
+        // Wireshark's RTMP dissector is `rtmpt`, in the tcp.port decode-as table (1935).
+        "rtmp" => tcp("rtmpt"),
+        // WAMP is JSON in WebSocket text frames (subprotocol wamp.2.json); no WAMP dissector.
+        "wamp" => with_note(with_display(tcp("http"), "websocket"), "WAMP messages are JSON arrays in WebSocket text frames: [1, realm, details] is HELLO, 48 CALL, 50 RESULT, 16 PUBLISH, 36 EVENT."),
+        // `fix` is a heuristic TCP dissector (fix_tcp, on by default), not in the decode-as table.
+        "fix" => with_display(PLAIN_TCP, "fix"),
+        // Framed or unframed, binary or compact: the `thrift` dissector reads all four.
+        "thrift" => tcp("thrift"),
+        "bmp" => tcp("bmp"),
         "redis" => tcp("resp"),
         "memcached" => tcp("memcache"),
         "ldap" => tcp("ldap"),
         "kafka" => tcp("kafka"),
         "amqp" => tcp("amqp"),
+        // Wireshark's `amqp` dissector reads 1.0 as well as 0-9-1 from the protocol header.
+        "amqp1" => tcp("amqp"),
         "mqtt" => tcp("mqtt"),
+        "mqtt_sn" => udp("mqttsn"),
+        "nbd" => tcp("nbd"),
+        // RESTCONF is HTTP carrying YANG JSON.
+        "restconf" => tcp("http"),
+        // JMAP is JSON over HTTPS (or HTTP with tls: false); TLS hides it without session keys.
+        "jmap" => with_note(with_display(tcp("http"), "http || tls"), "JMAP requests are JSON POSTs to the session's apiUrl. Over HTTPS (the default) Wireshark needs the TLS session keys to show them; with tls: false the http dissector shows the JSON."),
+        // LwM2M is CoAP: the coap dissector shows the operations (lwm2mtlv decodes TLV bodies).
+        "lwm2m" => udp("coap"),
+        // Wireshark ships no Zenoh dissector (the project offers a Lua plugin).
+        "zenoh" => with_note(PLAIN_TCP, "Wireshark has no built-in Zenoh dissector; the zenoh project publishes a Lua plugin (zenoh-dissector) that decodes this TCP stream."),
+        // Wireshark has no ManageSieve dissector; the protocol is CRLF text, readable as TCP.
+        "managesieve" => with_note(PLAIN_TCP, "ManageSieve is CRLF-delimited text: follow the TCP stream. Commands are atoms with quoted strings or {n+} literals; answers end in OK, NO or BYE."),
         // ---- remote desktop / files / industrial -------------------------
         "vnc" => tcp("vnc"),
         "rdp" => with_display(tcp("tpkt"), "rdp"),
@@ -326,6 +438,10 @@ pub fn wire_for(protocol: &str) -> Wire {
         "mdns" => udp("mdns"),
         "ntp" => udp("ntp"),
         "dhcp" | "bootp" => udp("dhcp"),
+        "dhcpv6" => udp("dhcpv6"),
+        // The WoL dissector is heuristic: it finds a magic packet on any UDP port and cannot
+        // be named in a udp.port decode-as, so only the display filter selects it.
+        "wol" => with_display(PLAIN_UDP, "wol"),
         // `udp port 69` captures only the RRQ/WRQ: TFTP then moves to an ephemeral TID
         // port for DATA/ACK, so a port-69 filter shows the request and none of the transfer.
         "tftp" => with_note(udp("tftp"), TFTP_TID_NOTE),
@@ -378,6 +494,9 @@ pub fn wire_for(protocol: &str) -> Wire {
             L2_ETHER_ONLY_NOTE,
         ),
         "lldp" => with_note(raw("ether proto 0x88cc", "lldp"), L2_ETHER_ONLY_NOTE),
+        "eapol" => with_note(raw("ether proto 0x888e", "eapol"), L2_ETHER_ONLY_NOTE),
+        // Neighbor Discovery is ICMPv6 types 133-137 (RS, RA, NS, NA, Redirect).
+        "ndp" => raw("icmp6", "icmpv6.type >= 133 && icmpv6.type <= 137"),
         "cdp" => with_note(
             raw("ether dst 01:00:0c:cc:cc:cc", "cdp"),
             L2_ETHER_ONLY_NOTE,

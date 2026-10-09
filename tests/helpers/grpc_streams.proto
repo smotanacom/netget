@@ -1,0 +1,16 @@
+syntax = "proto3";
+package streams;
+
+message Message {
+  string name = 1;
+  int32 value = 2;
+  repeated string tags = 3;
+  map<string, int32> counts = 4;
+  Message child = 5;
+}
+service Session {
+  rpc Echo(Message) returns (Message);
+  rpc Watch(Message) returns (stream Message);
+  rpc Collect(stream Message) returns (Message);
+  rpc Chat(stream Message) returns (stream Message);
+}

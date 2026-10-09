@@ -23,7 +23,7 @@
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features rawip \
-//!       --test server::rawip::e2e_test -- --test-threads=100
+//!       --test server -- server::rawip::e2e_test --test-threads=100
 
 #[cfg(all(test, feature = "rawip"))]
 mod tests {

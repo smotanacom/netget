@@ -1,0 +1,26 @@
+netget: downloading https://github.com/smotanacom/netget/releases/download/v0.0.0-dev/netget-aarch64-apple-darwin.tar.gz
+✔ checksum selection rejects absent and ambiguous entries (1.030542ms)
+netget: downloading https://github.com/smotanacom/netget/releases/download/v0.0.0-dev/netget-aarch64-apple-darwin.tar.gz
+✔ verified archive installs atomically and removes all staging files (196.761709ms)
+netget: downloading https://github.com/smotanacom/netget/releases/download/v0.0.0-dev/netget-aarch64-apple-darwin.tar.gz
+netget: downloading https://github.com/smotanacom/netget/releases/download/v0.0.0-dev/netget-aarch64-apple-darwin.tar.gz
+✔ corrupt archives and absent manifests fail before extraction (50.887042ms)
+✔ rename failure removes cache staging and extracted temporary files (78.188292ms)
+✔ download rejects oversized and stalled bodies with bounded waiting (35.27275ms)
+✔ launcher forwards a second termination signal to a still-running child (177.343125ms)
+✔ NETGET_BINARY preserves arguments, stdout and child exit status (174.490917ms)
+✔ download cache is separated by platform and architecture (68.177625ms)
+✔ numeric fields reject integers that JavaScript silently rounds (1.87ms)
+✔ raw-to-form conversion refuses values it would change (0.5075ms)
+✔ literal __proto__ JSON fields remain ordinary data through the form (0.533666ms)
+✔ negotiation, UTF-8 and CRLF survive every possible TCP split (2.553833ms)
+✔ one-byte chunks and empty chunks preserve parser state (0.194833ms)
+✔ incomplete negotiations never reply with an invented option (0.085833ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 14
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 657.599917

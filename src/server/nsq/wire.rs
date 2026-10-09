@@ -24,6 +24,9 @@
 //! Error codes and texts follow nsqd 1.3's `protocol_v2.go` so a client that matches on them
 //! sees what it would see from nsqd. Every size a peer declares is judged against its bound
 //! from the size field alone, before anything is allocated for the body.
+//! FIN, REQ and TOUCH require the [16-byte hexadecimal message ID from the protocol
+//! specification](https://nsq.io/clients/tcp_protocol_spec.html#fin). This is stricter than
+//! nsqd 1.3's length-only check: control bytes cannot become command delimiters on re-encoding.
 
 use serde_json::{json, Value};
 
@@ -452,7 +455,10 @@ fn check_mpub_count(count: i64) -> Result<(), WireError> {
 }
 
 fn message_id(param: &str) -> Result<String, WireError> {
-    if param.len() != MSG_ID_LEN {
+    // IDs are 16 ASCII hex bytes in the NSQ wire specification. Length alone
+    // admitted control bytes: an ID ending in CR, followed by an ignored extra
+    // parameter, changed meaning when re-encoding put the CR immediately before LF.
+    if param.len() != MSG_ID_LEN || !param.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(WireError::fatal("E_INVALID", "Invalid Message ID"));
     }
     Ok(param.to_string())

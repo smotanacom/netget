@@ -13,7 +13,7 @@
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features openid \
-//!       --test server::openid::connection_bounds_test -- --test-threads=100
+//!       --test server -- server::openid::connection_bounds_test --test-threads=100
 
 #[cfg(all(test, feature = "openid"))]
 mod openid_connection_bounds {

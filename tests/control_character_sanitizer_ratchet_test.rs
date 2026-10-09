@@ -37,6 +37,107 @@ use std::path::{Path, PathBuf};
 /// The count is the number of occurrences allowed in that file. It may only go down.
 const ALLOWED: &[(&str, usize, &str)] = &[
     (
+        "src/client/webtransport/mod.rs",
+        1,
+        "validator: the session path becomes the request's :path; one with whitespace or a \
+         control character is refused at startup rather than altered",
+    ),
+    (
+        "src/server/managesieve/proto.rs",
+        1,
+        "validator: RFC 5804 forbids control characters in script names; a name with one is \
+         refused with NO rather than altered",
+    ),
+    (
+        "src/client/loki/transport.rs",
+        1,
+        "validator: refuse malformed Loki error text containing terminal controls outside \
+         tab/CR/LF; neither filter nor silently change the error the peer supplied",
+    ),
+    (
+        "src/server/loki/actions.rs",
+        1,
+        "validator: refuse a model-selected Loki error message with terminal controls outside \
+         tab/CR/LF rather than changing the HTTP response decision",
+    ),
+    (
+        "src/server/fastcgi/record.rs",
+        1,
+        "validator: refuse a CR, LF or other control character in a CGI response header value \
+         the handler supplied (which would end the header block and forge the next header) \
+         instead of rewriting the value",
+    ),
+    (
+        "src/client/acme/mod.rs",
+        1,
+        "validator: refuse a directory_path startup parameter containing a control character or \
+         a space, which would otherwise be pasted into the directory URL",
+    ),
+    (
+        "src/client/wamp/mod.rs",
+        1,
+        "validator: refuse a path or authid startup parameter containing a control character, \
+         which would otherwise reach the request line or HELLO",
+    ),
+    (
+        "src/server/amqp1/message.rs",
+        1,
+        "encoding predicate: a binary data section is shown to the handler as text only when it is \
+         UTF-8 without control characters, and otherwise by its length; nothing is filtered",
+    ),
+    (
+        "src/server/dicom/dataset.rs",
+        1,
+        "validator: refuse a control character in a DICOM string value the model supplied \
+         (PS3.5 6.2 allows them only in LT, ST and UT), since a rewritten value would name \
+         a different patient, study or UID",
+    ),
+    (
+        "src/server/wamp/uri.rs",
+        1,
+        "validator: a WAMP URI with a control character is refused as invalid_uri, never \
+         rewritten, because a rewritten URI would name another topic or procedure",
+    ),
+    (
+        "src/server/redfish/model.rs",
+        1,
+        "validator: refuse a Redfish request path containing a control character instead of \
+         rewriting it, because a rewritten path would name a different resource",
+    ),
+    (
+        "src/server/ocpp/frame.rs",
+        1,
+        "validator: refuse an OCPP message id containing a control character instead of \
+         rewriting it, because a changed id would no longer correlate the answer to its CALL",
+    ),
+    (
+        "src/server/hl7/wire.rs",
+        2,
+        "validator: refuse a CR, LF or other control character in an HL7 field (which would end \
+         the segment and forge the next) or in a parsed segment, rather than strip it and change \
+         the clinical value the message carries",
+    ),
+    (
+        "src/server/rdap/query.rs",
+        2,
+        "validator: refuse an RDAP query value or redirect URL containing a control character \
+         (400 / invalid action) rather than strip it, because the cleaned value would name a \
+         different object than the one requested",
+    ),
+    (
+        "src/client/oci_registry/api.rs",
+        1,
+        "validator: refuse a control byte inside a registry-supplied WWW-Authenticate \
+         quoted-string rather than strip it, because rewriting the realm would change which \
+         token endpoint the client contacts",
+    ),
+    (
+        "src/client/http_fetch/transport.rs",
+        1,
+        "validator: reject unescaped whitespace and controls before URL parsers can silently \
+         remove them and change the requested target; no URL bytes are filtered or rewritten",
+    ),
+    (
         "src/client/nats/actions.rs",
         1,
         "validator: a NATS control line is space-delimited and CRLF-terminated, so check_token \
@@ -70,6 +171,12 @@ const ALLOWED: &[(&str, usize, &str)] = &[
         1,
         "validator: a branch name containing whitespace or a control character is one git \
          itself refuses, so the model gets an error rather than a silently different ref",
+    ),
+    (
+        "src/server/graphite/codec.rs",
+        1,
+        "validator: Metric::validate rejects whitespace and control characters in a Carbon \
+         path; rewriting it would collect a different metric from the one the sender named",
     ),
     (
         "src/server/kafka/mod.rs",
@@ -113,7 +220,11 @@ const ALLOWED: &[(&str, usize, &str)] = &[
 /// register; `src/server/openvpn/packet.rs` shows that even then the receiver can be something
 /// other than a `char`, which is why the allow-list carries a reason per file rather than the
 /// scan trying to infer one.
-const PREDICATES: &[&str] = &["is_ascii_control", "is_control()"];
+///
+/// `char::is_control` is the same predicate passed as a function path —
+/// `s.chars().any(char::is_control)` — which a scan for the call form never saw. Forty-five
+/// validators used it unnoticed; they now call `crate::utils::sanitize::has_controls`.
+const PREDICATES: &[&str] = &["is_ascii_control", "is_control()", "char::is_control"];
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {

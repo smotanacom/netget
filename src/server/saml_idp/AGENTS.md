@@ -1,0 +1,240 @@
+# saml_idp — SAML 2.0 Identity Provider simulator
+
+Serves the IDP side of the SAML 2.0 Web Browser SSO profile over hyper HTTP/1.1 and asks the
+model what to answer. `DevelopmentState::Experimental`, group `Authentication`, keywords
+`saml idp` / `saml identity provider` / `identity provider` / `idp` / `saml-idp`. Feature
+`saml-idp = []` — no dependencies beyond what the binary already links.
+
+**Read this first: there is no signing key in this protocol.** The model writes the assertion
+XML and NetGet only base64-encodes it into the HTTP-POST form. An assertion carries a
+`<ds:Signature>` only if the model invents one, and an invented signature will not verify
+against anything. Inbound `AuthnRequest` signatures are not checked either, there is no replay
+protection, and no user exists. A real SP configured to require signed assertions — which is
+most of them — will reject what this produces. Use it to exercise SPs that accept unsigned
+assertions, and as a honeypot.
+
+The `description()` used to read "generates signed SAML assertions". It does not, and now says
+so; the same claim must not come back into `metadata()`, the docs or the action descriptions.
+
+## Files
+
+| File | Contents |
+|---|---|
+| `mod.rs` | `SamlIdpServer::spawn_with_llm_actions`, `handle_saml_idp_request`, `build_safe_response` |
+| `actions.rs` | `SamlIdpProtocol` (`Protocol` + `Server`), three sync actions, `build_saml_post_form`, `escape_html`, `SAML_IDP_REQUEST_EVENT` |
+
+No `startup_params`: `get_startup_parameters()` is the empty default, so `StartupParams` rejects
+any key a caller passes. The entity ID, endpoints and attribute policy all come from the
+instruction.
+
+## One event, three actions
+
+`saml_idp_request` fires for every request, carrying `method`, `path`, `query`, `headers`,
+`body` and `client_ip`. There is no routing: `/sso`, `/SingleSignOnService`, `/metadata` and
+anything else all arrive the same way and the model decides from `path`.
+
+Bindings: HTTP-Redirect puts the `AuthnRequest` in `query`, HTTP-POST puts it in `body`. Both
+reach the model as text — it is the model's job to base64-decode and read the request if the
+scenario needs it.
+
+| Action | Produces |
+|---|---|
+| `send_saml_response` | `200 text/html` — an auto-submitting HTTP-POST form carrying the assertion |
+| `send_metadata` | `200 application/samlmetadata+xml` |
+| `send_error_response` | model-chosen status (default 403), an HTML error page |
+
+The event's `.with_actions(...)` holds all three real definitions. That list — not
+`get_sync_actions()` — is what `call_llm` advertises to the model.
+
+Executors return `ActionResult::Output` holding `{"status", "headers", "body"}`, which
+`handle_saml_idp_request` merges into the response.
+
+## `acs_url` is required, and used to be missing entirely
+
+`send_saml_response` takes `assertion_xml`, **`acs_url`** and optional `relay_state`.
+
+`acs_url` is new and required. The generated form's action attribute was previously the literal
+string `{{ACS_URL}}` — nothing ever substituted it, and the action had no parameter that could
+have. Every assertion this IDP produced was posted by the browser to a relative path named
+`{{ACS_URL}}` and reached no SP at all: the protocol's central operation did not work. Pass the
+`AssertionConsumerServiceURL` from the AuthnRequest, or the SP's configured ACS endpoint.
+
+## Base64 is ours, not the model's
+
+The model supplies **plain assertion XML**. `build_saml_post_form` base64-encodes it into the
+`SAMLResponse` form field. Base64 on the wire is what SAML specifies, but the project rule
+against handing models encoded blobs still applies to the action parameters — do not add a
+parameter that asks for base64, and do not accept pre-encoded XML.
+
+## HTML escaping
+
+`escape_html` covers `& < > " '` and is applied to `acs_url`, `relay_state` and
+`error_message`. All three are model output derived from an untrusted request; unescaped, a `"`
+broke out of the surrounding attribute and injected markup into a page the browser renders and
+auto-submits. `RelayState` is the sharp one, because it is normally echoed straight back from
+whatever the SP sent.
+
+The base64 `SAMLResponse` field is safe by construction (the alphabet excludes `"` and `<`).
+
+## Nothing here may panic
+
+`build_safe_response` is the only place a `Response` is built: an out-of-range status becomes
+500 and a header hyper rejects is dropped with a warning.
+
+`send_error_response` documents `status_code` as a model-supplied parameter, and the old code
+did `Response::builder().status(status as u16)…body(..).unwrap()`, so `status_code: 1000`
+panicked inside the connection task instead of answering. Local copy of
+`http_common::handler::build_safe_response`, which the `saml-idp` feature cannot reach because
+`http_common` is gated on `feature = "http"`.
+
+## Failure handling — the peer always gets an answer, and never a diagnosis
+
+`handle_saml_idp_request` has exactly one reply for everything it cannot turn into a SAML
+Response: `fail_closed_response`. It is never a 2xx and never a `SAMLResponse` form, because a
+2xx carrying an assertion is the only thing an SP accepts as a sign-in and no failure path can
+produce one.
+
+| Situation | Wire | Log |
+|---|---|---|
+| Model returns `send_saml_response` / `send_metadata` (status < 400) | its response | `decision=model_answer` |
+| Model returns `send_error_response` (status ≥ 400) | the model's status and page | `decision=model_reject` |
+| Model returns zero actions | 500 | `decision=fail_closed_no_action` |
+| Actions ran but none yielded a status/headers/body | 500 | `decision=fail_closed_unusable_output` |
+| LLM call errored or timed out | 503 + `Retry-After: 1` when overloaded, else 500 | `decision=fail_closed_llm_error category=overloaded\|unavailable` |
+
+The last row's split is deliberate: `WireFailure::Overloaded` is transient, so a client should
+back off and retry rather than record a permanent fault.
+
+The body on every fail-closed path is `WireFailure::prefixed_text()`, a `&'static str`. **The
+error itself never reaches the socket** — not the backend URL, the model name, a file path or
+an `anyhow` chain. It goes to `tracing::error!` and the status stream. `tests/wire_failure_test.rs`
+fails the build if the leaked idioms reappear; the E2E test
+`test_saml_idp_fails_closed_when_model_answers_nothing` additionally asserts the live response
+body carries none of those tokens.
+
+`fail_closed_unusable_output` is the row that used to be missing: the response loop defaulted
+to status 200 with an empty body, so a model whose output was not response-shaped JSON produced
+`200 OK` with nothing in it — read by an SP as a completed response with no assertion rather
+than as a server fault.
+
+## Hostile input
+
+Three bounds. For an IDP the "affirmative default" class is not cosmetic — a `2xx` is the only
+thing an SP treats as a completed sign-in, so a default that produces one *is* the
+vulnerability. `tests/server/saml_idp/hardening_test.rs` covers the first two.
+
+- **`MAX_REQUEST_BYTES` = 256 KiB.** `/sso` takes an anonymous POST and the body reaches the
+  model verbatim as prompt text, so the previous unbounded `req.collect()` let one request grow
+  the process without limit and drive an LLM call with megabytes of attacker-chosen prompt.
+  Over the limit is `413` and a refusal — never a truncated body, which would arrive at the
+  model as a well-formed request whose AuthnRequest happened to end early.
+- **`status_or` narrows a model-supplied status with `u16::try_from`.** `65736 as u16` is
+  `200`. `send_error_response` — the model's only way to refuse to authenticate — therefore
+  arrived with the status that says the opposite. Both `mod.rs` and the executor now refuse the
+  wrap; the executor additionally pins `send_error_response` to 400–599, since an error action
+  has no business producing a 2xx at all.
+- **Headers alone do not count as a response.** `produced_response` was set by a `headers`
+  object as well as by `status`/`body`, so JSON carrying only headers left the default `200`
+  with an empty body standing — the exact fail-open that flag exists to prevent. Every action
+  this protocol defines sets a status and a body, so only those two count now.
+
+After hyper flushes a body-limit refusal, the connection half-closes its write side and
+uses `src/server/accept_bounded.rs`'s `drain_after_response` to discard at most 2 MiB of the
+remaining upload for at most two seconds in an 8 KiB buffer. This keeps an upload already
+in flight from resetting the socket and replacing the 413 with `ECONNRESET`. The drain
+starts only after the HTTP connection completes; a model call or a parked manual handler
+remains outside these deadlines. The existing hardening test checks the 413 without a
+model call, and the shared `response_drain_tests` cover both discard bounds.
+
+**No XML is parsed here.** The `AuthnRequest` is passed to the model as text and NetGet never
+builds a tree, so the entity-expansion and unbounded-nesting classes do not arise on this path.
+(A non-UTF-8 body is reported to the model as `<N bytes of non-UTF-8 data…>`; it used to be
+base64-encoded into the event, which the project rule forbids and which no model can decode.)
+
+## Storage
+
+None, per the project rule. No sessions, no user directory, no issued-assertion log. If a
+scenario needs continuity, the model keeps it in server memory or the instruction states a
+rule.
+
+## Not implemented
+
+XML signing and signature verification, certificate/key management, SingleLogout, artifact
+binding, encrypted assertions, MFA, replay protection, and TLS.
+
+**Request-only.** `metadata()` declares `.request_only(…)`: "SAML is HTTP request/response; a
+server cannot send a peer anything unprompted". The dashboard's `[ send message ]` on a peer is
+disabled and shows that reason, and MCP `send_to_peer` refuses with it.
+
+## Examples
+
+```text
+Start a SAML Identity Provider on port 8080.
+On /metadata return an EntityDescriptor with entityID http://localhost:8080 and an
+HTTP-POST SSO endpoint at http://localhost:8080/sso.
+On /sso authenticate everyone as 'testuser' with email test@example.com, issue an
+assertion valid for one hour, and post it to http://localhost:8081/acs.
+```
+
+Deterministic equivalent — no LLM call per request:
+
+```json
+"event_handlers": [{"event_pattern": "saml_idp_request", "handler": {"type": "static",
+  "actions": [{"type": "send_saml_response",
+    "assertion_xml": "<saml:Assertion xmlns:saml=\"urn:oasis:names:tc:SAML:2.0:assertion\"><saml:Subject><saml:NameID>testuser</saml:NameID></saml:Subject></saml:Assertion>",
+    "acs_url": "http://localhost:8081/acs"}]}}]
+```
+
+## Tests
+
+`tests/server/saml_idp/e2e_test.rs`, declared in `tests/server/mod.rs`. Mocked LLM plus
+`reqwest` as a plain HTTP client — there is no SAML library anywhere in the suite, so the
+tests assert on the *binding* (base64 `SAMLResponse` posted to the caller's `acs_url`,
+`RelayState` echoed and escaped, metadata media type, model-chosen error status) and never on
+authenticity. See `tests/server/saml_idp/AGENTS.md`.
+
+Pairs naturally with `saml_sp` on another port: point `acs_url` at the SP's `/acs`.
+
+## References
+
+SAML 2.0 Core, SAML 2.0 Web Browser SSO Profile, SAML 2.0 Bindings (OASIS).
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever,
+pre-authentication, and a hundred of them was a free denial of service on a server that would
+happily accept a hundred more. It now declares both halves; the constants and the argument for
+each live beside them in `src/server/saml_idp/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_BYTE_READ_TIMEOUT` | 30s | HTTP is client-speaks-first, so a peer that has completed the handshake and sent no byte has asked nothing and negotiated nothing — the state carries no protocol yet, which is why this number is the same across netget's HTTP family. Apache's `mod_reqtimeout` gives the request header 20s and nginx's `client_header_timeout` 60s. Enforced with `TcpStream::peek` before the socket reaches hyper, so the request line is still there afterwards. |
+| `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 60s | These endpoints are reached two ways and the two pull in opposite directions: a **browser** does one redirect round and never comes back on that connection (Apache's `KeepAliveTimeout` of 5s is tuned for exactly that), while a **relying party's back-channel** client — token exchange, introspection, a JWKS or metadata fetch — reuses a pooled connection (nginx's 75s is tuned for that). 60s is comfortably past any pooled back-channel round trip and does not let a browser that navigated away hold a slot for minutes. Nothing here streams or long-polls. **The five-minute numbers these specifications do quote are not this number**: an assertion's `NotOnOrAfter` and an `id_token`'s `exp` bound how long a *credential* may be presented, not how long a socket may be silent. |
+| `MAX_CONNECTIONS` | 256 | The shared default. Each admitted connection may buffer one body of up to 256 KiB, well inside the ~1 GiB ceiling netget's HTTP family is held to; a protocol declares a smaller number only when its per-connection cost is larger. Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`**, written straight onto the socket — the peer has sent no request line for hyper to answer — and logged `decision=fail_closed_connection_cap`. Fixed bytes, so nothing derived from an error can reach the wire. |
+
+**NetGet's own SAML client is *lazy*, so it is never the silent peer this bound closes:**
+`src/client/saml/` contains no `reqwest`, `TcpStream` or `lookup_host` at all — `initiate_sso`
+builds a redirect URL for a browser to carry — `PROTOCOL_QUALITY.md`'s three-state test.
+
+**The deadline covers the read and nothing else.** hyper owns every read once `serve_connection`
+starts, and it keeps polling the connection for more input *while a request is being answered* —
+so a deadline on those reads would be wrong here, not merely awkward. The idle bound is a
+watchdog over `ConnectionActivity` instead, which reports a connection with work in flight as not
+idle at all. The model round-trip, and an event a `manual` rule parked for a human
+(`src/state/intercepts.rs`, 300s by default), are therefore outside every deadline by
+construction: an answer that takes minutes can never close the connection it is an answer for.
+That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse — TFTP evicted
+live transfers because "idle" was measured wrongly.
+
+**hyper's own `header_read_timeout` is not this bound.** Its 30-second default is inert unless
+`http1::Builder::timer` is also set, which nothing here does: hyper downgrades a defaulted
+duration to `None` when no timer is present and applies no deadline at all. That is why the
+`peek` is not redundant.
+
+`tests/server/saml_idp/connection_bounds_test.rs` drives all three from the wire, with three
+sockets on one server whose only rule is `*` → `manual`: a silent peer must be closed after the
+first-byte bound, a peer that sends a request line and then stalls (slowloris) after the idle
+bound, and a peer whose request is parked for a human must **not** be closed at all. The shared
+driver and the removal-verification notes are in `tests/helpers/http_bounds.rs`.
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound disappears.

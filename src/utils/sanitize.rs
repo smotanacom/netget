@@ -33,6 +33,14 @@
 //! cannot be asked to resend. Those sites stay hand-rolled on purpose and are listed, with the
 //! reason, in `tests/control_character_sanitizer_ratchet_test.rs`.
 
+/// Whether `s` holds a control character, for a **validator**: a site that refuses such a
+/// value (the model's answer, or a peer's field it will not echo) instead of rewriting it.
+/// Refusing is right where silently rewriting would make the wire disagree with what was
+/// decided; everywhere a value must be kept, use one of the rewriting helpers below.
+pub fn has_controls(s: &str) -> bool {
+    s.chars().any(char::is_control)
+}
+
 /// Replace every control character with a space, for a value that occupies one line of a
 /// structured record. See the module docs for why this substitutes rather than deletes.
 pub fn line_field(s: &str) -> String {

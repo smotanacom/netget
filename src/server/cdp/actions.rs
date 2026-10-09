@@ -331,6 +331,19 @@ impl Protocol for CdpProtocol {
         ]
     }
 
+    fn startup_privilege_requirement(
+        &self,
+
+        startup_params: Option<&serde_json::Value>,
+    ) -> crate::protocol::metadata::PrivilegeRequirement {
+        // The UDP test transport carries the same frames over an ordinary socket.
+
+        crate::llm::actions::protocol_trait::unless_udp_transport(
+            self.metadata().privilege_requirement,
+            startup_params,
+        )
+    }
+
     fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
         use crate::protocol::metadata::{
             DevelopmentState, PrivilegeRequirement, ProtocolMetadataV2,

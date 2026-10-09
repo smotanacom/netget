@@ -28,7 +28,7 @@
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features ident \
-//!       --test client::ident::e2e_test -- --test-threads=100
+//!       --test client -- client::ident::e2e_test --test-threads=100
 
 #![cfg(feature = "ident")]
 

@@ -85,6 +85,27 @@ fn dns_is_served_on_both_transports() {
 }
 
 #[test]
+fn gelf_captures_both_transports_without_invalid_tcp_decode_as() {
+    for name in ["GELF", "Graylog"] {
+        let plan = CapturePlan::build(server(name, "127.0.0.1", 12201), Platform::Linux);
+        assert_eq!(plan.capture_filter, "port 12201");
+        assert_eq!(
+            plan.display_filter,
+            "(tcp.port == 12201 || udp.port == 12201)"
+        );
+        assert_eq!(plan.decode_as, None);
+        assert!(plan
+            .notes
+            .iter()
+            .any(|note| note.contains("udp.port==PORT,gelf")));
+        assert!(plan
+            .notes
+            .iter()
+            .any(|note| note.contains("NUL-delimited JSON")));
+    }
+}
+
+#[test]
 fn raw_protocols_have_no_port_and_use_the_declared_interface() {
     let mut target = server("ICMP", "", 0);
     target.interface = Some("en0".into());
@@ -367,12 +388,95 @@ fn the_vrrp_entry_warns_that_carp_needs_its_own_decode_as() {
 /// gets "expression rejects all packets" with no idea why.
 #[test]
 fn the_ethernet_only_filters_say_they_will_not_work_on_loopback() {
-    for name in ["stp", "lldp", "cdp"] {
+    for name in ["stp", "lldp", "cdp", "eapol"] {
         let plan = CapturePlan::build(server(name, "", 0), Platform::Linux);
         assert!(
             plan.notes.iter().any(|n| n.contains("loopback")),
             "{name} must warn about the loopback rejection: {:?}",
             plan.notes
         );
+    }
+}
+
+#[test]
+fn flow_export_collectors_select_their_udp_dissectors() {
+    for (name, port, dissector) in [("IPFIX", 4739, "cflow"), ("sFlow", 6343, "sflow")] {
+        let plan = CapturePlan::build(server(name, "127.0.0.1", port), Platform::Linux);
+        assert_eq!(plan.capture_filter, format!("udp port {port}"));
+        assert_eq!(
+            plan.display_filter,
+            format!("udp.port == {port} && {dissector}")
+        );
+        assert_eq!(
+            plan.decode_as,
+            Some(format!("udp.port=={port},{dissector}"))
+        );
+    }
+}
+
+#[test]
+fn remote_write_names_select_the_http_carrier() {
+    for name in [
+        "PrometheusRemoteWrite",
+        "prometheus-remote-write",
+        "remote-write",
+        "prometheus-write",
+    ] {
+        let plan = CapturePlan::build(server(name, "127.0.0.1", 9090), Platform::Linux);
+        assert_eq!(plan.capture_filter, "tcp port 9090");
+        assert_eq!(plan.display_filter, "tcp.port == 9090 && http");
+        assert_eq!(plan.decode_as, Some("tcp.port==9090,http".into()));
+    }
+}
+
+#[test]
+fn new_web_rpc_and_v9_names_select_their_native_carriers() {
+    for (name, port, transport, dissector) in [
+        ("gRPC-Web", 8080, "tcp", "http"),
+        ("grpcweb", 8080, "tcp", "http"),
+        ("grpc web", 8080, "tcp", "http"),
+        ("NetFlowV9", 2055, "udp", "cflow"),
+        ("netflow-v9", 2055, "udp", "cflow"),
+        ("netflow_v9", 2055, "udp", "cflow"),
+    ] {
+        let plan = CapturePlan::build(server(name, "127.0.0.1", port), Platform::Linux);
+        assert_eq!(plan.capture_filter, format!("{transport} port {port}"));
+        assert_eq!(
+            plan.display_filter,
+            format!("{transport}.port == {port} && {dissector}")
+        );
+        assert_eq!(
+            plan.decode_as,
+            Some(format!("{transport}.port=={port},{dissector}"))
+        );
+    }
+}
+
+/// DHCPv6 and Wake-on-LAN were missing from the table and so read as plain TCP. DHCPv6 has a
+/// decode-as; WoL's dissector is heuristic (`udp.port==9,wol` is refused by tshark 4.6), so
+/// it gets UDP with a display filter and no decode-as.
+#[test]
+fn dhcpv6_and_wake_on_lan_are_udp_with_their_dissectors() {
+    let plan = CapturePlan::build(server("dhcpv6", "", 547), Platform::Linux);
+    assert_eq!(plan.wire.transport, Transport::Udp);
+    assert_eq!(plan.wire.decode_as, Some("dhcpv6"));
+    let plan = CapturePlan::build(server("wol", "", 9), Platform::Linux);
+    assert_eq!(plan.wire.transport, Transport::Udp);
+    assert_eq!(plan.wire.decode_as, None);
+    assert_eq!(plan.display_filter, "udp.port == 9 && wol");
+}
+
+/// EAPOL is an EtherType and NDP is ICMPv6, so both are a capture filter plus a display
+/// filter and never a decode-as. Every name was checked with tshark 4.6.8 `-Y`.
+#[test]
+fn eapol_and_ndp_filter_below_the_transport() {
+    for (name, filter, display) in [
+        ("eapol", "ether proto 0x888e", "eapol"),
+        ("ndp", "icmp6", "icmpv6.type >= 133 && icmpv6.type <= 137"),
+    ] {
+        let plan = CapturePlan::build(server(name, "", 0), Platform::Linux);
+        assert_eq!(plan.capture_filter, filter, "{name}");
+        assert_eq!(plan.display_filter, display, "{name}");
+        assert_eq!(plan.decode_as, None, "{name} needs no decode-as clause");
     }
 }

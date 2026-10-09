@@ -67,14 +67,28 @@ const UNDECLARED_CONNECTIONLESS_BASELINE: &[&str] = &[];
 /// with its reason; the per-protocol `CLAUDE.md` failure section says why.
 const DOCUMENTED_SILENT: &[&str] = &[
     "arp",
+    // RFC 7854 defines no collector-to-router message; failed handling closes the session.
+    "bmp",
     "bootp",
     "can",
     "cdp",
     "datalink",
     "dhcp",
+    // Forward has no negative ACK; failed handling closes without acknowledgement.
+    "fluent_forward",
+    // GELF TCP and UDP collectors define no application acknowledgement or negative reply.
+    "gelf",
+    // One-way Carbon metrics have no application acknowledgement or negative reply.
+    "graphite",
     "hsrp",
     "icmp",
     "igmp",
+    // RFC 7011 UDP collection has no acknowledgement or negative response.
+    "ipfix",
+    // sFlow v5 UDP collection has no application reply or negative acknowledgement.
+    "sflow",
+    // RFC 3954 UDP flow collection has no acknowledgement or refusal message.
+    "netflow_v9",
     "ipsec",
     "isis",
     "lldp",
@@ -87,6 +101,8 @@ const DOCUMENTED_SILENT: &[&str] = &[
     "rip",
     "rtp",
     "ssdp",
+    // StatsD and DogStatsD are one-way UDP; neither defines an acknowledgment or error reply.
+    "statsd",
     "stp",
     "syslog",
     "tuntap",

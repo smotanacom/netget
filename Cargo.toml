@@ -1,6 +1,6 @@
 [package]
 name = "netget"
-version = "0.2.1"
+version = "0.3.3"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/smotanacom/netget"
@@ -45,6 +45,7 @@ portable-base = [
     "dc",
     "dns",
     "dot",
+    "doq",
     "doh",
     "dhcp",
     "bootp",
@@ -55,6 +56,7 @@ portable-base = [
     "ident",
     "gopher",
     "dict",
+    "nut",
     "beanstalkd",
     "zabbix",
     "gearman",
@@ -67,6 +69,62 @@ portable-base = [
     "snmp",
     "igmp",
     "syslog",
+    "statsd",
+    "graphite",
+    "gelf",
+    "fluent-forward",
+    "influxdb",
+    "loki",
+    "ipfix",
+    "netflow-v9",
+    "tacacs",
+    "diameter",
+    "netconf",
+    "rpki_rtr",
+    "rdap",
+    "hl7",
+    "icap",
+    "dc_peer",
+    "adc",
+    "adc_peer",
+    "soulseek",
+    "soulseek_peer",
+    "gnutella",
+    "s7comm",
+    "ethernet_ip",
+    "dnp3",
+    "iec104",
+    "bacnet",
+    "opcua",
+    "ocpp",
+    "a2a",
+    "graphql",
+    "fastcgi",
+    "redfish",
+    "scim",
+    "socketio",
+    "caldav",
+    "carddav",
+    "dicom",
+    "acme",
+    "fix",
+    "wamp",
+    "rtmp",
+    "srt",
+    "amqp1",
+    "thrift",
+    "bmp",
+    "mqtt_sn",
+    "nbd",
+    "managesieve",
+    "zenoh",
+    "lwm2m",
+    "restconf",
+    "webtransport",
+    "jmap",
+    "epp",
+    "sflow",
+    "prometheus-remote-write",
     "ssh",
     "ssh-agent",
     "svn",
@@ -130,6 +188,9 @@ portable-base = [
     "nostr",
     "mcp",
     "grpc",
+    "grpc-web",
+    "connect_rpc",
+    "gnmi",
     "xmlrpc",
     "tor",
     "vnc",
@@ -177,7 +238,7 @@ icmp = ["pnet", "socket2/all"]  # ICMP (Internet Control Message Protocol) uses 
 ndp = ["pnet", "socket2/all"]  # IPv6 Neighbor Discovery (ICMPv6) - raw socket via pnet + socket2
 dhcpv6 = ["dhcproto"]  # DHCPv6 (RFC 8415) server on UDP 547 - reuses dhcproto
 tuntap = ["dep:tun"]  # TUN/TAP interface endpoint - every routed IP packet becomes an event
-rawip = ["pnet", "socket2/all"]  # Generic raw IP protocol-N listener (GRE 47, ESP 50, ...)
+rawip = ["socket2/all"]  # Generic raw IP protocol-N listener (GRE 47, ESP 50, ...) - raw socket via socket2; the codec is hand-written
 gtp = []  # GTP-C / GTP-U mobile core (UDP 2123/2152) - hand-rolled, no extra deps
 m3ua = []  # M3UA/SIGTRAN - SCTP where available, refuses elsewhere; no extra deps
 can = ["dep:socketcan"]  # CAN bus via SocketCAN - Linux only, target-gated like bluetooth-ble-beacon
@@ -190,6 +251,7 @@ eapol = ["pnet", "dep:pcap", "dep:md-5"]  # EAPOL / 802.1X authenticator - libpc
 wol = []  # Wake-on-LAN magic packet listener (UDP 9) - no extra deps
 dc = ["dep:rustls", "dep:tokio-rustls", "dep:webpki-roots"]  # DC (Direct Connect) - supports TLS (DCCS)
 dns = ["hickory-server", "hickory-proto", "dep:hickory-client"]
+doq = ["dns", "dep:quinn", "dep:rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots"]  # RFC 9250 DNS over QUIC server and client
 dot = ["dns", "hickory-server/dns-over-rustls", "hickory-proto/dns-over-rustls", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots"]  # DNS-over-TLS server
 doh = ["dns", "hickory-server/dns-over-https-rustls", "hickory-proto/dns-over-https-rustls", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:h2"]  # DNS-over-HTTPS server
 dhcp = ["dhcproto"]
@@ -220,7 +282,8 @@ whois = []  # WHOIS uses only TCP, no extra deps
 nats = []  # NATS text-protocol pub/sub server - hand-rolled, no extra deps
 stomp = []  # STOMP 1.2 text-frame messaging server - hand-rolled, no extra deps
 ident = []  # Ident (RFC 1413) identification server - hand-rolled, no extra deps
-gemini = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"]  # Gemini (gemini://) capsule over TLS - rustls + rcgen, hand-rolled framing
+gemini = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots"]  # Gemini (gemini://) capsule over TLS - rustls + rcgen, hand-rolled framing
+nut = [] # NUT UPS management client/server, pure Tokio
 dict = []  # DICT (RFC 2229) dictionary server - hand-rolled line protocol, no extra deps
 beanstalkd = []  # Beanstalkd work-queue server - hand-rolled text protocol, no extra deps
 zabbix = []  # Zabbix trapper (zabbix_sender) - hand-rolled ZBXD framing, serde_json only
@@ -234,6 +297,62 @@ netbios-ns = []  # NetBIOS Name Service (RFC 1002) - hand-rolled name encoding
 snmp = ["rasn-snmp", "rasn", "rasn-smi", "dep:snmp"]
 igmp = []  # IGMP multicast group management, no extra deps
 syslog = ["syslog_loose"]
+statsd = [] # StatsD / DogStatsD UDP collector and emitter; native codec
+graphite = [] # Carbon plaintext TCP collector and emitter; native codec
+gelf = ["dep:flate2"] # GELF 1.1 UDP/TCP structured logging
+fluent-forward = ["dep:flate2"] # MessagePack Forward logs and ACKs
+influxdb = ["dep:flate2"] # Typed InfluxDB v2 HTTP write collector/emitter
+loki = ["dep:flate2"] # Typed Loki JSON/gzip and native protobuf/Snappy push
+ipfix = [] # Native typed UDP IPFIX templates/options/records
+netflow-v9 = [] # Native RFC3954 v9 UDP templates/options/records
+tacacs = ["dep:md-5"] # Native selected RFC8907 legacy AAA; existing MD5
+diameter = [] # Native bounded TCP peer lifecycle and stateless NASREQ
+netconf = ["russh", "russh-keys", "quick-xml"] # NETCONF 1.0/1.1 over SSH, handler-controlled datastores
+rpki_rtr = [] # RPKI-to-Router cache and router roles (RFC 8210/6810)
+rdap = [] # RDAP registration data server and client (RFC 7480/9082/9083)
+hl7 = [] # HL7 v2 over MLLP integration endpoint and sender
+icap = [] # ICAP content adaptation server and client (RFC 3507)
+dc_peer = ["dc", "dep:bzip2", "dep:tiger", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots"] # NMDC peer file transfers
+adc = ["dep:tiger", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots"] # ADC/ADCS hub and client
+adc_peer = ["adc", "dep:bzip2", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots"] # ADC/ADCS peer file transfers
+soulseek_peer = ["soulseek"]
+soulseek = ["dep:md-5", "dep:flate2", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots"] # Selected Soulseek server and peer operations
+gnutella = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots"] # Gnutella 0.6 peer simulator and connector
+s7comm = [] # ISO-on-TCP legacy byte data-area PLC simulator and scanner
+ethernet_ip = [] # Selected EtherNet/IP device and scanner operations
+dnp3 = [] # Selected DNP3 device and scanner operations
+iec104 = [] # Selected IEC 60870-5-104 device and scanner operations
+bacnet = [] # Selected BACnet/IP device and scanner operations
+opcua = ["dep:async-opcua"] # Selected OPC UA device and scanner operations
+ocpp = ["dep:tokio-tungstenite"] # OCPP-J 1.6 / 2.0.1 central system and charge point
+a2a = [] # Agent2Agent protocol 1.0 agent and client (JSON-RPC binding)
+fastcgi = [] # FastCGI 1.0 Responder application and web-server-side client
+redfish = [] # DMTF Redfish service and client (sessions, tasks, Base-registry errors)
+scim = ["urlencoding"] # SCIM 2.0 provisioning service and client (RFC 7643/7644)
+socketio = ["dep:tokio-tungstenite"] # Socket.IO v5 over Engine.IO v4 server and client
+caldav = ["quick-xml", "urlencoding"] # CalDAV calendar server and client (RFC 4791)
+carddav = ["quick-xml", "urlencoding"] # CardDAV address book server and client (RFC 6352)
+dicom = [] # DICOM DIMSE SCP and SCU (C-ECHO, C-STORE, C-FIND)
+acme = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "rcgen/x509-parser", "ring"] # ACME (RFC 8555) test CA and client
+fix = [] # FIX 4.x acceptor and initiator (tag=value session layer)
+wamp = ["dep:tokio-tungstenite", "ring"] # WAMP v2 router and client (JSON over WebSocket)
+rtmp = ["ring"] # RTMP live server (publish/play relay) and client
+srt = ["dep:srt-tokio"] # SRT listener (publish/request relay) and caller
+amqp1 = [] # AMQP 1.0 container and client (separate from AMQP 0-9-1)
+thrift = [] # Apache Thrift RPC server and client (IDL-driven, binary and compact)
+bmp = ["bgp"] # BGP Monitoring Protocol collector and exporter (RFC 7854); BGP PDUs through the bgp feature
+mqtt_sn = [] # MQTT-SN 1.2 gateway and sensor client over UDP
+nbd = ["dep:sha2"] # Network Block Device read-only server and client
+managesieve = [] # ManageSieve (RFC 5804) server and client
+zenoh = ["dep:zenoh"] # Zenoh router/peer and client over the zenoh runtime (TCP transport)
+lwm2m = ["coap"] # LwM2M 1.1 server and device over the coap feature's CoAP codec
+restconf = ["urlencoding"] # RESTCONF (RFC 8040) server and client
+epp = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots", "quick-xml"] # EPP (RFC 5730/5734) registry server and registrar client
+jmap = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"] # JMAP (RFC 8620/8621) server and client
+webtransport = ["dep:rustls", "dep:wtransport", "dep:wtransport-proto", "dep:sha2"] # WebTransport over HTTP/3 (draft-02) server and client
+graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
+sflow = [] # Native typed sFlow v5 UDP samples/counters
+prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
 ssh = ["russh", "russh-keys", "russh-sftp", "dep:ssh2"]
 ssh-agent = ["dep:ssh-agent-lib", "dep:tempfile"]  # SSH Key Agent protocol (server and client for key management)
 svn = []  # SVN (Subversion) uses only TCP, no extra deps
@@ -266,7 +385,7 @@ http_proxy = ["http-mitm-proxy", "dep:rcgen", "tokio-native-tls", "native-tls", 
 webdav = ["dep:reqwest_dav"]  # dav-server dropped: the server answers DAV verbs directly
 nfs = ["nfsserve", "dep:nfs3_client", "dep:nfs3_types"]
 cassandra = ["dep:cassandra-protocol", "tcp", "dep:scylla"]
-smb = ["smb-msg"]
+smb = []
 stun = ["dep:webrtc-stun", "dep:stunclient"]
 smb-client = ["smb", "pavao"]  # SMB client requires native libsmbclient library
 turn = ["dep:webrtc-turn"]
@@ -287,7 +406,7 @@ hls = []  # HLS (RFC 8216) over minimal HTTP/1.1; no system library
 ldap = ["dep:ldap3_proto", "rasn", "dep:ldap3"]
 imap = ["imap-codec", "dep:async-imap", "dep:async-native-tls"]  # IMAP uses imap-codec for protocol parsing
 pop3 = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots", "dep:rcgen"]  # POP3 email retrieval (manual implementation with TLS support)
-nntp = []  # NNTP (Network News Transfer Protocol) for Usenet, uses only TCP, no extra deps
+nntp = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots"]  # NNTP (Network News Transfer Protocol) for Usenet, uses only TCP, no extra deps
 mqtt = ["dep:rumqttd", "dep:rumqttc"]  # MQTT broker and client for IoT messaging
 modbus = []  # Modbus TCP server (ICS/SCADA) - hand-rolled MBAP+PDU codec, no extra deps
 coap = []  # CoAP server (RFC 7252, IoT over UDP) - hand-rolled codec, no extra deps
@@ -302,7 +421,7 @@ dynamodb = ["aws-config", "aws-sdk-dynamodb", "aws-smithy-types", "dep:aws-crede
 s3 = ["aws-config", "dep:aws-sdk-s3", "dep:aws-credential-types", "dep:rust-s3"]  # S3 client
 sqs = ["aws-config", "aws-sdk-sqs"]  # AWS SQS queue
 npm = ["http", "urlencoding"]  # NPM registry server and client (built on HTTP, uses urlencoding for search queries)
-oci-registry = ["dep:sha2"]  # OCI Distribution v2 container registry server (pull path). Serves HTTP over hyper directly (unconditional dep) and needs sha2 for real content digests; links no system library, so it is in every dist set
+oci-registry = ["dep:sha2", "dep:rustls"]  # OCI pull server/client; SHA256 verifies native content and Rustls verifies HTTPS. No system library; included in every dist set
 openai = ["async-openai"]  # OpenAI API client
 ollama = []  # Ollama API server and client (uses existing reqwest, no extra deps)
 oauth2 = ["dep:oauth2", "urlencoding"]  # OAuth2 authorization server and client
@@ -318,9 +437,12 @@ ospf = ["udp"]  # OSPF (IP proto 89, raw sockets, needs root/CAP_NET_RAW). The u
 isis = ["dep:pcap"]  # IS-IS routing protocol (Intermediate System to Intermediate System) - sniffs L2 frames via libpcap
 rip = []  # RIP (Routing Information Protocol) v2 - distance-vector routing
 bitcoin = ["dep:bitcoin"]  # Bitcoin P2P protocol server (LLM-controlled, not a real full node)
-nostr = ["dep:tokio-tungstenite", "dep:secp256k1", "dep:sha2"]  # Nostr relay (NIP-01 over WebSocket, NIP-11) - secp256k1 is the 0.29 bitcoin already links
+nostr = ["dep:tokio-tungstenite", "dep:secp256k1", "dep:sha2", "dep:rustls", "dep:tokio-rustls", "dep:webpki-roots"]  # Nostr relay (NIP-01 over WebSocket, NIP-11) - secp256k1 is the 0.29 bitcoin already links
 mcp = ["dep:axum", "dep:tower-http"]  # Model Context Protocol (JSON-RPC 2.0 over HTTP/SSE)
-grpc = ["dep:tonic", "dep:prost", "dep:prost-reflect", "dep:prost-types", "dep:tonic-reflection", "dep:tower", "dep:tempfile"]  # gRPC server with dynamic schema support
+grpc = ["dep:tonic", "tonic/tls-webpki-roots", "dep:h2", "dep:rustls", "dep:prost", "dep:prost-reflect", "dep:prost-types", "dep:tonic-reflection", "dep:tower", "dep:tempfile"]  # Dynamic unary/streaming gRPC and bounded reflection
+grpc-web = ["grpc", "dep:tonic-web", "dep:flate2"] # Binary HTTP/1.1 unary and server-streaming binding
+connect_rpc = ["grpc", "dep:flate2"] # Binary HTTP/1.1 Connect unary and server-streaming binding
+gnmi = ["grpc", "dep:tokio-rustls", "dep:rustls-pemfile"] # Typed native OpenConfig gNMI
 etcd = ["grpc", "dep:etcd-client"]  # etcd v3 key-value store server (KV service via gRPC)
 zookeeper = ["dep:zookeeper-async"]  # ZooKeeper distributed coordination server and client with binary protocol support
 xmlrpc = ["quick-xml", "dep:xmlrpc"]  # XML-RPC server and client with LLM-controlled method execution
@@ -349,20 +471,20 @@ kubernetes = ["dep:kube", "dep:k8s-openapi", "dep:rustls"]  # Kubernetes client 
 # HTTP stack and rustls for the optional TLS listener. Pure Rust, no system library.
 kubernetes-server = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"]
 prometheus = []  # Prometheus exporter (/metrics) - hyper only, exposition rendered by NetGet
-otlp = ["dep:opentelemetry-proto", "dep:prost", "dep:flate2"]  # OTLP/HTTP receiver - opentelemetry-proto message types (prost), gzip via flate2
+otlp = ["dep:opentelemetry-proto", "opentelemetry-proto/gen-tonic", "dep:prost", "dep:prost-types", "dep:flate2", "dep:tonic", "dep:tower", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots", "tonic/gzip", "tonic/tls-webpki-roots", "hyper-util/server-auto"] # OTLP HTTP/gRPC receiver and semantic exporter
 docker = ["urlencoding"]  # Docker Engine API (read-only) - hyper only, documents rendered by NetGet
 vault = []  # HashiCorp Vault KV v2 - hyper only, envelope rendered by NetGet; the model holds the secrets
-bolt = []  # Neo4j's Bolt protocol (graph database) - hand-written PackStream + chunking, no extra deps
+bolt = ["dep:rustls", "dep:tokio-rustls", "dep:webpki-roots"]  # Bolt codec/state machine; verified native client TLS
 git = ["dep:git2"]  # Git client support
 mercurial = ["http", "urlencoding"]  # Mercurial HTTP server with LLM-controlled virtual repositories
 kafka = ["dep:kafka-protocol"]  # Apache Kafka broker and client, both pure Rust on kafka-protocol (rdkafka/librdkafka removed - aborted in malloc)
-# QUIC server (RFC 9000/9001): raw bidirectional QUIC streams under TLS 1.3. Deliberately
+# QUIC server and client (RFC 9000/9001): raw bidirectional QUIC streams under TLS 1.3. Deliberately
 # NOT HTTP/3 - no RFC 9114 framing, no QPACK - so it needs neither h3 nor h3-quinn. See
 # src/server/quic/CLAUDE.md.
 quic = ["dep:quinn", "dep:rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots"]
-# HTTP/3 client only (RFC 9114, via the h3 crate). Independent of `quic`: enabling this does
+# HTTP/3 server and client (RFC 9114, via the h3 crate). Independent of `quic`: enabling this does
 # NOT build the QUIC server, and the two cannot talk to each other.
-http3 = ["dep:quinn", "dep:rustls", "dep:h3", "dep:h3-quinn"]
+http3 = ["dep:quinn", "dep:rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots", "dep:h3", "dep:h3-quinn"]
 torrent-tracker = ["dep:serde_bencode", "urlencoding"]  # BitTorrent Tracker (HTTP-based peer discovery with announce/scrape)
 torrent-dht = ["dep:serde_bencode"]  # BitTorrent DHT (Kademlia-based distributed peer discovery)
 torrent-peer = ["dep:serde_bencode"]  # BitTorrent Peer Wire Protocol (peer-to-peer data transfer)
@@ -436,6 +558,7 @@ dist-darwin = [
 ]
 # Windows set: dist minus unix-gated features; refined by CI validation builds.
 dist-windows = [
+    "dep:openssl-sys", # OPC UA crypto: static vendored OpenSSL, no external DLL requirement
     "mcp-stdio",
     "mcp-http",
     "tcp",
@@ -450,6 +573,7 @@ dist-windows = [
     "dc",
     "dns",
     "dot",
+    "doq",
     "doh",
     "dhcp",
     "bootp",
@@ -462,6 +586,7 @@ dist-windows = [
     "ident",
     "gopher",
     "dict",
+    "nut",
     "beanstalkd",
     "zabbix",
     "gearman",
@@ -474,6 +599,62 @@ dist-windows = [
     "snmp",
     # igmp excluded: raw libc sockets (AF_INET/SOCK_RAW), unix-only
     "syslog",
+    "statsd",
+    "graphite",
+    "gelf",
+    "fluent-forward",
+    "influxdb",
+    "loki",
+    "ipfix",
+    "netflow-v9",
+    "tacacs",
+    "diameter",
+    "netconf",
+    "rpki_rtr",
+    "rdap",
+    "hl7",
+    "icap",
+    "dc_peer",
+    "adc",
+    "adc_peer",
+    "soulseek",
+    "soulseek_peer",
+    "gnutella",
+    "s7comm",
+    "ethernet_ip",
+    "dnp3",
+    "iec104",
+    "bacnet",
+    "opcua",
+    "ocpp",
+    "a2a",
+    "graphql",
+    "fastcgi",
+    "redfish",
+    "scim",
+    "socketio",
+    "caldav",
+    "carddav",
+    "dicom",
+    "acme",
+    "fix",
+    "wamp",
+    "rtmp",
+    "srt",
+    "amqp1",
+    "thrift",
+    "bmp",
+    "mqtt_sn",
+    "nbd",
+    "managesieve",
+    "zenoh",
+    "lwm2m",
+    "restconf",
+    "webtransport",
+    "jmap",
+    "epp",
+    "sflow",
+    "prometheus-remote-write",
     "ssh",
     "svn",
     "irc",
@@ -531,6 +712,9 @@ dist-windows = [
     "nostr",
     "mcp",
     "grpc",
+    "grpc-web",
+    "connect_rpc",
+    "gnmi",
     "xmlrpc",
     "vnc",
     "reverse-shell",
@@ -578,6 +762,7 @@ all-protocols = [
     "dc",
     "dns",
     "dot",
+    "doq",
     "doh",
     "dhcp",
     "bootp",
@@ -604,6 +789,7 @@ all-protocols = [
     "ident",
     "gopher",
     "dict",
+    "nut",
     "beanstalkd",
     "zabbix",
     "gearman",
@@ -616,6 +802,62 @@ all-protocols = [
     "snmp",
     "igmp",
     "syslog",
+    "statsd",
+    "graphite",
+    "gelf",
+    "fluent-forward",
+    "influxdb",
+    "loki",
+    "ipfix",
+    "netflow-v9",
+    "tacacs",
+    "diameter",
+    "netconf",
+    "rpki_rtr",
+    "rdap",
+    "hl7",
+    "icap",
+    "dc_peer",
+    "adc",
+    "adc_peer",
+    "soulseek",
+    "soulseek_peer",
+    "gnutella",
+    "s7comm",
+    "ethernet_ip",
+    "dnp3",
+    "iec104",
+    "bacnet",
+    "opcua",
+    "ocpp",
+    "a2a",
+    "graphql",
+    "fastcgi",
+    "redfish",
+    "scim",
+    "socketio",
+    "caldav",
+    "carddav",
+    "dicom",
+    "acme",
+    "fix",
+    "wamp",
+    "rtmp",
+    "srt",
+    "amqp1",
+    "thrift",
+    "bmp",
+    "mqtt_sn",
+    "nbd",
+    "managesieve",
+    "zenoh",
+    "lwm2m",
+    "restconf",
+    "webtransport",
+    "jmap",
+    "epp",
+    "sflow",
+    "prometheus-remote-write",
     "ssh",
     "ssh-agent",
     "svn",
@@ -683,6 +925,9 @@ all-protocols = [
     "nostr",
     "mcp",
     "grpc",
+    "grpc-web",
+    "connect_rpc",
+    "gnmi",
     "xmlrpc",
     "tor",
     "vnc",
@@ -746,6 +991,8 @@ tun = ["dep:tun"]
 sha1 = ["dep:sha1"]
 
 [dependencies]
+async-opcua = { version = "=0.19.0", optional = true, features = ["server", "client"] }
+
 # Async runtime
 tokio-util = { version = "0.7", features = ["codec", "compat"] }
 tokio-stream = "0.1"
@@ -783,6 +1030,7 @@ toml = "0.8"  # TOML serialization for config files
 # MCP STDIO server (Model Context Protocol)
 rmcp = { version = "1.2", optional = true, features = ["server", "transport-io"] }
 schemars = { version = "1.0", optional = true }
+apollo-compiler = { version = "1.33.0", optional = true } # graphql: parse, validate, introspect, execute
 
 # Error handling
 anyhow = "1.0"
@@ -792,6 +1040,8 @@ thiserror = "2.0"
 bytes = "1.8"
 hex = "0.4"
 base64 = "0.22"
+tiger = { version = "0.2", optional = true }
+bzip2 = { version = "0.5", optional = true, features = ["static"] }
 serde_urlencoded = "0.7"  # query strings and form bodies on the browser HTTP transport (src/client/http_fetch)
 
 # Socket options (SO_REUSEADDR)
@@ -901,8 +1151,7 @@ nfsserve = { version = "0.10", optional = true }
 # Cassandra/CQL server
 cassandra-protocol = { version = "3.3", optional = true }
 
-# SMB server (message parsing)
-smb-msg = { version = "0.10", optional = true }
+# SMB client (native libsmbclient wrapper; the server uses its own codec)
 pavao = { version = "0.2", optional = true }
 
 # STUN server (Session Traversal Utilities for NAT)
@@ -917,6 +1166,7 @@ webrtc = { version = "0.11", optional = true }
 
 # WebRTC Signaling Server (WebSocket-based SDP relay)
 tokio-tungstenite = { version = "0.21", optional = true }
+srt-tokio = { version = "0.4.4", optional = true }  # SRT (Secure Reliable Transport): pure-Rust ARQ, TSBPD and AES
 
 # LDAP server (ASN.1 BER encoding for LDAP protocol)
 ldap3_proto = { version = "0.3", optional = true }
@@ -939,6 +1189,7 @@ openidconnect = { version = "3.5", optional = true }
 tokio-socks = { version = "0.5", optional = true }
 
 # BGP server (Border Gateway Protocol)
+zenoh = { version = "=1.10.1", optional = true, default-features = false, features = ["transport_tcp", "unstable"] }  # Zenoh runtime for the zenoh feature; TCP only
 netgauze-bgp-pkt = { version = "0.7", optional = true, features = ["serde", "codec"] }
 
 # Bitcoin P2P protocol (blockchain P2P network)
@@ -961,10 +1212,11 @@ tower-http = { version = "0.5", optional = true, features = ["fs", "trace"] }
 uuid = { version = "1.11", features = ["v4"] }
 
 # gRPC server with dynamic schema support
-tonic = { version = "0.12", optional = true }
+tonic = { version = "0.12", optional = true, features = ["gzip"] }
 prost = { version = "0.13", optional = true }
 prost-reflect = { version = "0.14", optional = true }
 prost-types = { version = "0.13", optional = true }
+tonic-web = { version = "=0.12.3", optional = true }
 tonic-reflection = { version = "0.12", optional = true }
 tower = { version = "0.5", optional = true }
 tempfile = { version = "3.13", optional = true }
@@ -1023,6 +1275,8 @@ kafka-protocol = { version = "0.14", optional = true }  # Code-generated Kafka p
 quinn = { version = "0.11", optional = true }  # Async QUIC implementation for HTTP/3
 h3 = { version = "0.0.8", optional = true }  # HTTP/3 implementation
 h3-quinn = { version = "0.0.10", optional = true }  # QUIC adapter for HTTP/3
+wtransport = { version = "=0.7.2", default-features = false, features = ["ring", "quinn", "self-signed"], optional = true }  # WebTransport (vendored with fixes, see vendor/wtransport/README.netget.md)
+wtransport-proto = { version = "=0.7.2", features = ["async"], optional = true }
 
 # BitTorrent protocols (bencode encoding/decoding)
 serde_bencode = { version = "0.2", optional = true }  # Bencode serialization for BitTorrent protocols
@@ -1190,6 +1444,11 @@ socketcan = { version = "3.5", optional = true }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
+[target.'cfg(unix)'.dev-dependencies]
+# These fixture dependencies expose Unix-only process/terminal APIs.
+pty-process = "0.5"
+nix = { version = "0.29", features = ["signal", "process", "term", "ioctl"] }
+
 [dev-dependencies]
 # For async tests
 tokio-test = "0.4"
@@ -1198,13 +1457,10 @@ ctor = "0.2"
 # For creating temporary mock config files
 tempfile = "3.13"
 
-# Terminal snapshot testing
-pty-process = "0.5"
+# Terminal snapshot parsing
 vt100 = "0.15"
 
 # E2E test dependencies (only used when protocol features are enabled via test files' cfg gates)
-# For process management in e2e tests (Unix signals) and PTY window size
-nix = { version = "0.29", features = ["signal", "process", "term", "ioctl"] }
 # Axum for creating test HTTP servers in proxy e2e tests
 axum = "0.7"
 # Axum server with TLS support for HTTPS test servers
@@ -1283,4 +1539,14 @@ panic = "abort"
 # unchanged. vendor/hyper/README.md has the diff and how to re-apply it on a hyper upgrade;
 # tests/vendored_hyper_patch_test.rs fails when Cargo.lock and the vendored copy disagree.
 [patch.crates-io]
+async-opcua-core = { path = "vendor/async-opcua-core" }
+async-opcua-server = { path = "vendor/async-opcua-server" }
 hyper = { path = "vendor/hyper" }
+h3-quinn = { path = "vendor/h3-quinn" }
+# Bound tonic0.12.3 decompression with the configured receive limit in both directions.
+# See vendor/tonic/README.netget.md and tests/vendored_tonic_patch_test.rs.
+tonic = { path = "vendor/tonic" }
+# Owned, bounded wtransport 0.7.2 driver with checked SETTINGS and bounded QPACK.
+# See vendor/wtransport/README.netget.md and tests/vendored_wtransport_patch_test.rs.
+wtransport = { path = "vendor/wtransport" }
+wtransport-proto = { path = "vendor/wtransport-proto" }

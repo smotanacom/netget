@@ -117,8 +117,14 @@ pub mod git;
 pub use git::actions::GitClientProtocol;
 
 // grpc client
+#[cfg(feature = "connect_rpc")]
+pub mod connect_rpc;
+#[cfg(feature = "gnmi")]
+pub mod gnmi;
 #[cfg(feature = "grpc")]
 pub mod grpc;
+#[cfg(feature = "grpc-web")]
+pub mod grpc_web;
 #[cfg(feature = "grpc")]
 pub use grpc::actions::GrpcClientProtocol;
 
@@ -221,8 +227,14 @@ pub mod mdns;
 pub use mdns::actions::MdnsClientProtocol;
 
 // mqtt client
+#[cfg(feature = "managesieve")]
+pub mod managesieve;
 #[cfg(feature = "mqtt")]
 pub mod mqtt;
+#[cfg(feature = "mqtt_sn")]
+pub mod mqtt_sn;
+#[cfg(feature = "nbd")]
+pub mod nbd;
 #[cfg(feature = "mqtt")]
 pub use mqtt::actions::MqttClientProtocol;
 
@@ -303,6 +315,12 @@ pub use openapi::actions::OpenApiClientProtocol;
 pub mod openidconnect;
 #[cfg(feature = "openidconnect")]
 pub use openidconnect::actions::OpenIdConnectClientProtocol;
+
+// otlp client
+#[cfg(feature = "otlp")]
+pub mod otlp;
+#[cfg(feature = "otlp")]
+pub use otlp::actions::OtlpClientProtocol;
 
 // ospf client
 #[cfg(feature = "ospf")]
@@ -625,3 +643,170 @@ pub use xmlrpc::actions::XmlRpcClientProtocol;
 pub mod xmpp;
 #[cfg(feature = "xmpp")]
 pub use xmpp::actions::XmppClientProtocol;
+
+#[cfg(feature = "doq")]
+pub mod doq;
+#[cfg(feature = "nut")]
+pub mod nut;
+#[cfg(feature = "statsd")]
+pub mod statsd;
+
+#[cfg(feature = "gemini")]
+pub mod gemini;
+
+#[cfg(feature = "dict")]
+pub mod dict;
+
+#[cfg(feature = "beanstalkd")]
+pub mod beanstalkd;
+#[cfg(feature = "graphite")]
+pub mod graphite;
+
+#[cfg(feature = "quic")]
+pub mod quic;
+
+#[cfg(feature = "gelf")]
+pub mod gelf;
+
+#[cfg(feature = "fluent-forward")]
+pub mod fluent_forward;
+#[cfg(feature = "nsq")]
+pub mod nsq;
+
+#[cfg(feature = "gearman")]
+pub mod gearman;
+
+#[cfg(feature = "docker")]
+pub mod docker;
+#[cfg(feature = "prometheus")]
+pub mod prometheus;
+
+#[cfg(feature = "influxdb")]
+pub mod influxdb;
+
+#[cfg(feature = "ipfix")]
+pub mod ipfix;
+
+#[cfg(feature = "sflow")]
+pub mod sflow;
+
+#[cfg(feature = "loki")]
+pub mod loki;
+
+#[cfg(feature = "vault")]
+pub mod vault;
+
+#[cfg(feature = "prometheus-remote-write")]
+pub mod prometheus_remote_write;
+
+#[cfg(feature = "nostr")]
+pub mod nostr;
+
+#[cfg(feature = "netflow-v9")]
+pub mod netflow_v9;
+
+#[cfg(feature = "a2a")]
+pub mod a2a;
+#[cfg(feature = "acme")]
+pub mod acme;
+#[cfg(feature = "amqp1")]
+pub mod amqp1;
+#[cfg(feature = "bmp")]
+pub mod bmp;
+#[cfg(feature = "caldav")]
+pub mod caldav;
+#[cfg(feature = "carddav")]
+pub mod carddav;
+#[cfg(feature = "dicom")]
+pub mod dicom;
+#[cfg(feature = "fastcgi")]
+pub mod fastcgi;
+#[cfg(feature = "fix")]
+pub mod fix;
+#[cfg(feature = "graphql")]
+pub mod graphql;
+#[cfg(feature = "hl7")]
+pub mod hl7;
+#[cfg(feature = "icap")]
+pub mod icap;
+#[cfg(feature = "netconf")]
+pub mod netconf;
+#[cfg(feature = "ocpp")]
+pub mod ocpp;
+#[cfg(feature = "rdap")]
+pub mod rdap;
+#[cfg(feature = "redfish")]
+pub mod redfish;
+#[cfg(feature = "rpki_rtr")]
+pub mod rpki_rtr;
+#[cfg(feature = "rtmp")]
+pub mod rtmp;
+#[cfg(feature = "scim")]
+pub mod scim;
+#[cfg(feature = "socketio")]
+pub mod socketio;
+#[cfg(feature = "srt")]
+pub mod srt;
+#[cfg(feature = "tacacs")]
+pub mod tacacs;
+#[cfg(feature = "thrift")]
+pub mod thrift;
+#[cfg(feature = "wamp")]
+pub mod wamp;
+
+#[cfg(feature = "diameter")]
+pub mod diameter;
+
+#[cfg(feature = "bolt")]
+pub mod bolt;
+
+#[cfg(feature = "epp")]
+pub mod epp;
+#[cfg(feature = "jmap")]
+pub mod jmap;
+#[cfg(feature = "lwm2m")]
+pub mod lwm2m;
+#[cfg(feature = "oci-registry")]
+pub mod oci_registry;
+#[cfg(feature = "restconf")]
+pub mod restconf;
+#[cfg(feature = "webtransport")]
+pub mod webtransport;
+#[cfg(feature = "zenoh")]
+pub mod zenoh;
+
+#[cfg(feature = "s7comm")]
+pub mod s7comm;
+
+#[cfg(feature = "ethernet_ip")]
+pub mod ethernet_ip;
+
+#[cfg(feature = "dnp3")]
+pub mod dnp3;
+
+#[cfg(feature = "iec104")]
+pub mod iec104;
+
+#[cfg(feature = "bacnet")]
+pub mod bacnet;
+
+#[cfg(feature = "opcua")]
+pub mod opcua;
+
+#[cfg(feature = "dc_peer")]
+pub mod dc_peer;
+
+#[cfg(feature = "adc")]
+pub mod adc;
+
+#[cfg(feature = "adc_peer")]
+pub mod adc_peer;
+
+#[cfg(feature = "soulseek")]
+pub mod soulseek;
+
+#[cfg(feature = "soulseek_peer")]
+pub mod soulseek_peer;
+
+#[cfg(feature = "gnutella")]
+pub mod gnutella;

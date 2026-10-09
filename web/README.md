@@ -33,7 +33,7 @@ cargo install wasm-bindgen-cli --version "$(grep -A1 '^name = "wasm-bindgen"$' C
 node web/test/smoke.mjs                     # headless end-to-end check of the bundle
 python3 web/test/page_composer.py           # the real page in headless Chromium (Playwright; not in CI)
 cd site && python3 -m http.server 8000      # then open http://localhost:8000/demo.html
-./site/deploy.sh                            # publish: S3 + CloudFront, see site/CLAUDE.md
+./site/deploy.sh                            # publish: S3 + CloudFront, see site/AGENTS.md
 ```
 
 `web/build.sh --dev` skips optimisation (seconds instead of a minute, ~5x the size).
@@ -74,7 +74,12 @@ Two things the script handles that are easy to lose an hour to:
   `start_client`: `{"protocol":"http","remote_addr":"127.0.0.1:8090","instruction":"..."}`;
   `cb` gets `{id}` or `{error}`. `connect_client_to_server(serverId, cb)` is the dashboard's
   `[ + <proto> client ]` itself (`tui::actions::client_form_for_server` and the form's apply,
-  default routing included); `cb` gets `{id, protocol, remote_addr}` or `{error}`.
+  default routing included); `cb` gets `{id, protocol, remote_addr}` or `{error}`. It inherits
+  an OpenAPI server's spec, sets OAuth2's local endpoints, and uses explicit HTTP for local
+  package registries and OIDC. If credentials are missing, it opens a focused form in the
+  dashboard terminal and returns `{configuration_required, protocol, form_opened: true}`.
+  Fill `client_id` and any needed `client_secret`, then use the form's `[ Apply ]` button;
+  `clients(cb)` exposes the created client. Cancel leaves the server running without a client.
   `send_to_client(id, actionJson, cb)` is the client card's `[ send ]`
   (`AppState::send_to_client`); `cb` gets the `ClientSendOutcome` as serde writes it
   (`{"Executed":{"detail":"http_request GET / -> 200 (5 byte body)"}}`, …) or `{error}`.
@@ -99,36 +104,32 @@ click. The dashboard has no extra listening-status row or keyboard-help footer.
   `telnet_connection_opened`, so connecting or reconnecting makes no model request.
   `send_first` does not suppress Telnet's connect event; the static rule is what skips the LLM.
 
-  A separate LLM rule on `telnet_message_received`
-  (`rules 2`), whose instruction is the game's: "play" describes the Gate, a game command is
-  played in the room the server's memory names (the Gate if none), and a move ends with
-  `set_memory`. The map is in the instruction. Before, the instruction said only "run a very
-  small text adventure if they type play", and every line reached the model alone — nothing in
-  a request says what was said before it, so "look" and "go north" had no game to belong to.
-  Measured on a scripted session (`hello`, `play`, `look`, `go north`), 5 runs per model:
-  Gemini Nano on the real page in Chrome, and llama3.1:8b and qwen2.5:1.5b through Ollama
-  answering the page's exact requests the way WebLLM does (the text back to NetGet, no schema),
-  temperature 0.2:
+  The adventure's room state now belongs to `site/js/adventure.js`, scoped to the demo
+  server and each connection. `play`/`reset` starts at the Gate; north reaches the Hall, east
+  reaches the Vault, west returns to the Hall and south returns to the Gate. Invalid exits
+  keep the player in the same room. The model still writes the response, but receives the
+  current room, exits and already-applied command result on every turn. The manual composer
+  shows the same room and result. Models never have to call `set_memory` to make a move stick.
 
-  | model | `hello` → greeting | `play` → the game starts | `look` → the room | `go north` → the Hall |
-  |---|---|---|---|---|
-  | Gemini Nano, before | 5/5 | 0/5 (4× a bare `> ` prompt) | 0/5 | 0/5 |
-  | Gemini Nano, after | 5/5 | 5/5 | 4/5 | 0/5 |
-  | llama3.1:8b, before | 5/5 | 0/5 | 0/5 (4× a "dark room" of its own) | 0/5 ("a dark forest") |
-  | llama3.1:8b, after | 5/5 | 5/5 | 5/5 | 0/5 |
-  | qwen2.5:1.5b, before | 5/5 | 0/5 | 0/5 | 0/5 |
-  | qwen2.5:1.5b, after | 5/5 | 0/5 | 0/5 (echoes `look`) | 0/5 |
+  The bridge carries optional structured event metadata (`server_id`, `connection_id`,
+  protocol, event type/data and a token stable across retries). The demo does not recover
+  event data from prompt prose. A repeated model attempt reuses the same room snapshot,
+  whereas a later identical command is a new turn. The last 16 snapshots per connection are
+  retained; `servers()` reports active connection ids so closed peers and stopped/restarted
+  servers lose their game state. Other servers and ordinary chat requests are unchanged.
 
-  "Go north" is the open end, and it is about state, not wording: where the visitor is after a
-  move exists only if the model writes it to memory, and across four wordings of the rule
-  (including one that spelled out the two actions to answer with) Gemini Nano wrote memory on
-  1 turn in 67 and llama3.1:8b in 1 session of 13 (the Gate, on "play"), neither ever on a
-  move, so both answer "go north" from the Gate. A transcript
-  kept by the server was tried as well — each line's prompt listing the connection's earlier
-  exchanges from the access log, above the line — and rejected: the models copied earlier
-  answers (llama3.1:8b repeated its previous line in 4 of 5 sessions, qwen2.5:1.5b in all
-  five), which undid the gains above. qwen2.5:1.5b unconstrained does not follow this prompt
-  at all; the Prompt API's response schema is what keeps Gemini Nano on the offered actions.
+  This replaces the earlier instruction-only approach. In the September 30 measurements,
+  asking for `set_memory` explicitly still had Gemini Nano save memory in only 1 of 67 turns
+  and llama3.1:8b in 1 of 13 sessions, neither on a move. Adding a server-kept transcript was
+  also tried and rejected: models copied their earlier replies (llama3.1:8b in 4 of 5 sessions,
+  qwen2.5:1.5b in all five). No transcript is sent by the current demo.
+
+  `web/test/adventure.mjs` covers map transitions, invalid moves, reset, repeated model
+  attempts, connection isolation and cleanup. The page test uses stateless model stubs that
+  never emit `set_memory`: both built-in model identities, all six WebLLM adapters and the
+  manual composer receive the same deterministic state. These are adapter/state guarantees,
+  not claims that every downloaded model phrases the answer correctly.
+
   About a second later the Telnet terminal `connect()`s to it. The terminal reads as a shell session:
   a `$ ` prompt, `telnet localhost 2323` typed out so that it finishes as the client connects,
   then telnet(1)'s own `Trying 127.0.0.1...` / `Connected to localhost.` / `Escape character
@@ -246,8 +247,8 @@ no model calls, the first typed line opens a request, the visitor answers throug
 incoming requests preserve the visitor's focus, submitting a reply never focuses a terminal, no element of
 the demo has a scrollbar at 1280x800, 1440x900, 1920x1080 and 390x844, the terminal reads as
 a telnet session through a hang-up and a reconnect, the removed explanatory text stays
-removed, a stub model that follows the game's rule plays the adventure into the Hall through
-the server's memory (verbatim in the next prompt), a 390x844 phone gets the short select
+removed, stateless model stubs and the manual composer play the adventure through every room
+without saving model memory, a 390x844 phone gets the short select
 labels (each measured to fit) and the stacked dashboard at 10px or more, and a stub `LanguageModel` proves the Prompt API path both when the model is
 `available` (named first in the select, loads by itself, answers with no composer,
 constrained to the offered actions, falls back on an unparseable answer) and when it is
@@ -388,10 +389,29 @@ and `http2` over prior-knowledge h2c — which is the `h2` crate rather than hyp
 touched the date cache. NetGet's own clients add round trips to more of them (see the client
 table above): `elasticsearch`, `npm`, `pypi`, `maven`, `ollama`, `oauth2` and `openid` each
 answer a model-written response to NetGet's client of their protocol, as does
-`torrent-tracker`, which is not hyper. The remaining hyper servers (`yarn`, `spark`,
-`snowflake`, `mercurial`, `oci-registry`, `saml-idp`, `saml-sp`, `kubernetes-server`) share the
-patched dispatcher but have no round trip of their own yet; treat them as "compiles" until one
-is added.
+`torrent-tracker`, which is not hyper. `remaining_http_servers.mjs`, called by the same smoke
+run, drives `yarn`, `spark`, `snowflake`, `mercurial`, `oci-registry`, `saml-idp`, `saml-sp`, and
+`kubernetes-server` through Node's HTTP client with static protocol handlers. It checks each
+response's protocol envelope, content type and Date header, including Snowflake POST bodies,
+Mercurial's wire text, SAML metadata XML and Kubernetes list objects.
+
+`web/test/nostr_browser.mjs` covers the native Nostr relay with real Chromium, independently
+of the virtual browser network. It starts a temporary relay from `NETGET_BIN`, fetches NIP-11
+from a different page origin (so browser CORS is enforced), subscribes over Chromium's native
+WebSocket, publishes a signed event, checks live delivery and tampering rejection, and completes
+the close handshake. `nak` signs the input and verifies the relay's returned event independently.
+It requires a native binary with `nostr`, `nak` on PATH, and Playwright/Chromium; missing tools fail.
+
+```bash
+npm install --prefix /tmp/netget-browser-evidence playwright@1.57.0
+node /tmp/netget-browser-evidence/node_modules/playwright/cli.js install chromium
+PLAYWRIGHT_MODULE=/tmp/netget-browser-evidence/node_modules/playwright/index.mjs \
+  NETGET_BIN="$PWD/target/debug/netget" node web/test/nostr_browser.mjs
+```
+
+`BROWSER_EXECUTABLE_PATH` can select an already installed Chromium. The test makes no remote
+requests and uses static handlers, so it needs no model. Its temporary server is stopped and
+its files removed on both success and failure.
 
 To re-derive the list, run the probe: for each feature, `cargo check --target
 wasm32-unknown-unknown --no-default-features --features tcp,udp,telnet,http,<f> --lib`

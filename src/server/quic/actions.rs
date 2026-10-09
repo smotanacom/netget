@@ -103,11 +103,11 @@ impl Protocol for QuicProtocol {
                  round trip in which the 8 bytes 00 ff fe 01 80 7f c3 28 (non-printable and \
                  not valid UTF-8) are sent in, handed to the model as hex, echoed back through \
                  send_quic_data with encoding=\"hex\", and asserted byte-for-byte on the \
-                 client. Not tested against any QUIC implementation other than quinn.",
+                 client. Independent aioquic 1.3.0 peers additionally verify authenticated raw-stream exchanges.",
             )
             .notes(
                 "Raw QUIC streams (RFC 9000/9001), NOT an RFC 9114 HTTP/3 server: bidirectional \
-                 streams under ALPN h3 with no HEADERS/DATA frames and no QPACK, so real HTTP/3 \
+                 streams under ALPN netget-quic with no HEADERS/DATA frames and no QPACK, so real HTTP/3 \
                  clients (curl --http3, browsers, and NetGet's own http3 client) cannot talk to \
                  it. The peer must be a raw QUIC client. request_filter is not supported.",
             )
@@ -209,6 +209,7 @@ impl Server for QuicProtocol {
         Box::pin(async move {
             use crate::server::quic::QuicServer;
 
+            let _ = rustls::crypto::ring::default_provider().install_default();
             // QUIC always uses TLS 1.3, so the certificate parameters are read directly
             // rather than through `extract_tls_config_from_params`, whose `tls_enabled`
             // gate would discard them. Every parameter declared in
@@ -258,7 +259,12 @@ impl QuicProtocol {
             .context("Missing 'data' parameter")?;
         let encoding = action.get("encoding").and_then(|v| v.as_str());
 
-        Ok(ActionResult::Output(decode_quic_payload(data, encoding)?))
+        let bytes = decode_quic_payload(data, encoding)?;
+        anyhow::ensure!(
+            bytes.len() <= crate::server::quic::MAX_STREAM_QUEUE_BYTES,
+            "QUIC response exceeds 1 MiB"
+        );
+        Ok(ActionResult::Output(bytes))
     }
 }
 
@@ -283,7 +289,17 @@ impl QuicProtocol {
 ///
 /// `"text"` is accepted as a synonym for `"utf8"` because that is the name the inbound
 /// event used before this pair was made symmetric.
+pub const MAX_ENCODED_QUIC_BYTES: usize = 4 * 1024 * 1024;
+
 pub fn decode_quic_payload(data: &str, encoding: Option<&str>) -> Result<Vec<u8>> {
+    anyhow::ensure!(
+        data.len() <= MAX_ENCODED_QUIC_BYTES,
+        "Encoded QUIC payload exceeds 4 MiB"
+    );
+    anyhow::ensure!(
+        encoding.is_none_or(|e| e.len() <= 16),
+        "Invalid QUIC payload encoding"
+    );
     use base64::Engine as _;
 
     match encoding.unwrap_or("utf8") {
@@ -298,13 +314,13 @@ pub fn decode_quic_payload(data: &str, encoding: Option<&str>) -> Result<Vec<u8>
             if cleaned.len() % 2 != 0 {
                 return Err(anyhow::anyhow!(
                     "Invalid hex in 'data': expected an even number of hex digits, got {} \
-                     ({data:?}). Each byte is two hex digits, e.g. \"48656c6c6f\" = \"Hello\".",
+                     bytes. Each byte is two hex digits, e.g. \"48656c6c6f\" = \"Hello\".",
                     cleaned.len()
                 ));
             }
             hex::decode(cleaned).map_err(|e| {
                 anyhow::anyhow!(
-                    "Invalid hex in 'data' ({data:?}): {e}. Use only 0-9/a-f, two digits per \
+                    "Invalid hex in 'data': {e}. Use only 0-9/a-f, two digits per \
                      byte. To send this string as literal text, omit 'encoding' or set it to \
                      \"utf8\"."
                 )
@@ -316,7 +332,7 @@ pub fn decode_quic_payload(data: &str, encoding: Option<&str>) -> Result<Vec<u8>
                 .decode(&cleaned)
                 .map_err(|e| {
                     anyhow::anyhow!(
-                        "Invalid base64 in 'data' ({data:?}): {e}. To send this string as \
+                        "Invalid base64 in 'data': {e}. To send this string as \
                          literal text, omit 'encoding' or set it to \"utf8\"."
                     )
                 })

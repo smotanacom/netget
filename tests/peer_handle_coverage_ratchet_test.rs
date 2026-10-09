@@ -23,7 +23,8 @@
 //! a protocol **runs a TCP accept loop** when its `mod.rs` contains any of
 //! `TcpListener`, `accept_bounded::accept_bounded(` or `listener.accept().await` — and is not a
 //! Unix-domain listener wearing the third of those (see the false-positive note). Such a
-//! protocol must either call `peer_support::register_peer_channel` or appear in
+//! protocol must either call `peer_support::register_peer_channel`, declare an exchange-only
+//! `request_only` contract with no raw-output actions, or appear in
 //! [`NO_PEER_HANDLE_BASELINE`] with a reason.
 //!
 //! **The baseline may only shrink.** A protocol that gains a handle and stays listed fails the
@@ -78,6 +79,9 @@ enum Reason {
     /// and raw bytes pushed alongside hyper's framing would desynchronise the HTTP/1.1 or
     /// HTTP/2 stream rather than reach the peer as a message.
     HyperOwnsSocket,
+    /// hyper-util owns HTTP/1 or HTTP/2 framing through its auto connection builder;
+    /// tonic services answer only their correlated gRPC requests on that connection.
+    HyperAutoOwnsSocket,
     /// `axum::serve` owns its own accept loop, and this server additionally relays the public
     /// socket to a loopback backend — so the handler's peer is the relay, not the client.
     AxumOwnsSocket,
@@ -113,6 +117,14 @@ enum Reason {
     Tunnel,
     /// The SSH transport is russh's; NetGet never holds the socket after the handshake.
     RusshOwnsSocket,
+    /// A Carbon plaintext collector receives metrics but has no server-message grammar.
+    OneWayMetricCollector,
+    /// A GELF collector observes incoming logs; GELF defines no server replies.
+    OneWayLogCollector,
+    /// Forward ACKs echo the current inbound batch's transport-owned chunk token.
+    CorrelatedForwardReplies,
+    /// NUT renders a reply against the current parsed request and authentication state.
+    CorrelatedRequestReplies,
     /// Reviewed by hand in the September 2026 peer-handle pass; see the table below.
     Reviewed,
     /// Not reviewed in that pass. Not a claim that a handle is impossible — a claim that
@@ -125,12 +137,24 @@ impl Reason {
     fn marker(self) -> Option<&'static str> {
         match self {
             Reason::HyperOwnsSocket => Some("hyper::server::conn"),
+            Reason::HyperAutoOwnsSocket => Some("hyper_util::server::conn::auto"),
             Reason::AxumOwnsSocket => Some("axum::serve"),
             Reason::UsbIp => Some("usbip"),
             Reason::WebSocketFrames => Some("tokio_tungstenite"),
             Reason::Tunnel => Some("copy_bidirectional"),
             Reason::RusshOwnsSocket => Some("russh"),
+            Reason::OneWayMetricCollector => Some("GRAPHITE_BATCH_EVENT"),
+            Reason::OneWayLogCollector => Some("actions::GELF_MESSAGE_EVENT"),
+            Reason::CorrelatedForwardReplies => Some("codec::encode_ack(&chunk)"),
+            Reason::CorrelatedRequestReplies => Some("wire::render(&request"),
             Reason::Reviewed | Reason::Unreviewed => None,
+        }
+    }
+
+    fn holds_for(self, server: &ServerSource) -> bool {
+        match self {
+            Self::HyperOwnsSocket => server.hyper_owns_socket(),
+            _ => self.marker().is_none_or(|marker| server.has(marker)),
         }
     }
 }
@@ -183,16 +207,26 @@ const NO_PEER_HANDLE_BASELINE: &[(&str, Reason)] = &[
     ("dot", Reason::Reviewed),
     ("dynamo", Reason::HyperOwnsSocket),
     ("elasticsearch", Reason::HyperOwnsSocket),
+    // Acceptance/rejection applies to one inbound batch; only its hidden chunk token can
+    // produce the correlated ACK. Injected bytes have no unsolicited Forward reply meaning.
+    ("fluent_forward", Reason::CorrelatedForwardReplies),
+    // collect_gelf_message only observes; neither UDP nor TCP defines collector reply bytes.
+    ("gelf", Reason::OneWayLogCollector),
     ("etcd", Reason::HyperOwnsSocket),
     ("git", Reason::HyperOwnsSocket),
-    ("grpc", Reason::HyperOwnsSocket),
+    // Carbon plaintext defines no replies; collect_graphite_batch observes received metrics.
+    ("graphite", Reason::OneWayMetricCollector),
     ("hls", Reason::Unreviewed),
     ("http", Reason::HyperOwnsSocket),
+    // Hyper owns each HTTP connection and frames each write request response.
+    ("influxdb", Reason::HyperOwnsSocket),
     ("ipp", Reason::HyperOwnsSocket),
     ("jsonrpc", Reason::HyperOwnsSocket),
     ("kubernetes", Reason::HyperOwnsSocket),
     ("ldap", Reason::Unreviewed),
     ("llmnr", Reason::Reviewed),
+    // Hyper owns each HTTP connection; accept/reject decisions answer one Loki push request.
+    ("loki", Reason::HyperOwnsSocket),
     ("maven", Reason::HyperOwnsSocket),
     ("mcp", Reason::AxumOwnsSocket),
     ("mercurial", Reason::HyperOwnsSocket),
@@ -200,13 +234,16 @@ const NO_PEER_HANDLE_BASELINE: &[(&str, Reason)] = &[
     ("nfc", Reason::Unreviewed),
     ("nfs", Reason::Reviewed),
     ("npm", Reason::HyperOwnsSocket),
+    // Replies get request identities from wire::render and writes require session auth.
+    ("nut", Reason::CorrelatedRequestReplies),
     ("oauth2", Reason::HyperOwnsSocket),
     ("oci_registry", Reason::HyperOwnsSocket),
     ("ollama", Reason::HyperOwnsSocket),
     ("openai", Reason::HyperOwnsSocket),
     ("openapi", Reason::HyperOwnsSocket),
     ("openid", Reason::HyperOwnsSocket),
-    ("otlp", Reason::HyperOwnsSocket),
+    // Hyper owns HTTP/1 and HTTP/2 sockets; tonic frames each correlated gRPC export reply.
+    ("otlp", Reason::HyperAutoOwnsSocket),
     ("postgresql", Reason::Reviewed),
     ("prometheus", Reason::HyperOwnsSocket),
     ("proxy", Reason::Tunnel),
@@ -291,11 +328,56 @@ fn server_mod_files() -> Vec<(String, PathBuf)> {
 struct ServerSource {
     name: String,
     body: String,
+    // Metadata and protocol actions usually live beside mod.rs, in actions.rs. Read the
+    // complete directory so declarations are not missed just because they moved files.
+    contract: String,
 }
 
 impl ServerSource {
     fn has(&self, needle: &str) -> bool {
         self.body.contains(needle)
+    }
+
+    fn has_hyper_connection_marker(&self) -> bool {
+        if self.has("hyper::server::conn") {
+            return true;
+        }
+        // A grouped import has the same path, but `server::conn` must be an item
+        // directly under `hyper`, rather than an unrelated import elsewhere.
+        for (at, _) in self.body.match_indices("use") {
+            let is_word = |c: char| c.is_alphanumeric() || c == '_';
+            if self.body[..at].chars().next_back().is_some_and(is_word)
+                || self.body[at + 3..].chars().next().is_some_and(is_word)
+            {
+                continue;
+            }
+            let import: String = self.body[at + 3..]
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            let Some(group) = import.strip_prefix("hyper::{") else {
+                continue;
+            };
+            let mut depth = 0;
+            let mut start = 0;
+            for (end, character) in group.char_indices() {
+                if (character == ',' || character == '}') && depth == 0 {
+                    let item = &group[start..end];
+                    if item == "server::conn" || item.starts_with("server::conn::") {
+                        return true;
+                    }
+                    if character == '}' {
+                        break;
+                    }
+                    start = end + 1;
+                } else if character == '{' {
+                    depth += 1;
+                } else if character == '}' {
+                    depth -= 1;
+                }
+            }
+        }
+        false
     }
 
     /// Does this server run a TCP accept loop of its own?
@@ -330,7 +412,21 @@ impl ServerSource {
     }
 
     fn registers_peer_handle(&self) -> bool {
-        self.has("register_peer_channel")
+        self.contract.contains("register_peer_channel")
+    }
+
+    fn hyper_owns_socket(&self) -> bool {
+        self.has_hyper_connection_marker() || self.has("hyper_util::server::conn")
+    }
+
+    fn declares_exchange_only(&self) -> bool {
+        let declared = self.contract.contains(".request_only(")
+            || regex::Regex::new(r"request_only:\s*Some\(")
+                .unwrap()
+                .is_match(&self.contract);
+        // A raw-output action can be injected without an exchange identity, contradicting
+        // this exemption. The separate declaration test also rejects an existing handle.
+        declared && !self.contract.contains("ActionResult::Output")
     }
 }
 
@@ -340,9 +436,28 @@ fn load_servers() -> Vec<ServerSource> {
         .map(|(name, path)| {
             let raw = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+            let mut contract = String::new();
+            for file in std::fs::read_dir(path.parent().expect("protocol directory"))
+                .expect("read protocol directory")
+            {
+                let file = file.expect("protocol file").path();
+                if file.extension().is_some_and(|extension| extension == "rs") {
+                    contract.push_str(&strip_comments(
+                        &std::fs::read_to_string(&file).expect("read protocol source"),
+                    ));
+                    contract.push('\n');
+                }
+            }
+            if contract.contains("ics_support::spawn") {
+                contract.push_str(&strip_comments(
+                    &std::fs::read_to_string("src/server/ics_support.rs")
+                        .expect("shared ICS peer owner"),
+                ));
+            }
             ServerSource {
                 name,
                 body: strip_comments(&raw),
+                contract,
             }
         })
         .collect()
@@ -367,7 +482,7 @@ fn every_tcp_accept_loop_server_has_a_peer_handle_or_a_reason() {
         if !server.runs_tcp_accept_loop() || server.registers_peer_handle() {
             continue;
         }
-        if !baselined.contains(server.name.as_str()) {
+        if !baselined.contains(server.name.as_str()) && !server.declares_exchange_only() {
             undeclared.push(server.name.clone());
         }
     }
@@ -450,9 +565,9 @@ fn every_declared_reason_is_still_true_of_the_source() {
         let Some(server) = servers.iter().find(|s| s.name == *name) else {
             continue; // reported by the shrink test
         };
-        if !server.has(marker) {
+        if !reason.holds_for(server) {
             wrong.push(format!(
-                "{name}: declared {reason:?}, but `{marker}` is gone"
+                "{name}: declared {reason:?}, but its framing source marker `{marker}` is gone"
             ));
         }
     }
@@ -464,6 +579,29 @@ fn every_declared_reason_is_still_true_of_the_source() {
          adopt the peer handle or give it the reason that is now correct.\n\n  {}",
         wrong.join("\n  "),
     );
+}
+
+#[test]
+fn grouped_hyper_connection_marker_requires_the_hyper_import_path() {
+    let matches = |body: &str| {
+        ServerSource {
+            name: "fixture".into(),
+            body: strip_comments(body),
+            contract: String::new(),
+        }
+        .has_hyper_connection_marker()
+    };
+    assert!(matches("use hyper::server::conn::http1;"));
+    assert!(matches(
+        "use hyper::{body::Incoming, header::{HeaderValue, ALLOW},\n server::conn::http1, Method};"
+    ));
+    assert!(matches("use hyper::{body::Incoming, server::conn};"));
+    assert!(!matches("use unrelated::{server::conn::http1};"));
+    assert!(!matches(
+        "use hyper::{body::Incoming}; use unrelated::server::conn::http1;"
+    ));
+    assert!(!matches("use hyper::{header::{server::conn::http1}};"));
+    assert!(!matches("// use hyper::{server::conn::http1};"));
 }
 
 /// The count this pass left behind, so a regression is visible as a number and not only as a
@@ -490,4 +628,46 @@ fn peer_handle_coverage_does_not_regress() {
          handle, or the detection stopped seeing it.",
         tcp.len(),
     );
+}
+
+#[test]
+fn exchange_only_contract_requires_a_declaration_and_no_raw_output() {
+    let source = |contract: &str| ServerSource {
+        name: "fixture".into(),
+        body: "TcpListener::bind(addr);".into(),
+        contract: strip_comments(contract),
+    };
+    assert!(!source("// .request_only(\"comment\")").declares_exchange_only());
+    assert!(!source("ActionResult::Custom { name, data }").declares_exchange_only());
+    assert!(source(
+        "builder.request_only(\"correlated replies\"); ActionResult::Custom { name, data }"
+    )
+    .declares_exchange_only());
+    assert!(source("request_only: Some(\"no unsolicited messages\")").declares_exchange_only());
+    assert!(
+        !source("builder.request_only(\"incorrect\"); ActionResult::Output(bytes)")
+            .declares_exchange_only()
+    );
+}
+
+#[test]
+fn hyper_framing_reason_recognizes_both_library_import_forms() {
+    for body in [
+        "hyper::server::conn::http1::Builder::new()",
+        "use hyper::{server::conn::http1}; http1::Builder::new()",
+        "use hyper_util::server::conn::auto; auto::Builder::new()",
+    ] {
+        let source = ServerSource {
+            name: "fixture".into(),
+            body: strip_comments(body),
+            contract: String::new(),
+        };
+        assert!(Reason::HyperOwnsSocket.holds_for(&source), "{body}");
+    }
+    let source = ServerSource {
+        name: "fixture".into(),
+        body: strip_comments("// hyper_util::server::conn::auto"),
+        contract: String::new(),
+    };
+    assert!(!Reason::HyperOwnsSocket.holds_for(&source));
 }

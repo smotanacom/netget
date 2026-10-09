@@ -68,7 +68,7 @@ fn require_tool(name: &str) -> String {
 }
 
 /// Run a tool; returns (exit code, stdout + stderr).
-async fn run(tool: &str, args: &[String]) -> (i32, String) {
+pub(super) async fn run(tool: &str, args: &[String]) -> (i32, String) {
     let bin = require_tool(tool);
     let output = tokio::time::timeout(
         Duration::from_secs(120),

@@ -1,0 +1,15 @@
+
+running 1 test
+
+thread 'run_for_exits_zero_when_the_duration_elapses' (86856420) panicked at tests/non_interactive_run_limits_test.rs:244:5:
+--run-for 2 must end the run at ~2s, took 4.019985083s
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test run_for_exits_zero_when_the_duration_elapses ... FAILED
+
+failures:
+
+failures:
+    run_for_exits_zero_when_the_duration_elapses
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 4.02s
+

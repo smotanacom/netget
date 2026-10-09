@@ -1,380 +1,328 @@
-//! SSH client protocol actions implementation
-
+//! SSH commands and authenticated read-only SFTP actions.
 use crate::llm::actions::{
     client_trait::{Client, ClientActionResult},
     protocol_trait::Protocol,
-    ActionDefinition, Parameter, ParameterDefinition,
+    ActionDefinition, Parameter, ParameterDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{ConnectContext, EventType};
-use crate::state::app_state::AppState;
-use anyhow::{Context, Result};
-use serde_json::json;
+use crate::state::AppState;
+use anyhow::{ensure, Context, Result};
+use serde_json::{json, Value};
 use std::sync::LazyLock;
-
-/// SSH client connected event
-pub static SSH_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new(
-        "ssh_connected",
-        "SSH client successfully authenticated to server",
-        json!({
-            "type": "execute_command",
-            "command": "pwd"
-        }),
-    )
-    .with_parameters(vec![
-        Parameter {
-            name: "remote_addr".to_string(),
-            type_hint: "string".to_string(),
-            description: "Remote SSH server address".to_string(),
-            required: true,
-        },
-        Parameter {
-            name: "username".to_string(),
-            type_hint: "string".to_string(),
-            description: "Username used for authentication".to_string(),
-            required: true,
-        },
-    ])
-});
-
-/// SSH command output received event
-pub static SSH_CLIENT_OUTPUT_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new(
-        "ssh_output_received",
-        "Command output received from SSH server",
-        json!({
-            "type": "execute_command",
-            "command": "pwd"
-        }),
-    )
-    .with_parameters(vec![
-        Parameter {
-            name: "command".to_string(),
-            type_hint: "string".to_string(),
-            description: "The command this output belongs to".to_string(),
-            required: true,
-        },
-        Parameter {
-            name: "output".to_string(),
-            type_hint: "string".to_string(),
-            description: "The command's stdout as a UTF-8 string".to_string(),
-            required: true,
-        },
-        Parameter {
-            name: "stderr".to_string(),
-            type_hint: "string".to_string(),
-            description: "The command's stderr, when it wrote any".to_string(),
-            required: false,
-        },
-        Parameter {
-            name: "exit_code".to_string(),
-            type_hint: "number".to_string(),
-            description: "The command's exit status, when the server sent one".to_string(),
-            required: false,
-        },
-    ])
-});
-
-/// SSH client protocol action handler
-pub struct SshClientProtocol;
-
-impl Default for SshClientProtocol {
-    fn default() -> Self {
-        Self::new()
+fn field(name: &str, hint: &str, description: &str, required: bool) -> Parameter {
+    Parameter {
+        name: name.into(),
+        type_hint: hint.into(),
+        description: description.into(),
+        required,
     }
 }
-
+fn action(
+    name: &str,
+    description: &str,
+    parameters: Vec<Parameter>,
+    example: Value,
+    log_template: &str,
+) -> ActionDefinition {
+    ActionDefinition {
+        name: name.into(),
+        description: description.into(),
+        parameters,
+        example,
+        log_template: Some(LogTemplate::new().with_info(log_template)),
+    }
+}
+fn event(id: &str, description: &str, fields: Vec<Parameter>) -> EventType {
+    EventType::new(id, description, json!({"type":"wait_for_more"}))
+        .with_parameters(fields)
+        .with_actions(SshClientProtocol.get_sync_actions())
+}
+pub static SSH_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    event(
+        "ssh_connected",
+        "SSH session authenticated",
+        vec![
+            field("remote_addr", "string", "Remote SSH server", true),
+            field("username", "string", "Authenticated username", true),
+            field(
+                "host_key_verified",
+                "boolean",
+                "Whether the configured SHA256 host-key pin matched",
+                true,
+            ),
+        ],
+    )
+});
+pub static SSH_CLIENT_OUTPUT_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    event(
+        "ssh_output_received",
+        "SSH command completed",
+        vec![
+            field("command", "string", "Executed command", true),
+            field(
+                "output",
+                "string",
+                "Captured standard output from the completed command",
+                true,
+            ),
+            field("stderr", "string", "Command stderr when present", false),
+            field(
+                "exit_code",
+                "number",
+                "Exit status when supplied by the peer",
+                false,
+            ),
+        ],
+    )
+});
+pub static SSH_SFTP_RESULT_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    event(
+        "ssh_sftp_result",
+        "SFTP v3 operation completed",
+        vec![
+            field(
+                "operation",
+                "string",
+                "stat, list_directory or read_file",
+                true,
+            ),
+            field(
+                "path",
+                "string",
+                "Remote file or directory path selected for SFTP",
+                true,
+            ),
+            field(
+                "attributes",
+                "object",
+                "File size, permissions, type, owners and timestamps when supplied",
+                false,
+            ),
+            field(
+                "entries",
+                "array",
+                "Directory entries with name and typed attributes",
+                false,
+            ),
+            field("offset", "number", "Read window start", false),
+            field("bytes_read", "number", "Bytes in the UTF-8 window", false),
+            field(
+                "eof",
+                "boolean",
+                "Whether the server reported EOF before the window filled",
+                false,
+            ),
+            field("text", "string", "UTF-8 file window", false),
+        ],
+    )
+});
+pub static SSH_OPERATION_FAILED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    event(
+        "ssh_operation_failed",
+        "SSH command or SFTP operation failed",
+        vec![
+            field(
+                "action_type",
+                "string",
+                "Name of the rejected SSH or SFTP action",
+                true,
+            ),
+            field("path", "string", "Remote path for SFTP", false),
+            field("command", "string", "Command for exec", false),
+            field(
+                "error",
+                "string",
+                "Transport, status, framing or local validation error",
+                true,
+            ),
+        ],
+    )
+});
+#[derive(Default)]
+pub struct SshClientProtocol;
 impl SshClientProtocol {
     pub fn new() -> Self {
         Self
     }
 }
-
-// Implement Protocol trait (common functionality)
 impl Protocol for SshClientProtocol {
-    fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
-        vec![
-            ActionDefinition {
-                name: "execute_command".to_string(),
-                description: "Execute a command on the remote SSH server".to_string(),
-                parameters: vec![Parameter {
-                    name: "command".to_string(),
-                    type_hint: "string".to_string(),
-                    description: "The shell command to execute".to_string(),
-                    required: true,
-                }],
-                example: json!({
-                    "type": "execute_command",
-                    "command": "ls -la"
-                }),
-                log_template: None,
-            },
-            ActionDefinition {
-                name: "disconnect".to_string(),
-                description: "Disconnect from the SSH server".to_string(),
-                parameters: vec![],
-                example: json!({
-                    "type": "disconnect"
-                }),
-                log_template: None,
-            },
-        ]
-    }
-    fn get_sync_actions(&self) -> Vec<ActionDefinition> {
-        vec![
-            ActionDefinition {
-                name: "execute_command".to_string(),
-                description: "Execute another command in response to output".to_string(),
-                parameters: vec![Parameter {
-                    name: "command".to_string(),
-                    type_hint: "string".to_string(),
-                    description: "The shell command to execute".to_string(),
-                    required: true,
-                }],
-                example: json!({
-                    "type": "execute_command",
-                    "command": "pwd"
-                }),
-                log_template: None,
-            },
-            ActionDefinition {
-                name: "wait_for_more".to_string(),
-                description: "Wait for more output before responding".to_string(),
-                parameters: vec![],
-                example: json!({
-                    "type": "wait_for_more"
-                }),
-                log_template: None,
-            },
-        ]
-    }
     fn protocol_name(&self) -> &'static str {
         "SSH"
-    }
-    fn get_event_types(&self) -> Vec<EventType> {
-        vec![
-            EventType::new(
-                "ssh_connected",
-                "Triggered when SSH client authenticates successfully",
-                json!({"type": "placeholder", "event_id": "ssh_connected"}),
-            ),
-            EventType::new(
-                "ssh_output_received",
-                "Triggered when SSH command output is received",
-                json!({"type": "placeholder", "event_id": "ssh_output_received"}),
-            ),
-        ]
     }
     fn stack_name(&self) -> &'static str {
         "ETH>IP>TCP>SSH"
     }
-    fn keywords(&self) -> Vec<&'static str> {
-        vec!["ssh", "ssh client", "connect to ssh", "secure shell"]
-    }
-    fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
-        use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
-
-        ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Beta)
-            .implementation(
-                "russh 0.45; password or public-key authentication (private_key_path). One \
-                 session channel per command; stdout, stderr and exit status go back to the \
-                 model, and its answer is executed in turn, bounded at four follow-ups",
-            )
-            .llm_control("Execute commands and read output")
-            .e2e_testing(
-                "tests/client/ssh/real_server_test.rs, 12 LLM calls, against OpenSSH's sshd run \
-                 unprivileged from a temp-dir config with ssh-keygen keys, public-key auth as \
-                 the current user. The model's first command writes a file and exits 3 with \
-                 stderr; its second, built from that stdout, stderr and exit status, appends \
-                 to the file; it then disconnects. The file must hold both lines exactly and \
-                 sshd's log must show the publickey login and the disconnect. A key sshd does \
-                 not know is refused, and a model that commands forever runs exactly five \
-                 commands. Not #[ignore]d; a missing sshd or ssh-keygen fails the test.",
-            )
-            .notes(
-                "The host key is accepted unconditionally (no known_hosts check, no pinning), \
-                 so this client is not safe against an active network attacker. Password \
-                 authentication is not exercised against a real server (an unprivileged sshd \
-                 cannot check one). No SSH agent, keyboard-interactive, certificates, PTY, \
-                 SFTP or forwarding. The private key is read from the operator's path at \
-                 connect and never reaches the model.",
-            )
-            .build()
-    }
     fn description(&self) -> &'static str {
-        "SSH client for connecting to SSH servers and executing commands"
+        "SSH commands and pinned SFTP v3 stat, directory listing and UTF-8 file reads"
     }
-    fn example_prompt(&self) -> &'static str {
-        "Connect to SSH at localhost:22 with user 'admin' and execute 'ls -la'"
+    fn keywords(&self) -> Vec<&'static str> {
+        vec!["ssh", "secure shell", "sftp", "connect to ssh"]
     }
     fn group_name(&self) -> &'static str {
         "Network Infrastructure"
     }
-    fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
+    fn example_prompt(&self) -> &'static str {
+        "Connect with a trusted SHA256 host-key pin and list /reports over SFTP"
+    }
+    fn get_async_actions(&self, _: &AppState) -> Vec<ActionDefinition> {
+        self.get_sync_actions()
+    }
+    fn get_sync_actions(&self) -> Vec<ActionDefinition> {
         vec![
-            ParameterDefinition {
-                name: "username".to_string(),
-                type_hint: "string".to_string(),
-                description: "SSH username for authentication".to_string(),
-                required: true,
-                example: json!("testuser"),
-                default: None,
-            },
-            ParameterDefinition {
-                name: "password".to_string(),
-                type_hint: "string".to_string(),
-                description: "SSH password for authentication (if using password auth)".to_string(),
-                required: false,
-                example: json!("testpass"),
-                default: None,
-            },
-            ParameterDefinition {
-                name: "auth_method".to_string(),
-                type_hint: "string".to_string(),
-                description: "Authentication method: 'password' or 'publickey' (default: \
-                              publickey when private_key_path is given, otherwise password)"
-                    .to_string(),
-                required: false,
-                example: json!("publickey"),
-                default: None,
-            },
-            ParameterDefinition {
-                name: "private_key_path".to_string(),
-                type_hint: "string".to_string(),
-                description: "Path to an OpenSSH-format private key file for publickey \
-                              authentication. Read once at connect; its contents never reach \
-                              the model"
-                    .to_string(),
-                required: false,
-                example: json!("/home/user/.ssh/id_ed25519"),
-                default: None,
-            },
-            ParameterDefinition {
-                name: "private_key_passphrase".to_string(),
-                type_hint: "string".to_string(),
-                description: "Passphrase for an encrypted private_key_path".to_string(),
-                required: false,
-                example: json!("key passphrase"),
-                default: None,
-            },
+            action(
+                "execute_command",
+                "Execute a shell command; bounded stdout/stderr and exit status become ssh_output_received",
+                vec![field("command", "string", "Shell command, 1..4096 bytes", true)],
+                json!({"type":"execute_command","command":"pwd"}),
+                "Execute SSH command: {command}",
+            ),
+            action(
+                "sftp_stat",
+                "Inspect remote file or directory attributes using pinned SFTP v3",
+                vec![
+                    field("path", "string", "Remote path, 1..4096 bytes without NUL", true),
+                    field("follow_symlinks", "boolean", "Use STAT instead of LSTAT; default false", false),
+                ],
+                json!({"type":"sftp_stat","path":"/reports"}),
+                "Inspect SFTP path {path}",
+            ),
+            action(
+                "sftp_list_directory",
+                "List a remote directory, at most 1024 entries, with typed attributes",
+                vec![field("path", "string", "Remote directory, 1..4096 bytes without NUL", true)],
+                json!({"type":"sftp_list_directory","path":"/reports"}),
+                "List SFTP directory {path}",
+            ),
+            action(
+                "sftp_read_file",
+                "Read a bounded UTF-8 window from a remote file; no local file is created",
+                vec![
+                    field("path", "string", "Remote path, 1..4096 bytes without NUL", true),
+                    field("offset", "number", "Unsigned starting byte offset, default 0", false),
+                    field("length", "number", "Maximum bytes, 1..1048576, default 65536", false),
+                ],
+                json!({"type":"sftp_read_file","path":"/reports/today.txt","offset":0,"length":65536}),
+                "Read SFTP file window from {path}",
+            ),
+            action(
+                "disconnect",
+                "Disconnect SSH and cancel every command, SFTP operation and response handler",
+                vec![],
+                json!({"type":"disconnect"}),
+                "Disconnect SSH and cancel active operations",
+            ),
+            action(
+                "wait_for_more",
+                "Take no action and wait for another result",
+                vec![],
+                json!({"type":"wait_for_more"}),
+                "Wait for SSH command or SFTP result",
+            ),
         ]
     }
-    fn get_startup_examples(&self) -> crate::llm::actions::StartupExamples {
-        use crate::llm::actions::StartupExamples;
-        use serde_json::json;
-
-        StartupExamples::new(
-            // LLM mode: LLM controls SSH commands
-            json!({
-                "type": "open_client",
-                "remote_addr": "localhost:22",
-                "base_stack": "ssh",
-                "startup_params": {
-                    "username": "user",
-                    "password": "pass"
-                },
-                "instruction": "Execute 'uname -a' and 'df -h' to check system info"
-            }),
-            // Script mode: Code-based command execution
-            json!({
-                "type": "open_client",
-                "remote_addr": "localhost:22",
-                "base_stack": "ssh",
-                "startup_params": {
-                    "username": "user",
-                    "password": "pass"
-                },
-                "event_handlers": [{
-                    "event_pattern": "ssh_output_received",
-                    "handler": {
-                        "type": "script",
-                        "language": "python",
-                        "code": "<ssh_client_handler>"
-                    }
-                }]
-            }),
-            // Static mode: Fixed command sequence
-            json!({
-                "type": "open_client",
-                "remote_addr": "localhost:22",
-                "base_stack": "ssh",
-                "startup_params": {
-                    "username": "user",
-                    "password": "pass"
-                },
-                "event_handlers": [
-                    {
-                        "event_pattern": "ssh_connected",
-                        "handler": {
-                            "type": "static",
-                            "actions": [{
-                                "type": "execute_command",
-                                "command": "hostname"
-                            }]
-                        }
-                    },
-                    {
-                        "event_pattern": "ssh_output_received",
-                        "handler": {
-                            "type": "static",
-                            "actions": [{
-                                "type": "disconnect"
-                            }]
-                        }
-                    }
-                ]
-            }),
-        )
+    fn get_event_types(&self) -> Vec<EventType> {
+        vec![
+            SSH_CLIENT_CONNECTED_EVENT.clone(),
+            SSH_CLIENT_OUTPUT_RECEIVED_EVENT.clone(),
+            SSH_SFTP_RESULT_EVENT.clone(),
+            SSH_OPERATION_FAILED_EVENT.clone(),
+        ]
+    }
+    fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
+        let p = |name: &str,
+                 hint: &str,
+                 description: &str,
+                 required: bool,
+                 example: Value,
+                 default: Option<Value>| ParameterDefinition {
+            name: name.into(),
+            type_hint: hint.into(),
+            description: description.into(),
+            required,
+            example,
+            default,
+        };
+        vec![
+            p("username","string","SSH account used to authenticate this connection",true,json!("user"),None),
+            p("password","string","Password for password authentication",false,json!("password"),None),
+            p("private_key_path","string","Operator's OpenSSH private-key file; read only at connect",false,json!("/home/user/.ssh/id_ed25519"),None),
+            p("private_key_passphrase","string","Passphrase for the private key",false,json!("passphrase"),None),
+            p("auth_method","string","password or publickey; defaults to publickey when private_key_path is set",false,json!("publickey"),None),
+            p("host_key_sha256","string","Trusted OpenSSH SHA256: host-key fingerprint. Required for SFTP; when supplied a mismatch fails the SSH handshake",false,json!("SHA256:<trusted fingerprint>"),None),
+            p("handshake_timeout_secs","number","Resolution, TCP, SSH handshake and authentication deadline, 1..60 seconds",false,json!(10),Some(json!(super::HANDSHAKE_TIMEOUT.as_secs()))),
+            p("operation_timeout_secs","number","Whole command or SFTP exchange deadline, 1..300 seconds",false,json!(30),Some(json!(super::OPERATION_TIMEOUT.as_secs()))),
+            p("idle_timeout_secs","number","SSH inactivity deadline, 1..3600 seconds",false,json!(300),Some(json!(super::IDLE_TIMEOUT.as_secs()))),
+        ]
+    }
+    fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
+        use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
+        ProtocolMetadataV2::builder().state(DevelopmentState::Experimental)
+            .implementation("russh 0.45 SSH transport with owned socket shutdown; bounded SFTP v3 request/response codec without detached library session tasks")
+            .llm_control("Shell command and stdout/stderr/exit status; SFTP stat, list_directory and read_file with structured attributes, directory entries and UTF-8 file windows. Shared handlers, memory, command injection and four follow-up levels")
+            .e2e_testing("Independent OpenSSH sshd command and SFTP sessions, host-key pin negatives and direct NetGet pairing; tests under tests/client/ssh. No tests skip missing peers")
+            .notes("SFTP requires an explicit SHA256 host-key pin. Command-only legacy sessions without a pin accept the peer key and are vulnerable to active attackers. SFTP packets 64 KiB, paths 4 KiB, read windows 1 MiB, directories 1024 entries and 16 empty batches, whole response budget 2 MiB; 16 total active operations/handlers. SSH stdout/stderr 1 MiB combined; channel payload 3 MiB and 4096 messages, at most 16 channels until peer CLOSE. A transport bound closes SSH; callback checks may include one extra upstream packet capped at 256 KiB. No SFTP writes, binary file action, protocol extensions, known_hosts, SSH agent, keyboard-interactive, certificate auth, PTY or forwarding. Experimental: no second independent SFTP server, pcap oracle or fuzz target")
+            .build()
+    }
+    fn get_startup_examples(&self) -> StartupExamples {
+        let base = || json!({"type":"open_client","protocol":"ssh","remote_addr":"localhost:22","startup_params":{"username":"user","private_key_path":"/home/user/.ssh/id_ed25519","host_key_sha256":"SHA256:<trusted fingerprint>"}});
+        let mut llm = base();
+        llm["instruction"] = json!("On ssh_connected, list /reports with sftp_list_directory. Inspect the resulting entries, then disconnect. Disconnect if the operation fails. Use only read-only SFTP actions.");
+        let mut script = base();
+        script["event_handlers"] = json!([{"event_pattern":"*","handler":{"type":"script","language":"python","code":r#"import json, sys
+event_type = json.load(sys.stdin)['event_type_id']
+actions = []
+if event_type == 'ssh_connected':
+    actions = [{'type': 'sftp_list_directory', 'path': '/reports'}]
+elif event_type in ('ssh_sftp_result', 'ssh_operation_failed'):
+    actions = [{'type': 'disconnect'}]
+print(json.dumps({'actions': actions}))"#}}]);
+        let mut static_handler = base();
+        static_handler["event_handlers"] = json!([
+            {"event_pattern":"ssh_connected","handler":{"type":"static","actions":[{"type":"sftp_list_directory","path":"/reports"}]}},
+            {"event_pattern":"ssh_sftp_result","handler":{"type":"static","actions":[{"type":"disconnect"}]}},
+            {"event_pattern":"ssh_operation_failed","handler":{"type":"static","actions":[{"type":"disconnect"}]}},
+            {"event_pattern":"*","handler":{"type":"static","actions":[]}}
+        ]);
+        StartupExamples::new(llm, script, static_handler)
     }
 }
-
-// Implement Client trait (client-specific functionality)
 impl Client for SshClientProtocol {
     fn connect(
         &self,
         ctx: ConnectContext,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = anyhow::Result<std::net::SocketAddr>> + Send>,
-    > {
-        Box::pin(async move {
-            use crate::client::ssh::SshClient;
-
-            SshClient::connect_with_llm_actions(
-                ctx.remote_addr,
-                ctx.llm_client,
-                ctx.state,
-                ctx.status_tx,
-                ctx.client_id,
-                ctx.startup_params,
-            )
-            .await
-        })
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<std::net::SocketAddr>> + Send>>
+    {
+        Box::pin(super::SshClient::connect(ctx))
     }
-    fn execute_action(&self, action: serde_json::Value) -> Result<ClientActionResult> {
-        let action_type = action
-            .get("type")
-            .and_then(|v| v.as_str())
-            .context("Missing 'type' field in action")?;
-
-        match action_type {
+    fn execute_action(&self, action: Value) -> Result<ClientActionResult> {
+        match action["type"]
+            .as_str()
+            .context("Missing 'type' field in action")?
+        {
             "execute_command" => {
-                let command = action
-                    .get("command")
-                    .and_then(|v| v.as_str())
+                let command = action["command"]
+                    .as_str()
                     .context("Missing 'command' field")?;
-
+                ensure!(
+                    !command.is_empty() && command.len() <= super::sftp::MAX_PATH,
+                    "command must contain 1..4096 bytes"
+                );
                 Ok(ClientActionResult::Custom {
-                    name: "execute_command".to_string(),
-                    data: json!({ "command": command }),
+                    name: "execute_command".into(),
+                    data: json!({"command":command}),
+                })
+            }
+            "sftp_stat" | "sftp_list_directory" | "sftp_read_file" => {
+                super::sftp::validate_action(&action)?;
+                Ok(ClientActionResult::Custom {
+                    name: "sftp_operation".into(),
+                    data: action,
                 })
             }
             "disconnect" => Ok(ClientActionResult::Disconnect),
             "wait_for_more" => Ok(ClientActionResult::WaitForMore),
-            _ => Err(anyhow::anyhow!(
-                "Unknown SSH client action: {}",
-                action_type
-            )),
+            other => anyhow::bail!("Unknown SSH client action: {other}"),
         }
     }
 }

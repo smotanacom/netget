@@ -442,10 +442,52 @@ pub struct QueryAnswer {
     pub query_type: &'static str,
 }
 
+/// Preflight handler values before recursive copies or conversion. The JSON action
+/// envelope and graph wrappers need four additional levels beyond wire containers.
+pub const MAX_ACTION_DEPTH: usize = MAX_PACKSTREAM_DEPTH + 4;
+pub const MAX_ACTION_NODES: usize = 65536;
+pub const MAX_ACTION_RETAINED_BYTES: usize = 8 * 1024 * 1024;
+pub fn action_within_budget(action: &Json) -> bool {
+    crate::utils::json_budget::within_budget(
+        action,
+        MAX_ACTION_RETAINED_BYTES,
+        MAX_ACTION_NODES,
+        MAX_ACTION_DEPTH,
+    )
+}
+
+/// Check the actual encoded container shape, including the RECORD structure and row list.
+fn within_wire_depth(value: &Value, depth: usize) -> bool {
+    let mut pending = vec![(value, depth)];
+    while let Some((value, depth)) = pending.pop() {
+        let children = match value {
+            Value::List(v) | Value::Struct { fields: v, .. } => Some(v.as_slice()),
+            Value::Map(v) => {
+                if depth > MAX_PACKSTREAM_DEPTH {
+                    return false;
+                }
+                pending.extend(v.iter().map(|(_, v)| (v, depth + 1)));
+                None
+            }
+            _ => None,
+        };
+        if let Some(children) = children {
+            if depth > MAX_PACKSTREAM_DEPTH {
+                return false;
+            }
+            pending.extend(children.iter().map(|v| (v, depth + 1)));
+        }
+    }
+    true
+}
+
 /// Build a [`QueryAnswer`] from a `send_bolt_records` action, refusing anything a client would
 /// misread: a record whose width differs from `fields`, a duplicate or empty column name, an
 /// unknown `query_type` or statistic.
 pub fn query_answer(action: &Json) -> Result<QueryAnswer, String> {
+    if !action_within_budget(action) {
+        return Err("Bolt answer exceeds the in-memory depth/node/retained-content budget".into());
+    }
     let fields: Vec<String> = match action.get("fields") {
         Some(Json::Array(fields)) => fields
             .iter()
@@ -466,7 +508,7 @@ pub fn query_answer(action: &Json) -> Result<QueryAnswer, String> {
     }
     let rows = match action.get("records") {
         None | Some(Json::Null) => Vec::new(),
-        Some(Json::Array(rows)) => rows.clone(),
+        Some(Json::Array(rows)) => rows.iter().collect::<Vec<_>>(),
         Some(_) => return Err("'records' must be an array of rows".to_string()),
     };
     let mut records = Vec::with_capacity(rows.len());
@@ -484,7 +526,15 @@ pub fn query_answer(action: &Json) -> Result<QueryAnswer, String> {
         records.push(
             cells
                 .iter()
-                .map(|c| json_to_value(c).map_err(|e| format!("record {i}: {e}")))
+                .map(|c| {
+                    let value = json_to_value(c).map_err(|e| format!("record {i}: {e}"))?;
+                    if !within_wire_depth(&value, 3) {
+                        return Err(format!(
+                            "record {i}: encoded value exceeds wire depth {MAX_PACKSTREAM_DEPTH}"
+                        ));
+                    }
+                    Ok(value)
+                })
                 .collect::<Result<Vec<_>, _>>()?,
         );
     }

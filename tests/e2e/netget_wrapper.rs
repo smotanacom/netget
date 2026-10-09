@@ -14,7 +14,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
 #[path = "../helpers/child_guard.rs"]
-mod child_guard;
+pub(crate) mod child_guard;
 
 /// Information about a created server
 #[derive(Debug, Clone)]
@@ -30,6 +30,7 @@ pub struct NetGetWrapper {
     stdin: Option<tokio::process::ChildStdin>,
     output_buffer: Arc<Mutex<String>>,
     binary_path: PathBuf,
+    script_path: Option<PathBuf>,
     stdout_reader_handle: Option<tokio::task::JoinHandle<()>>,
     stderr_reader_handle: Option<tokio::task::JoinHandle<()>>,
     /// OS-level tie so the child dies with this test binary even when `Drop`
@@ -53,10 +54,19 @@ impl NetGetWrapper {
             stdin: None,
             output_buffer: Arc::new(Mutex::new(String::new())),
             binary_path,
+            script_path: None,
             stdout_reader_handle: None,
             stderr_reader_handle: None,
             death_tie: None,
         }
+    }
+
+    /// Run an inert script as the shell's input, without executing the writable
+    /// script inode. Linux can refuse that inode with ETXTBSY during fixture setup.
+    pub fn with_script(script_path: PathBuf) -> Self {
+        let mut wrapper = Self::with_binary(PathBuf::from("/bin/sh"));
+        wrapper.script_path = Some(script_path);
+        wrapper
     }
 
     /// Start NetGet with specified model and features
@@ -67,6 +77,9 @@ impl NetGetWrapper {
 
         // Build command
         let mut cmd = Command::new(&self.binary_path);
+        if let Some(script_path) = &self.script_path {
+            cmd.arg(script_path);
+        }
         cmd.arg("--model").arg(model);
 
         // Add feature flags

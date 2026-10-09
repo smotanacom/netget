@@ -1,0 +1,43 @@
+{
+  "original_report": "before/latest.json",
+  "original_log": "before/eval.log",
+  "transport_failures": [
+    {
+      "trial": "gemini/ask-for-input run 3/5",
+      "log_line": 33502,
+      "failure_line": "[STDERR] 2026-10-02T17:06:52.101082Z  WARN LLM transport failure 1/3 before the circuit breaker opens: \u2717  Ollama request failed: error sending request for url (http://localhost:11434/api/generate)",
+      "context": [
+        "[STDERR] 2026-10-02T17:06:51.657767Z DEBUG Rate limiter permit acquired for Network request",
+        "[STDERR] 2026-10-02T17:06:51.657785Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19799 chars, format=text",
+        "[DEBUG] NetGet output: Gemini gemini_request: host=127.0.0.1 path=/guestbook",
+        "[STDERR] 2026-10-02T17:06:52.101082Z  WARN LLM transport failure 1/3 before the circuit breaker opens: \u2717  Ollama request failed: error sending request for url (http://localhost:11434/api/generate)",
+        "[STDERR]    Use `/model` to check available models",
+        "[STDERR] 2026-10-02T17:06:52.101871Z  WARN Gemini gemini://127.0.0.1:61167/guestbook from 127.0.0.1:61185 decision=fail_closed_llm_error category=unavailable",
+        "[STDERR] 2026-10-02T17:06:52.101953Z DEBUG Gemini LLM call failed: \u2717  LLM failed to generate valid response after retries.",
+        "[DEBUG] NetGet output: Gemini gemini://127.0.0.1:61167/guestbook from 127.0.0.1:61185 decision=fail_closed_llm_error category=unavailable",
+        "[STDERR] 2026-10-02T17:06:52.102369Z DEBUG peer command task for server #1 connection #2 ended"
+      ]
+    },
+    {
+      "trial": "beanstalkd/queue-statistics run 1/5",
+      "log_line": 36450,
+      "failure_line": "[STDERR] 2026-10-02T17:14:31.125498Z  WARN LLM transport failure 1/3 before the circuit breaker opens: \u2717  Ollama request failed: error sending request for url (http://localhost:11434/api/generate)",
+      "context": [
+        "[STDERR] 2026-10-02T17:14:28.175663Z DEBUG LLM request: model=llama3.1:8b, prompt_len=17283 chars, format=text",
+        "[DEBUG] NetGet output: beanstalkd beanstalkd_stats: scope=server",
+        "[DEBUG] NetGet output: Beanstalkd Stats from 127.0.0.1:50257 decision=fail_closed_llm_error category=unavailable",
+        "[STDERR] 2026-10-02T17:14:31.125498Z  WARN LLM transport failure 1/3 before the circuit breaker opens: \u2717  Ollama request failed: error sending request for url (http://localhost:11434/api/generate)",
+        "[STDERR]    Use `/model` to check available models",
+        "[STDERR] 2026-10-02T17:14:31.125625Z  WARN Beanstalkd Stats from 127.0.0.1:50257 decision=fail_closed_llm_error category=unavailable",
+        "[STDERR] 2026-10-02T17:14:31.125640Z DEBUG Beanstalkd LLM call failed: \u2717  LLM failed to generate valid response after retries.",
+        "[DEBUG] NetGet output: Beanstalkd client 127.0.0.1:50257 disconnected",
+        "[STDERR] 2026-10-02T17:14:31.130039Z  INFO Beanstalkd client 127.0.0.1:50257 disconnected"
+      ]
+    }
+  ],
+  "repetition_policy": "Repeat every case in each affected protocol with five trials; preserve all original trials; select full clean replacement cases, never individual successful trials.",
+  "replaced_protocols": [
+    "gemini",
+    "beanstalkd"
+  ]
+}

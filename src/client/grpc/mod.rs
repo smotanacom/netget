@@ -1,5 +1,9 @@
 //! gRPC client implementation
 pub mod actions;
+#[cfg(any(feature = "grpc-web", feature = "connect_rpc"))]
+pub(crate) mod http1;
+mod reflection;
+mod streaming;
 
 pub use crate::server::grpc::value_codec::{
     dynamic_message_to_json, json_to_dynamic_message, proto_value_to_json,
@@ -12,7 +16,6 @@ use http::Request;
 use http_body_util::BodyExt;
 use prost::Message as ProstMessage;
 use prost_reflect::{DescriptorPool, DynamicMessage};
-use prost_types::FileDescriptorSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
@@ -29,8 +32,7 @@ use crate::llm::ollama_client::OllamaClient;
 use crate::llm::ClientLlmResult;
 use crate::protocol::{Event, StartupParams};
 use crate::state::app_state::AppState;
-use crate::state::client_handles::{ClientCommand, ClientSendOutcome};
-use crate::state::{AccessLogOwner, ClientId, ClientStatus};
+use crate::state::{ClientId, ClientStatus};
 
 /// gRPC client connection state
 #[derive(Debug, Clone)]
@@ -44,10 +46,37 @@ struct GrpcClientData {
     channel: Channel,
     descriptor_pool: Arc<DescriptorPool>,
     state: ConnectionState,
+    automatic: mpsc::Sender<serde_json::Value>,
 }
 
 /// gRPC client that connects to remote gRPC servers
 pub struct GrpcClient;
+pub const DEFAULT_TLS: bool = false;
+pub const CONNECT_TIMEOUT_SECS: u64 = 10;
+
+struct SocketGuard(std::net::TcpStream);
+impl Drop for SocketGuard {
+    fn drop(&mut self) {
+        let _ = self.0.shutdown(std::net::Shutdown::Both);
+    }
+}
+fn seconds(
+    params: Option<&StartupParams>,
+    key: &str,
+    default: u64,
+    maximum: u64,
+) -> Result<std::time::Duration> {
+    let seconds = params
+        .map(|params| params.get_optional_u64(key))
+        .transpose()?
+        .flatten()
+        .unwrap_or(default);
+    anyhow::ensure!(
+        (1..=maximum).contains(&seconds),
+        "{key} must be 1..{maximum}"
+    );
+    Ok(std::time::Duration::from_secs(seconds))
+}
 
 impl GrpcClient {
     /// Connect to a gRPC server with integrated LLM actions
@@ -59,247 +88,225 @@ impl GrpcClient {
         client_id: ClientId,
         startup_params: Option<StartupParams>,
     ) -> Result<SocketAddr> {
-        info!("gRPC client {} connecting to {}", client_id, remote_addr);
-
-        // Parse startup parameters
-        let proto_schema = startup_params
-            .as_ref()
-            .map(|p| p.get_string("proto_schema"))
+        let params = startup_params.as_ref();
+        let schema = params
+            .map(|p| p.get_optional_string("proto_schema"))
             .transpose()?
-            .context("Missing required startup parameter: proto_schema")?;
-
-        let use_tls = startup_params
-            .as_ref()
+            .flatten();
+        let tls = params
             .map(|p| p.get_optional_bool("use_tls"))
             .transpose()?
             .flatten()
-            .unwrap_or(false);
-
-        // Load protobuf schema
-        let descriptor_pool = load_schema(&proto_schema)
-            .await
-            .context("Failed to load protobuf schema")?;
-
-        // List available services
-        let services: Vec<String> = descriptor_pool
-            .services()
-            .map(|s| s.full_name().to_string())
-            .collect();
-
-        info!(
-            "gRPC client {} loaded schema with services: {:?}",
-            client_id, services
+            .unwrap_or(DEFAULT_TLS);
+        let connect = seconds(params, "connect_timeout_secs", CONNECT_TIMEOUT_SECS, 60)?;
+        let stream_timeout = seconds(
+            params,
+            "stream_timeout_secs",
+            streaming::DEFAULT_STREAM_TIMEOUT,
+            3600,
+        )?;
+        let idle = seconds(
+            params,
+            "idle_timeout_secs",
+            streaming::DEFAULT_IDLE_TIMEOUT,
+            3600,
+        )?;
+        let name = params
+            .map(|p| p.get_optional_string("server_name"))
+            .transpose()?
+            .flatten();
+        let ca = params
+            .map(|p| p.get_optional_string("ca_file"))
+            .transpose()?
+            .flatten();
+        anyhow::ensure!(
+            tls || (name.is_none() && ca.is_none()),
+            "server_name/ca_file require use_tls"
         );
-
-        // Build gRPC channel
-        let uri = if use_tls {
-            format!("https://{}", remote_addr)
-        } else {
-            format!("http://{}", remote_addr)
-        };
-
-        let channel = Endpoint::from_shared(uri.clone())
-            .context("Invalid gRPC endpoint")?
-            .connect()
+        let uri: hyper::Uri =
+            format!("{}://{}", if tls { "https" } else { "http" }, remote_addr).parse()?;
+        anyhow::ensure!(
+            uri.path() == "/" && uri.authority().is_some(),
+            "remote address must be host:port"
+        );
+        let host = uri.host().context("endpoint has no hostname")?.to_owned();
+        let port = uri.port_u16().unwrap_or(if tls { 443 } else { 80 });
+        let name = name.unwrap_or_else(|| host.clone());
+        anyhow::ensure!(
+            !name.is_empty() && name.len() <= 253,
+            "server_name too long or empty"
+        );
+        let (channel, descriptor_pool, socket, local, remote) =
+            tokio::time::timeout(connect, async {
+                let pem = if let Some(path) = ca {
+                    Some(
+                        tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+                            use std::io::Read;
+                            let metadata = std::fs::metadata(&path)?;
+                            anyhow::ensure!(
+                                metadata.is_file() && metadata.len() <= 1024 * 1024,
+                                "CA must be a regular file at most 1 MiB"
+                            );
+                            let mut options = std::fs::OpenOptions::new();
+                            options.read(true);
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::OpenOptionsExt;
+                                options.custom_flags(libc::O_NONBLOCK);
+                            }
+                            let file = options.open(path)?;
+                            let metadata = file.metadata()?;
+                            anyhow::ensure!(
+                                metadata.is_file() && metadata.len() <= 1024 * 1024,
+                                "CA must be a regular file at most 1 MiB"
+                            );
+                            let mut bytes = Vec::new();
+                            file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
+                            anyhow::ensure!(bytes.len() <= 1024 * 1024, "CA exceeds 1 MiB");
+                            Ok(bytes)
+                        })
+                        .await??,
+                    )
+                } else {
+                    None
+                };
+                let local_schema = if let Some(schema) = schema {
+                    Some(load_schema(&schema).await?)
+                } else {
+                    None
+                };
+                let stream = tokio::net::TcpStream::connect((host.as_str(), port)).await?;
+                let local = stream.local_addr()?;
+                let remote = stream.peer_addr()?;
+                let raw = stream.into_std()?;
+                let socket = SocketGuard(raw.try_clone()?);
+                let stream = tokio::net::TcpStream::from_std(raw)?;
+                let mut endpoint = Endpoint::from(uri)
+                    .connect_timeout(connect)
+                    .concurrency_limit(16)
+                    .buffer_size(16)
+                    .initial_stream_window_size(65536)
+                    .initial_connection_window_size(1048576)
+                    .http2_max_header_list_size(32768);
+                if tls {
+                    let _ = rustls::crypto::ring::default_provider().install_default();
+                    let mut config = tonic::transport::ClientTlsConfig::new()
+                        .with_webpki_roots()
+                        .domain_name(name);
+                    if let Some(pem) = pem {
+                        config =
+                            config.ca_certificate(tonic::transport::Certificate::from_pem(pem));
+                    }
+                    endpoint = endpoint.tls_config(config)?;
+                }
+                let mut stream = Some(stream);
+                let connector = tower::service_fn(move |_: hyper::Uri| {
+                    let stream = stream.take();
+                    async move {
+                        stream.map(hyper_util::rt::TokioIo::new).ok_or_else(|| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::NotConnected,
+                                "gRPC automatic reconnect is disabled",
+                            )
+                        })
+                    }
+                });
+                let channel = endpoint.connect_with_connector(connector).await?;
+                let pool = match local_schema {
+                    Some(pool) => pool,
+                    None => reflection::discover(channel.clone()).await?,
+                };
+                anyhow::ensure!(
+                    pool.files().len() <= 128 && pool.services().len() <= 128,
+                    "schema exceeds 128 files/services"
+                );
+                anyhow::ensure!(
+                    pool.file_descriptor_protos()
+                        .map(ProstMessage::encoded_len)
+                        .sum::<usize>()
+                        <= 4 * 1024 * 1024,
+                    "schema exceeds 4 MiB"
+                );
+                Ok::<_, anyhow::Error>((channel, pool, socket, local, remote))
+            })
             .await
-            .context("Failed to connect to gRPC server")?;
-
-        info!("gRPC client {} connected to {}", client_id, remote_addr);
-
-        let grpc_client_data = Arc::new(Mutex::new(GrpcClientData {
+            .context("gRPC connection/schema deadline exceeded")??;
+        let services: Vec<_> = descriptor_pool
+            .services()
+            .map(|service| service.full_name().to_owned())
+            .collect();
+        let (automatic, automatic_rx) = mpsc::channel(16);
+        let data = Arc::new(Mutex::new(GrpcClientData {
             channel,
             descriptor_pool: Arc::new(descriptor_pool),
             state: ConnectionState::Idle,
+            automatic,
         }));
-
-        // Store client in protocol_data
+        let now = crate::utils::clock::Instant::now();
         app_state
             .with_client_mut(client_id, |client| {
-                client.set_protocol_field(
-                    "grpc_client".to_string(),
-                    serde_json::json!("initialized"),
-                );
-                client
-                    .set_protocol_field("server_addr".to_string(), serde_json::json!(remote_addr));
+                client.connection = Some(crate::state::ClientConnectionState {
+                    id: client_id,
+                    remote_addr: remote_addr.clone(),
+                    connected_addr: Some(remote),
+                    local_addr: Some(local),
+                    bytes_sent: 0,
+                    bytes_received: 0,
+                    packets_sent: 0,
+                    packets_received: 0,
+                    last_activity: now,
+                    status: ClientStatus::Connected,
+                    status_changed_at: now,
+                    protocol_info: crate::state::server::ProtocolConnectionInfo::new(
+                        serde_json::json!({"tls_verified":tls}),
+                    ),
+                });
+                client.set_protocol_field("grpc_client".into(), serde_json::json!("initialized"));
+                client.set_protocol_field("server_addr".into(), serde_json::json!(remote_addr));
             })
             .await;
-
-        // Update status
         app_state
             .update_client_status(client_id, ClientStatus::Connected)
             .await;
-        let _ = status_tx.send(format!(
-            "[CLIENT] gRPC client {} ready for {} (services: {})",
-            client_id,
-            remote_addr,
-            services.join(", ")
-        ));
-        let _ = status_tx.send("__UPDATE_UI__".to_string());
-
-        // Command channel for injected actions (the dashboard's [ send ] / composer).
-        // Registered BEFORE the connected-event LLM call below, which a manual `*` routing
-        // rule can park for minutes - the operator must be able to make an RPC while it
-        // waits.
-        //
-        // This task also replaces the old "poll get_client() every 5s" idle task:
-        // `remove_client` drops the command sender, so `recv()` returns `None` the moment
-        // the client goes away.
-        let command_rx =
+        let commands =
             crate::client::command_support::register_command_channel(&app_state, client_id).await;
-        let cmd_task = tokio::spawn(grpc_command_loop(
-            command_rx,
-            client_id,
-            grpc_client_data.clone(),
-            app_state.clone(),
-            llm_client.clone(),
-            status_tx.clone(),
-        ));
-        app_state.register_client_task(client_id, cmd_task).await;
-
-        // Call LLM with connected event
-        let protocol = Arc::new(GrpcClientProtocol::new());
-        if let Some(instruction) = app_state.get_instruction_for_client(client_id).await {
-            let event = Event::new(
-                &GRPC_CLIENT_CONNECTED_EVENT,
-                serde_json::json!({
-                    "server_addr": remote_addr,
-                    "services": services,
-                }),
-            );
-
-            let memory = app_state
-                .get_memory_for_client(client_id)
-                .await
-                .unwrap_or_default();
-
-            match call_llm_for_client(
-                &llm_client,
-                &app_state,
-                client_id.to_string(),
-                &instruction,
-                &memory,
-                Some(&event),
-                protocol.as_ref(),
-                &status_tx,
+        let connected = Event::new(
+            &GRPC_CLIENT_CONNECTED_EVENT,
+            serde_json::json!({"server_addr":remote_addr,"services":services}),
+        );
+        let ctx = streaming::ContextData {
+            id: client_id,
+            data,
+            state: app_state.clone(),
+            llm: llm_client,
+            status: status_tx.clone(),
+            protocol: Arc::new(GrpcClientProtocol::new()),
+        };
+        app_state
+            .spawn_client_task(
+                client_id,
+                streaming::run(
+                    ctx,
+                    socket,
+                    commands,
+                    automatic_rx,
+                    connected,
+                    stream_timeout,
+                    idle,
+                ),
             )
-            .await
-            {
-                Ok(ClientLlmResult {
-                    actions,
-                    memory_updates,
-                }) => {
-                    // Update memory
-                    if let Some(mem) = memory_updates {
-                        app_state.set_memory_for_client(client_id, mem).await;
-                    }
-
-                    // Execute actions through the same path injected commands use, so
-                    // the `grpc_call` decoding exists exactly once.
-                    for action in actions {
-                        let grpc_data = grpc_client_data.clone();
-                        let proto = protocol.clone();
-                        match Box::pin(execute_grpc_action(
-                            client_id,
-                            action,
-                            grpc_data,
-                            &app_state,
-                            &llm_client,
-                            &status_tx,
-                            &proto,
-                            Dispatch::Inline,
-                        ))
-                        .await
-                        {
-                            Ok(Applied::Disconnect) => break,
-                            Ok(_) => {}
-                            Err(e) => error!("Failed to execute gRPC action: {}", e),
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("LLM error for gRPC client {}: {}", client_id, e);
-                }
-            }
-        }
-
-        // No idle-poll task: the command loop above is this client's only long-lived task
-        // and it ends when the client is removed.
-
-        // Return a dummy local address (gRPC manages connections internally)
-        Ok("0.0.0.0:0".parse().unwrap())
+            .await;
+        let _ = status_tx.send("__UPDATE_UI__".into());
+        Ok(local)
     }
 }
 
-/// Load protobuf schema from various formats
+/// Both peers share bounded schema input and an owned protoc child.
 async fn load_schema(schema_input: &str) -> Result<DescriptorPool> {
-    use base64::{engine::general_purpose, Engine as _};
-
-    // Try to decode as base64 FileDescriptorSet
-    if let Ok(bytes) = general_purpose::STANDARD.decode(schema_input) {
-        if let Ok(fds) = FileDescriptorSet::decode(&bytes[..]) {
-            return DescriptorPool::from_file_descriptor_set(fds)
-                .context("Failed to create descriptor pool from FileDescriptorSet");
-        }
-    }
-
-    // Try as file path
-    if std::path::Path::new(schema_input).exists() {
-        let proto_content = tokio::fs::read_to_string(schema_input)
-            .await
-            .context("Failed to read .proto file")?;
-        return compile_proto_text(&proto_content).await;
-    }
-
-    // Try as inline proto text
-    if schema_input.contains("syntax") && schema_input.contains("proto") {
-        return compile_proto_text(schema_input).await;
-    }
-
-    Err(anyhow::anyhow!(
-        "Invalid proto_schema format. Expected base64 FileDescriptorSet, .proto file path, or inline .proto text"
-    ))
+    crate::server::grpc::schema::load(schema_input).await
 }
 
-/// Compile .proto text to descriptor pool using protoc
-async fn compile_proto_text(proto_text: &str) -> Result<DescriptorPool> {
-    // Write proto to temp file
-    let temp_dir = tempfile::tempdir()?;
-    let proto_path = temp_dir.path().join("schema.proto");
-    tokio::fs::write(&proto_path, proto_text).await?;
-
-    // Run protoc to compile.
-    //
-    // `--proto_path` is not optional here even though the file is named absolutely and
-    // the child's cwd is the same directory: protoc requires every input to sit under
-    // some `-I` root and compares the strings literally, so an absolute filename against
-    // an implicit `-I.` fails with "File does not reside within any path specified using
-    // --proto_path". Without it, the documented "inline .proto text" schema form could
-    // never load. The server side (`src/server/grpc/mod.rs`) always passed one.
-    let output = tokio::process::Command::new("protoc")
-        .arg("--descriptor_set_out=/dev/stdout")
-        .arg("--include_imports")
-        .arg(format!("--proto_path={}", temp_dir.path().display()))
-        .arg("schema.proto")
-        .current_dir(temp_dir.path())
-        .output()
-        .await
-        .context("Failed to run protoc (is it installed?)")?;
-
-    if !output.status.success() {
-        return Err(anyhow::anyhow!(
-            "protoc failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    let fds =
-        FileDescriptorSet::decode(&output.stdout[..]).context("Failed to decode protoc output")?;
-
-    DescriptorPool::from_file_descriptor_set(fds).context("Failed to create descriptor pool")
-}
-
-/// What one executed action did. Shared vocabulary between the connected-event handler
-/// and the injected-command loop.
+/// The result of a legacy unary action, consumed by the connection owner.
 enum Applied {
     /// A gRPC request really went out; `bytes_sent` is the length of the framed
     /// message (5-byte gRPC header + protobuf payload) that was written to the
@@ -377,6 +384,15 @@ async fn apply_grpc_action(
     dispatch: Dispatch,
 ) -> Result<Applied> {
     match action_result {
+        ClientActionResult::Custom { name, data } if name.starts_with("grpc_stream_") => {
+            grpc_client_data
+                .lock()
+                .await
+                .automatic
+                .try_send(data)
+                .context("stream control queue full or closed")?;
+            Ok(Applied::Ran("stream control queued".into()))
+        }
         ClientActionResult::Custom { name, data } if name == "grpc_call" => {
             let service = data["service"]
                 .as_str()
@@ -446,110 +462,6 @@ async fn apply_grpc_action(
 /// Drain injected commands until the channel closes (the client was removed) or an
 /// injected `disconnect` ends the session.
 ///
-/// `command_support::handle_stream_client_command` cannot serve this client: there is no
-/// write half NetGet owns - tonic holds the HTTP/2 channel - and `grpc_call` yields
-/// `ClientActionResult::Custom`. The shared `Arc<Mutex<GrpcClientData>>` the connect path
-/// already built is what makes this loop possible: the channel and the descriptor pool are
-/// reachable from outside the connect task, so an injected action runs on the same
-/// connection and the same schema as an LLM-produced one.
-async fn grpc_command_loop(
-    mut command_rx: mpsc::Receiver<ClientCommand>,
-    client_id: ClientId,
-    grpc_client_data: Arc<Mutex<GrpcClientData>>,
-    app_state: Arc<AppState>,
-    llm_client: OllamaClient,
-    status_tx: mpsc::UnboundedSender<String>,
-) {
-    use crate::llm::actions::protocol_trait::Protocol;
-
-    let protocol = Arc::new(GrpcClientProtocol::new());
-
-    while let Some(command) = command_rx.recv().await {
-        let action = command.action.clone();
-        // Held until after the reply: see `Dispatch::Defer`.
-        let mut pending_notify = None;
-        let outcome = match protocol.as_ref().execute_action(action.clone()) {
-            Err(e) => Ok(ClientSendOutcome::Rejected {
-                error: e.to_string(),
-            }),
-            Ok(action_result) => match Box::pin(apply_grpc_action(
-                client_id,
-                action_result,
-                grpc_client_data.clone(),
-                &app_state,
-                &llm_client,
-                &status_tx,
-                &protocol,
-                Dispatch::Defer,
-            ))
-            .await
-            {
-                Ok(Applied::Sent {
-                    bytes_sent,
-                    pending_notify: pending,
-                }) => {
-                    pending_notify = pending;
-                    Ok(ClientSendOutcome::Sent { bytes_sent })
-                }
-                Ok(Applied::Ran(detail)) => Ok(ClientSendOutcome::Executed { detail }),
-                Ok(Applied::Disconnect) => Ok(ClientSendOutcome::Disconnected),
-                Err(e) => Err(e),
-            },
-        };
-
-        let outcome_json = match &outcome {
-            Ok(outcome) => serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null),
-            Err(e) => serde_json::json!({"error": e.to_string()}),
-        };
-        app_state
-            .record_access_log(
-                AccessLogOwner::Client(client_id.as_u32()),
-                protocol.protocol_name(),
-                None,
-                "injected_action",
-                action,
-                vec![outcome_json],
-            )
-            .await;
-
-        let disconnect = matches!(outcome, Ok(ClientSendOutcome::Disconnected));
-        if let Err(e) = &outcome {
-            error!("gRPC client {} injected action failed: {}", client_id, e);
-            let _ = status_tx.send(format!(
-                "[WARN] Client {} injected action failed: {}",
-                client_id, e
-            ));
-        }
-        let _ = status_tx.send("__UPDATE_UI__".to_string());
-        crate::client::command_support::reply(command, outcome);
-
-        // Only now, with the caller already holding its answer, raise the response
-        // event. A manual routing rule parking here costs the operator nothing but a
-        // "client busy" on a *second* send, which is what the bounded channel is for.
-        if let Some(event_data) = pending_notify {
-            notify_grpc_response(
-                client_id,
-                event_data,
-                grpc_client_data.clone(),
-                app_state.clone(),
-                llm_client.clone(),
-                status_tx.clone(),
-                protocol.clone(),
-            )
-            .await;
-        }
-
-        if disconnect {
-            break;
-        }
-    }
-
-    // Nothing can be injected any more: stop the dashboard offering [ send ].
-    app_state.remove_client_handle(client_id).await;
-    let _ = status_tx.send("__UPDATE_UI__".to_string());
-    info!("gRPC client {} command loop ended", client_id);
-}
-
 /// One completed gRPC call.
 struct GrpcCallReport {
     /// Framed bytes written to the channel: 5-byte gRPC header + protobuf payload.

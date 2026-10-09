@@ -209,6 +209,36 @@ pub trait Protocol: Send + Sync {
     ) -> Vec<ProtocolDependency> {
         self.get_dependencies()
     }
+
+    /// The privilege this particular start needs, given its startup parameters.
+    ///
+    /// This is what the startup privilege gate checks. It defaults to the declared
+    /// `metadata().privilege_requirement`, which describes the transport an operator actually
+    /// uses. A protocol with an unprivileged test transport — the same frames over a UDP socket
+    /// instead of raw Ethernet or IP — overrides it with [`unless_udp_transport`], so a start
+    /// that needs no privilege is not refused. Declaring `None` instead would misdescribe the
+    /// real transport.
+    fn startup_privilege_requirement(
+        &self,
+        _startup_params: Option<&serde_json::Value>,
+    ) -> crate::protocol::metadata::PrivilegeRequirement {
+        self.metadata().privilege_requirement
+    }
+}
+
+/// `declared`, unless the startup parameters select the unprivileged UDP test transport
+/// (`transport: "udp"`, or CDP's alias `"test"`), which needs nothing.
+pub fn unless_udp_transport(
+    declared: crate::protocol::metadata::PrivilegeRequirement,
+    startup_params: Option<&serde_json::Value>,
+) -> crate::protocol::metadata::PrivilegeRequirement {
+    match startup_params
+        .and_then(|p| p.get("transport"))
+        .and_then(|t| t.as_str())
+    {
+        Some("udp" | "test") => crate::protocol::metadata::PrivilegeRequirement::None,
+        _ => declared,
+    }
 }
 
 /// Translate a protocol's declared `privilege_requirement` into runtime dependencies.

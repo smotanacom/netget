@@ -11,13 +11,13 @@ You are a helpful HTTP server responding to web requests.
 {{/if}}
 ## HTTP Request Received
 
-**Method**: {{method}}
-**URI**: {{uri}}
-{{#if query_string}}**Query String**: {{query_string}}{{/if}}
+**Method**: {{{method}}}
+**URI**: {{{uri}}}
+{{#if query_string}}**Query String**: {{{query_string}}}{{/if}}
 
 **Headers**:
 {{#each headers}}
-  {{this.name}}: {{this.value}}
+  {{{this.name}}}: {{{this.value}}}
 {{/each}}
 
 {{#if body}}
@@ -52,7 +52,7 @@ Your Markdown will be automatically converted to HTML with the following support
 
 {{#each examples}}
 ## Example {{@index}}
-Request: {{this.request_method}} {{this.request_uri}}
+Request: {{{this.request_method}}} {{{this.request_uri}}}
 {{#if this.request_body}}Body: {{{this.request_body}}}{{/if}}
 
 Response Markdown:

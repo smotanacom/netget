@@ -11,6 +11,15 @@ permissions:
   contents: write
 
 jobs:
+  protocol-validation:
+    name: Peer and news release gate
+    if: github.ref_type == 'tag'
+    uses: ./.github/workflows/protocol-pairs.yml
+    with:
+      suite: p2p-news
+    permissions:
+      contents: read
+
   build:
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
@@ -78,12 +87,39 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - name: Select native Perl for vendored OpenSSL
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $perl = 'C:\Strawberry\perl\bin\perl.exe'
+          if (-not (Test-Path $perl)) { throw "Strawberry Perl is missing: $perl" }
+          & $perl -MLocale::Maketext::Simple -MIPC::Cmd -e 'print "OpenSSL Perl modules available\n"'
+          if ($LASTEXITCODE -ne 0) { throw "OpenSSL Perl modules are missing" }
+          "OPENSSL_SRC_PERL=$perl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          'C:\Strawberry\perl\bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Build
+        env:
+          LZMA_API_STATIC: "1" # Bundle XZ instead of linking the runner's Homebrew installation.
         shell: bash
         run: |
           cargo build --release --locked \
             --no-default-features --features ${{ matrix.features }} \
             --target ${{ matrix.target }}
+
+      - name: Verify macOS runtime libraries
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          report="$RUNNER_TEMP/netget-runtime-libraries.txt"
+          otool -L "target/${{ matrix.target }}/release/netget" > "$report"
+          cat "$report"
+          while IFS= read -r library; do
+            case "$library" in
+              /System/Library/*|/usr/lib/*) ;;
+              *) echo "Unexpected non-system runtime library: $library" >&2; exit 1 ;;
+            esac
+          done < <(awk 'NR > 1 { print $1 }' "$report")
 
       - name: Package
         shell: bash
@@ -115,7 +151,7 @@ jobs:
 
   github-release:
     name: GitHub Release
-    needs: build
+    needs: [build, protocol-validation]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:

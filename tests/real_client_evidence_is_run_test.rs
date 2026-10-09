@@ -171,23 +171,54 @@ fn spawned_binaries(src: &str) -> BTreeSet<String> {
     out
 }
 
-/// The text of the `real-client evidence` step's `for filter in … ; do` list.
+/// Literal evidence filter lists across CI workflows. Dedicated protocol jobs
+/// provision their peers separately from the broad registry job.
 fn evidence_loop() -> String {
-    let text = workflow();
-    let start = text
-        .find("for filter in \\")
-        .expect("ci.yml no longer has a `for filter in \\` list in the real-client evidence step");
-    let end = text[start..]
-        .find("; do")
-        .expect("the `for filter in \\` list is not terminated by `; do`")
-        + start;
-    text[start..end].to_string()
+    let directory = repo_root().join(".github/workflows");
+    let mut paths: Vec<_> = std::fs::read_dir(&directory)
+        .expect("read workflow directory")
+        .map(|entry| entry.expect("workflow entry").path())
+        .filter(|path| {
+            matches!(
+                path.extension().and_then(|s| s.to_str()),
+                Some("yml" | "yaml")
+            )
+        })
+        .collect();
+    paths.sort();
+    let mut filters = String::new();
+    for path in paths {
+        let text = std::fs::read_to_string(&path).expect("read workflow");
+        let mut in_list = false;
+        for line in text.lines() {
+            let line = line.trim();
+            if line.starts_with('#') {
+                continue;
+            }
+            if line == "for filter in \\" {
+                assert!(!in_list, "nested evidence list in {}", path.display());
+                in_list = true;
+            } else if in_list {
+                if let Some(end) = line.find("; do") {
+                    filters.push_str(&line[..end]);
+                    filters.push(' ');
+                    in_list = false;
+                } else {
+                    filters.push_str(line.trim_end_matches('\\').trim());
+                    filters.push(' ');
+                }
+            }
+        }
+        assert!(!in_list, "unterminated evidence list in {}", path.display());
+    }
+    assert!(!filters.is_empty(), "no literal CI evidence filters found");
+    filters
 }
 
 /// Real-client tests that no CI job runs today.
 ///
 /// **This list may only shrink.** Each entry is a test that drives a genuine third-party client
-/// and that nothing in `.github/workflows/ci.yml` executes, so whatever it proves is proved
+/// and that no CI workflow executes, so whatever it proves is proved
 /// nowhere. They are recorded rather than fixed here because each needs its own decision, and
 /// the note says what that decision costs:
 ///
@@ -257,10 +288,9 @@ fn every_real_client_test_is_named_in_the_ci_evidence_loop() {
 
     assert!(
         missing.is_empty(),
-        "these tests drive a third-party client and .github/workflows/ci.yml never runs \
+        "these tests drive a third-party client and no CI workflow runs \
          them:\n\n  {}\n\n\
-         That job's own header calls itself the only place those tests can run, because it is \
-         the only job with the third-party binaries installed. A real-client test outside it is \
+         Add the test to a workflow that provisions its pinned third-party peer. A real-client test outside such a job is \
          evidence nothing exercises — the same hole as a skip-when-missing gate, wearing \
          different clothes.\n\n\
          Add each to the `for filter in \\` list in the \"real-client evidence\" step, and \

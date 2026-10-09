@@ -1,0 +1,2 @@
+# Captured model inputs preserve their literal final blank lines.
+captures/**/*.prompt.txt whitespace=-blank-at-eof

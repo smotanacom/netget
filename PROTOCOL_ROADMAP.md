@@ -557,6 +557,19 @@ Each was found by an agent working inside its own boundary, reported rather than
 reached outside to fix, and is small. Do them once the waves have landed, not
 during — every one touches a shared file.
 
+**Status, 7 October 2026: all five are resolved.**
+1 — `wireshark.rs` now covers every protocol named below; DHCPv6, Wake-on-LAN, EAPOL and
+NDP were the last four (`1c8c5f1d`, each name checked with tshark 4.6.8; WoL is a display
+filter because its dissector is heuristic). 2 — both startup gates ask
+`Protocol::startup_privilege_requirement`, which LLDP, STP, CDP, EAPOL, NDP, VRRP and raw IP
+relax only for their UDP test transport (`9a1a1251`, pinned by
+`tests/startup_privilege_transport_test.rs`, which fails with the refusal if either gate reads
+the declared requirement). 3 — `AGENTS.md` already used the right form; 236 lines in 109 other
+files did not and now do (`aaea81a3`; its message says 80 files). 4 — had already been fixed:
+`client_action_names_for_pattern` reads async ∪ sync ∪ the event's own actions. 5 — `stp`
+had already dropped `pnet`; `rawip` declared it and used nothing, and no longer does
+(`51290000`); LLDP, CDP, EAPOL and NDP use `pnet::datalink` for interface addresses.
+
 1. **`src/tui/wireshark.rs` has no entry for any protocol added here.**
    Two concrete instances confirmed by agents: DHCPv6 (`wireshark.rs:203` has
    `"dhcp" | "bootp" => udp("dhcp")` and no `dhcpv6` arm) and Wake-on-LAN.
@@ -867,7 +880,7 @@ Requested 1 October 2026. This is the durable implementation checklist for the r
 
 The research counted 169 server registration sites and 103 client registration sites, including device profiles and partial implementations. These are source counts, not runtime counts or conformance claims. At that research snapshot, HTTP/3 had a real client but no matching server; the QUIC server handled raw streams. The generic gRPC server is unary-only and does not serve reflection. SSH already contains an SFTP server but its client lacks SFTP. Existing AMQP is 0-9-1, so AMQP 1.0 is distinct. OTLP currently has an HTTP receiver.
 
-Redfish was previously deferred on the assumption that suitable peers were Python-only. [Gofish](https://github.com/stmcginnis/gofish) supplies an independent Go client, so that rationale should not prevent implementing it. DNP3's prominent Rust library is commercial; dependency choice must be resolved before integration. Current repository pins (Hickory 0.24, russh 0.45, tonic 0.12/prost 0.13) make current-library compatibility an explicit check, not an assumption.
+Redfish was previously deferred on the assumption that suitable peers were Python-only. [Gofish](https://github.com/stmcginnis/gofish) supplies an independent Go client, so that rationale should not prevent implementing it. DNP3 dependency decision resolved (October 2026): use the self-contained bounded Rust subset, with Apache-2.0 OpenDNP3 3.1.2 as an external independent test peer. No commercial Step Function library is linked or required. Current repository pins (Hickory 0.24, russh 0.45, tonic 0.12/prost 0.13) make current-library compatibility an explicit check, not an assumption.
 
 Priority is an engineering judgment: **A** strongest general fit, **B** useful follow-on, **C** workload-specific. Effort **S/M/L** is comparative and covers both roles, a useful documented scope and interoperability tests. API profiles such as SCIM and Redfish add schema/state semantics over HTTP. Collector/exporter and peer roles count as the two natural protocol sides where client/server is not the native terminology.
 
@@ -879,12 +892,12 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **48 / 72**; **24 remain**. Completed scopes comprise twenty-eight new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
+- Completed: **66 / 72**; **6 remain**. Completed scopes comprise forty-six new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
 - 4 October 2026: NETCONF02, RPKI-RTR09 and RDAP17 pass every coordinator gate (roles with independent peers, shared audits, privacy, startup, standalone feature, clippy, format, module reachability) through `.protocol-expansion-20261001/validate_scope.py`, the per-scope driver that replaces the per-batch scripts. Master `4becfaf0` passed all 28 protocol-pair jobs, Browser build and the single-feature shards after two CI repairs found on first publication: gNMI's protos now vendor protobuf's well-known types (Ubuntu's protoc ships without them) and the OCI client converts its body-limit error explicitly for wasm32.
 - Batch 11 (gNMI04, Diameter08, OCI62) passed every coordinator gate on 4 October 2026 at integration `11854297`: OCI 48, gNMI 13 and Diameter 32 both-role checks, native gRPC neighbours 38, gNMI seams/shared codec 39, shared audits 195, privacy 148, startup 45, standalone `gnmi` and `diameter` all-target checks, clippy (correctness, suspicious, unused_must_use), whole-tree format, module reachability (2651 files) and the protocol-pair workflow verifier. No failures and no ignored tests. Evidence: `.protocol-expansion-20261001/logs/batch11-*-h2-*.log` and `batch11-h2-*-results.json`.
-- The two shared blockers were fixed without relaxing a baseline. The control-character ratchet matched the OCI client's `WWW-Authenticate` quoted-string validator (`api.rs:393`, not the Basic username at line 121, which the scan does not see), now listed as a validator with its reason; the binary's rustls provider gate names `gnmi`. Follow-up: eight files pass a control-character predicate as a function path (`char::is_control`) that the ratchet's token scan misses — `influxdb` (server and client), `gemini`, `docker`, `dict`, `vault` and the OCI client.
+- The two shared blockers were fixed without relaxing a baseline. The control-character ratchet matched the OCI client's `WWW-Authenticate` quoted-string validator (`api.rs:393`, not the Basic username at line 121, which the scan does not see), now listed as a validator with its reason; the binary's rustls provider gate names `gnmi`. The function-path form (`char::is_control`) the ratchet missed turned out to be forty-five validators; all call `utils::sanitize::has_controls` and the ratchet now matches that form (`21df3c20`).
 - The SSH server ownership defect is fixed (`0cad604b`): the connection task awaits russh's `RunningSession`, and a per-connection cancellation token reaches the detached driver through the stream wrapper and races every model call. `tests/server/ssh/session_ownership_test.rs` proves live state, socket closure on stop and retirement of a parked manual authentication through libssh2; both tests fail when the session is dropped again. All 16 SSH server tests pass.
-- Unfinished worker code: NETCONF (worktree `nut`), WebTransport vendor corrections (`doq`; the `varint_w2q` import is fixed, dependency regressions unvalidated) and an RPKI-RTR codec (`statsd`). Diameter peers are restored under `.protocol-expansion-20261001/peers/diameter`; the RPKI-RTR peers still need restoring.
+- Worker drafts superseded by integrated scopes are preserved, unmerged, as snapshot commits on their branches: NETCONF (`protocol-expansion-nut`), the RPKI-RTR codec (`protocol-expansion-statsd`) and the WebTransport vendor copy (`protocol-expansion-doq`). Diameter and RPKI-RTR peers (StayRTR 0.6.4, rtrdump, rtrclient) are restored under `.protocol-expansion-20261001/peers/`.
 - Publication model: signed no-ff merges into local master and direct pushes to origin/master; no GitHub PRs. Every Cargo command goes through `run_cargo.py` (30 GiB to start, stops below 25 GiB).
 
 ## New protocol checklist
@@ -906,12 +919,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Documentation, honest metadata and integrated commit recorded.
   - Validation: 27 checks pass at 100 threads. Unchanged ncclient 0.7.1 (Paramiko 3.5.1) drives the server and the netconf 2.1.0 Python server answers the client, each over base:1.0 end-of-message and base:1.1 chunked framing; NetGet pair across every reply shape, kill-session, pinned host key, hello deadline, parked-manual removal; envelope and codec bounds. SSH netconf subsystem on russh 0.45, RFC 6241 envelopes, capability-checked datastores, handler-controlled data (no datastore in Rust); copy/delete-config, confirmed commit, url, notifications, TLS and public-key auth excluded; Experimental. Source `77458401`, CI `14f4e7d1`, published `ace1e3cd`.
 
-- [ ] **03. RESTCONF** — B/M-L; proposed feature `restconf`. [Specification/reference](https://www.rfc-editor.org/info/rfc8040/).
+- [x] **03. RESTCONF** — B/M-L; proposed feature `restconf`. [Specification/reference](https://www.rfc-editor.org/info/rfc8040/).
   - Scope: YANG-shaped HTTP resources, discovery, reads/edits, media types and protocol errors; declare modeled scope.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 5 RESTCONF test functions pass. Modeled scope: JSON (application/yang-data+json) data resources and operations, host-meta discovery, the API root, yang-library-version and an ietf-yang-library modules-state generated from the declared modules; no YANG parsing, XML, event streams, ETag or YANG Patch. The unchanged FreeCONF RESTCONF client (Go) loads the module list from NetGet, reads FreeCONF's car module, PATCHes the speed and reads it back, and invokes car:addOil. NetGet's client against the unchanged FreeCONF server reads the module, a list entry and a leaf, PATCHes and reads back, deletes an entry and gets 404 for it, and invokes car:addOil accepted and refused with FreeCONF's RFC 8040 error. FreeCONF deviates from RFC 8040 in ways the tests record rather than paper over: it serves neither the API root nor yang-library-version (the client reports their status instead of requiring them), returns list entries unwrapped and expects them so (RFC 8040 section 3.5.3 wraps them, as NetGet's handler does), and addresses a module without a top container as `module:` (now accepted). Wire tests cover paths, client against server and raw HTTP refusals (406, 415, query parameters, 405). Experimental. Source `0f2b8fab`, CI `fb3a28f7`.
 
 - [x] **04. gNMI** — A/L; proposed feature `gnmi`. [Specification/reference](https://github.com/openconfig/reference/blob/master/rpc/gnmi/gnmi-specification.md).
   - Scope: Capabilities/Get/Set and ONCE/POLL/STREAM subscriptions, typed paths, synchronization and cancellation.
@@ -962,12 +976,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Documentation, honest metadata and integrated commit recorded.
   - Validation: 18 checks pass. StayRTR 0.6.4 rtrdump (Go; v1, v0, serial delta, foreign-session Cache Reset) and RTRlib 0.8.0 rtrclient (C; Serial Notify → incremental withdrawal) against the cache; StayRTR's cache against the router (notify-driven delta, version 0); NetGet pair, RFC 8210 error codes both ways, parked-manual removal, literal-byte codec. No VRP store, ROV, SSH/TLS transports, Router Key/ASPA; Experimental. Source `533b7073`, CI `d3457253`.
 
-- [ ] **10. BMP** — B/M; proposed feature `bmp`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc7854.html).
+- [x] **10. BMP** — B/M; proposed feature `bmp`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc7854.html).
   - Scope: Collector/exporter roles, peer up/down, route monitoring, statistics and bounded BGP payload parsing.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 5 BMP test functions pass. Unchanged GoBGP 4.9.0 (Go), peered with a second GoBGP, exports to NetGet's collector: Initiation (sysName GoBGP), Peer Up with both OPENs and the peer's port, Route Monitoring for routes added through the gobgp CLI (community and MED intact) and for a withdrawal, Statistics (adj_rib_in_routes 1 after the withdrawal), and Peer Down when the route source is killed. NetGet's exporter against unchanged gobmp 1.1.0 (Go): gobmp parses the peer up (ASNs, BGP IDs, port), announcements with AS path, origin, MED, local preference and community, the withdrawal, the statistics (prefixes_rejected_inbound 3, ads_rib_in 1), the peer down with its NOTIFICATION, and the termination; a route for a peer that is not up is refused before the wire. Wire tests cover per-peer header and distinguisher round trips, exporter-to-collector exact values for every message type, and collector refusals (no Initiation first, version 2, oversized, truncated per-peer header, a rejected router). The `bmp` feature enables `bgp` for netgauze's BGP codec; IPv4 routes only on the exporter; no Route Mirroring export; Experimental. Source `4af65899`, CI `a7a2760c`.
 
 - [x] **11. GraphQL over HTTP** — A/M-L; proposed feature `graphql`. [Specification/reference](https://http-spec.graphql.org/draft/).
   - Scope: Runtime schema, query/mutation execution, variables, introspection and spec-shaped errors; subscriptions tracked separately below.
@@ -1009,12 +1024,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Documentation, honest metadata and integrated commit recorded.
   - Validation: 6 test functions pass. Unchanged scim2-tester 0.5.1 builds its models from NetGet's discovery and passes every check it runs (discovery, CRUD, PATCH add/replace/remove on every User, Enterprise and Group attribute, attribute selection on get, list and /.search) with no error; unchanged scim2-cli 0.4.0 creates, runs a compound value-path filter sorted descending, a case-insensitive filter, attribute selection, a uniqueness conflict, replace and delete; NetGet's client provisions against unchanged scim2-server 0.4.0; filter, PATCH-path, projection, refusal and NetGet pair tests. Discovery comes from RFC 7643's own schema text; Users and Groups only, no Bulk, /Me, ETags or changePassword; Experimental. Source `ac6c6131`, CI `c218e696`.
 
-- [ ] **16. ACME** — B/L; proposed feature `acme`. [Specification/reference](https://www.rfc-editor.org/info/rfc8555/).
+- [x] **16. ACME** — B/L; proposed feature `acme`. [Specification/reference](https://www.rfc-editor.org/info/rfc8555/).
   - Scope: Account/order/challenge/finalize/certificate workflow with deterministic JWS, nonces and certificate processing.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 6 ACME test functions pass. Unchanged lego 4.35.2 (Go, ES256) over HTTPS orders two names by http-01 that Rust fetches from lego's own solver, lists, revokes and is refused a policy-rejected order; unchanged certbot 5.8.0 (python acme, RSA/RS256) over HTTP gets a certificate by standalone http-01 and a wildcard by manual dns-01, revokes and is refused a blocked account. NetGet's client against unchanged Pebble 2.10.1 with pebble-challtestsrv registers, orders, passes http-01 validated by Pebble's VA against its responder and dns-01 via challtestsrv's DNS, finalizes, revokes (Pebble refuses a second as alreadyRevoked), is refused a blocklisted name and deactivates. Raw JWS tests cover 415/413, nonce reuse, URL mismatch, unsupported alg, forged payload, accounts, contacts, identifiers, orderNotReady, ownership, wildcard challenges, an http-01 Rust cannot fetch (handler not asked) and badCSR; no handler answer creates nothing; the NetGet pair runs over HTTPS. certbot found that rcgen's explicit basicConstraints cA FALSE is refused by python cryptography (leaves now omit it). No keyChange, EAB, pre-authorization, tls-alpn-01, OCSP/CRL, profiles or ARI; in-memory state; Experimental. Source `b4441315` (shared TLS-loader fix `d98233c3`), CI `a81818a4`.
 
 - [x] **17. RDAP** — B/S-M; proposed feature `rdap`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc9082.html).
   - Scope: Domain/IP/ASN queries, structured objects, links/notices, response schemas and errors.
@@ -1024,26 +1040,29 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Documentation, honest metadata and integrated commit recorded.
   - Validation: 6 test functions (dozens of queries) pass. OpenRDAP 0.10.2 and ICANN rdap 1.0.0 query every object class, search, help, 404 and 403 against the server; ICANN rdap-srv 1.0.0 serves every class, search, help, 404 and a 307 referral to the client; NetGet pair, RFC 9082 normalization/refusal and RFC 9083 envelope tests. Plain HTTP, no bootstrap, storage or authentication; Experimental. Source `844fb81f`, CI `07d19cd3`.
 
-- [ ] **18. EPP** — C/L; proposed feature `epp`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc5730.html).
+- [x] **18. EPP** — C/L; proposed feature `epp`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc5730.html).
   - Scope: Registry/client sessions and selected domain/host/contact mappings with check/create/renew/transfer operations.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 4 EPP test functions pass. RFC 5734 TLS framing (self-signed certificate published by default), RFC 5730 greeting/hello, login/logout session rules with optional registrar credentials (never sent to the handler; three failures close with 2501), poll with no queue, and result-coded refusals in Rust; domain (RFC 5731), host (5732) and contact (5733) check/info/create/renew/transfer/update/delete parsed by a bounded namespace-aware XML reader (no DOCTYPE) and answered by the handler, whose answers Rust renders as chkData/infData/creData/renData/trnData. Unchanged pyepp 0.2.0 (InternetNZ) is refused before login and with a wrong password, then checks, creates a contact, host and domain, reads a domain, gets 2303 for a missing one, renews, has a transfer accepted (1001) and refused (2202), and logs out. NetGet's client runs a provisioning flow against a registry over unchanged epp-lib v0.2.0 (the Swedish Internet Foundation; TLS, framing and namespace-routed dispatch) whose registry logic is test-authored: check, contact/host/domain create, info, renew with the reported expiry, transfer request, duplicate create (2302), logout; a wrong password and an untrusted certificate fail. Raw frames cover 2100, 2307, 2000, 2001 (including DOCTYPE), 2005, 2002, poll, a refused handler code (2400), an oversized frame (2500) and 2501. epp-go was not used: its cgo libxml2 binding does not build against libxml2 2.15. No extensions or poll messages; Experimental. Source `57fb4335`, CI `ebe29613`.
 
-- [ ] **19. JMAP** — B/L; proposed feature `jmap`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc8620.html).
+- [x] **19. JMAP** — B/L; proposed feature `jmap`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc8620.html).
   - Scope: JMAP Core plus Mail, session discovery, batched methods, object operations and change-state tokens.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 4 JMAP test functions pass. Rust owns the session resource, Basic/Bearer authentication, RFC 8620 request validation (notJSON, notRequest, unknownCapability, limit), capability and account checks, Core/echo, result references (JSON Pointer with `*`) and creation ids, and the get/set size limits; the handler is the store and answers every other Mailbox, Email, Thread, SearchSnippet, Identity, EmailSubmission and VacationResponse call, including its state tokens. Unchanged jmapc 0.3.0 (Python) discovers the session over HTTPS with the server's published self-signed certificate, echoes, queries mailboxes into a get by result reference, queries and gets emails, creates an email read back by creation id in the same request, has an update refused for an unknown id, reads changes and gets cannotCalculateChanges for an old state, and is refused with a wrong password. NetGet's client against an unchanged Stalwart 0.16.24 server gets mailboxes, creates an email read back by creation id, queries it into a get by reference, reads changes since the pre-create state, sets a keyword and gets unknownMethod for a bogus call; Stalwart, asked directly, holds the email with both keywords. Raw tests cover every request-level problem and the method errors Rust decides, createdIds both ways, 501 blob/push endpoints and a handler-less serverFail; NetGet pair over HTTPS with a Bearer token and an injected request. Deviation: Stalwart 0.16 is provisioned through its registry API in recovery mode, whose listener binds `[::]` on a random port with a one-time admin password for those seconds; the server it then runs binds 127.0.0.1 only with DNS pointed at loopback. No blob upload/download, EventSource or WebSocket push. Experimental. Source `0fb6b748`, CI `578e20dd`.
 
-- [ ] **20. ManageSieve** — B/M; proposed feature `managesieve`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc5804.html).
+- [x] **20. ManageSieve** — B/M; proposed feature `managesieve`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc5804.html).
   - Scope: List/upload/activate/delete filter scripts, authentication, literals and errors; script execution is not implicit.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 5 ManageSieve test functions pass. Unchanged sievelib 1.5.0 (Python) logs in to NetGet's server and uploads, checks, activates, lists, reads, renames, deletes and asks for space, getting the handler's refusals (a script error, NONEXISTENT, ACTIVE, ALREADYEXISTS, QUOTA/MAXSIZE) and a refused login; sievelib normalizes scripts it reads to LF lines, so exact bytes are checked on the server's side. NetGet's client against unchanged Dovecot 2.4.5 with Pigeonhole 2.4.5 (C), built from pinned tarballs and run unprivileged: uploads, Pigeonhole's real compiler error for a bad script, CHECKSCRIPT, activation, listing, retrieval, renaming (read back from Dovecot's own script file and active link), ACTIVE and NONEXISTENT refusals, HAVESPACE, and a refused login. The earlier deferral over Dovecot 2.3 versus 2.4 configuration is resolved by building one pinned 2.4.5 everywhere; macOS needs `default_vsz_limit = 1024G` and a runtime directory short enough for sun_path. Wire tests cover the grammar, client against server, and raw refusals. NetGet never parses or runs Sieve; no STARTTLS; Experimental. Source `02e0a6d3`, CI `aba322bb`.
 
 - [x] **21. CalDAV** — B/L; proposed feature `caldav`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc4791.html).
   - Scope: Calendar discovery, resources, REPORT queries, event CRUD and documented iCalendar/recurrence coverage.
@@ -1130,61 +1149,69 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
   - Validation: **27 checks** (17 collector, ten exporter) passed at 100 threads with pinned BSD Cistern/sflow and actual GoFlow2 2.2.7. All four v5 sample carriers, literal wire fixtures, selected typed flow/interface/Ethernet/VLAN records, sequence/session/queue bounds and cancellation are covered. Source `9be47d52`, peer output-order correction `d3686cce`. Experimental; no SNMP polling, full record catalog, auth, durable flow store, fuzz or pcap claim.
 
-- [ ] **31. AMQP 1.0** — B/L; proposed feature `amqp1`. [Specification/reference](https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-overview-v1.0-os.html).
+- [x] **31. AMQP 1.0** — B/L; proposed feature `amqp1`. [Specification/reference](https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-overview-v1.0-os.html).
   - Scope: Separate from 0-9-1: connection/session/link lifecycle, credit, send/receive, settlement and outcomes.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 5 AMQP 1.0 test functions pass. Unchanged rhea 3.0.5 (JavaScript) and go-amqp 1.7.0 (Go) authenticate with SASL PLAIN, publish and consume through the container, get accepted and rejected outcomes (conditions and descriptions intact), receive the confirmation the handler routes to another address, and are refused a forbidden address and a wrong password; rhea also receives the message the handler produces for its credited news receiver and its own data message relayed on chat. NetGet's client against an unchanged rhea broker sends (accepted, rejected, refused link) and receives with credit. Codec tests cover compact encodings, round trips and hostile input; the pair covers relay and produced messages; no handler answer fails closed. rhea exposed two points now handled: answering a client's detach of an already-refused link must not detach twice, and rhea's broker accepts an attach without echoing the terminus (a null terminus is a refusal only if its detach follows). Addresses are topics; no transactions, link recovery, filters or storage; Experimental. Source `37c9673b` (shared task guard `5ab69c55`), CI `2083abe1`.
 
-- [ ] **32. Zenoh** — B/M-L; proposed feature `zenoh`. [Specification/reference](https://zenoh.io/docs/overview/what-is-zenoh/).
+- [x] **32. Zenoh** — B/M-L; proposed feature `zenoh`. [Specification/reference](https://zenoh.io/docs/overview/what-is-zenoh/).
   - Scope: Listening/connecting peer roles, publication, subscriptions and query/queryable handlers using existing runtime.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 4 Zenoh test functions pass. NetGet embeds the zenoh 1.10.1 runtime (TCP only), so the independent peer is zenoh-pico 1.10.1, a separate C implementation built from its pinned release. Pico clients against NetGet's router: a publication the handler echoes reaches a pico subscriber, a query is answered and another refused with an error, and a get the handler issues is answered by a pico queryable; the links appear as loopback connections. NetGet's client, as a peer, against pico peers listening on their own ports: a pico subscriber receives NetGet's put, a pico queryable answers NetGet's get, and NetGet's subscriber receives a pico publisher's values. A peer-mode session opens before its link is up, so the client waits up to 10 s for it. Wire tests cover validation, client against router, a handler with an invalid answer failing the query closed with a category only, and a refused startup key. zenoh-pico examples block-buffer stdout on a pipe, so they run to completion. No TLS, QUIC, UDP or shared memory; Experimental. Source `3081497c`, CI `14a1e6a5`.
 
-- [ ] **33. WAMP** — C/M-L; proposed feature `wamp`. [Specification/reference](https://wamp-proto.org/).
+- [x] **33. WAMP** — C/M-L; proposed feature `wamp`. [Specification/reference](https://wamp-proto.org/).
   - Scope: Router/client sessions, realms, routed RPC and pub/sub with correlation and errors.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 6 WAMP test functions pass. Unchanged autobahn-python 24.4.2 and nexus 3.3.0 (Go) join realm1 on the router, register and call through it (autobahn also sees its own callee's runtime error routed back), publish with acknowledgement and receive their own events, subscribe by prefix (autobahn), call the router's handler-answered procedures (a result and an application error), are refused a duplicate registration (autobahn) and realm "blocked", and leave with GOODBYE. NetGet's client against the unchanged nexus router calls nexus's callee (result and error), receives its ticks, publishes to its subscriber and registers a procedure that nexus's caller invokes and the handler answers, all asserted from nexus's own output. Raw WebSocket tests cover subprotocol refusal, HELLO rules and timeout, wildcard/exact subscriptions with exclusion and black/white listing, routed RPC with disclose_me, routed errors, unknown subscription/registration, a callee leaving mid-call, an injected publication and violations after WELCOME; no handler answer is ABORT not_authorized / ERROR unavailable; the NetGet pair covers all four client roles. JSON over WebSocket only; anonymous auth; no progressive results, cancellation, shared registrations or meta API; Experimental. Source `c26eb71c`, CI `c252f69b`.
 
-- [ ] **34. Apache Thrift** — B/L; proposed feature `thrift`. [Specification/reference](https://thrift.apache.org/docs/).
+- [x] **34. Apache Thrift** — B/L; proposed feature `thrift`. [Specification/reference](https://thrift.apache.org/docs/).
   - Scope: Explicit IDL/schema-driven RPC, selected transports/encodings and structured calls/results/errors.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 7 Thrift test functions pass. Unchanged thriftpy2 0.7.1 (IDL-driven, C codecs) calls NetGet's server over framed binary and buffered compact; Apache Thrift 0.25.0's own protocol classes, with no generated code and results read generically by field id, call it over buffered binary and framed compact. Between them: return values, structs, a list of structs from a set of enums, a struct argument, a declared exception in its throws field, an application error, oneway calls, and an unknown method refused with UNKNOWN_METHOD without reaching the handler. NetGet's client calls an unchanged thriftpy2 server over both pairings (results, declared exception, UNKNOWN_METHOD, a struct argument and oneway call the server prints) and refuses an argument missing a required field before the wire. Codec tests cover every value type in both protocols, every truncation reported incomplete, 10 000-level nesting bombs, IDL refusals, an oversized frame, a byte-at-a-time unframed call and pipelined calls. Unframed messages are decoded again only on half-again growth or a 20 ms pause, so a trickling peer cannot force a decode per read. The transport is detected from the first byte, so a non-strict binary client must be framed; no multiplexed, JSON, HTTP or THeader; Experimental. Source `f510ca3e`, CI `428fc7fb`.
 
-- [ ] **35. OPC UA** — B/L; proposed feature `opcua`. [Specification/reference](https://github.com/FreeOpcUa/async-opcua).
+- [x] **35. OPC UA** — B/L; proposed feature `opcua`. [Specification/reference](https://github.com/FreeOpcUa/async-opcua).
   - Scope: Device address space and client browse/read/write/method/subscription operations; declare security policies.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: OPC UA: async-opcua 0.19.0 with documented connection/service ownership and chunk-length patches; unchanged asyncua 1.1.8 validates browse, read, write, method, and data-change subscriptions in both directions. Six focused checks cover protocol statuses, malformed/oversized frames, 256 live connections, injected disconnect, owner stop, and remote transport failure. Only anonymous SecurityPolicy None / MessageSecurityMode None; fixed Device/Double Value/Double method metadata, handler-sourced values, initial and approved-write notifications. No secure policies, periodic sampling, history, or events. Experimental. Source `571edcfc`, ownership/lifecycle corrections `068364f0`, integrated master merge `c4ccc5cb`. Standalone all-target feature build and blocking all-target clippy pass; reproducible peer setup and CI job are in `tests/helpers/ICS_PEERS.md`.
 
-- [ ] **36. BACnet/IP** — B/M-L; proposed feature `bacnet`. [Specification/reference](https://github.com/bacnet-stack/bacnet-stack).
+- [x] **36. BACnet/IP** — B/M-L; proposed feature `bacnet`. [Specification/reference](https://github.com/bacnet-stack/bacnet-stack).
   - Scope: Device discovery and property reads/writes, correct BACnet framing/errors; document segmentation/COV scope.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: BACnet/IP: unchanged bacpypes3 0.0.102 validates WhoIs/IAm discovery, typed ReadProperty/WriteProperty, and protocol errors in both directions. Three checks include malformed framing, segmented-request Abort, unsupported-service Reject, and UDP stop/rebind. Local IPv4 NPDU and primitive values only; no segmentation, BBMD/routing, COV, or ReadPropertyMultiple. Handler values/approvals do not persist. Experimental. Source `571edcfc`, ownership/lifecycle corrections `068364f0`, integrated master merge `c4ccc5cb`. Standalone all-target feature build and blocking all-target clippy pass; reproducible peer setup and CI job are in `tests/helpers/ICS_PEERS.md`.
 
-- [ ] **37. MQTT-SN** — B/M; proposed feature `mqtt_sn`. [Specification/reference](https://mqtt.org/mqtt-specification/).
+- [x] **37. MQTT-SN** — B/M; proposed feature `mqtt_sn`. [Specification/reference](https://mqtt.org/mqtt-specification/).
   - Scope: Gateway/sensor roles, discovery, topic registration/IDs, publish/subscribe, datagram and sleeping-client behavior.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 4 MQTT-SN test functions pass. Unchanged mqtt-sn-tools (C) publish and subscribe through NetGet's gateway: wildcard and short-topic subscribers receive QoS 1, 0 and -1 publishes (the last on predefined id 7 with no connection, delivered under that id) and one sent through forwarder encapsulation; an admin/ publish the handler refuses never reaches its subscriber (mqtt-sn-pub itself ignores the PUBACK return code), and the refused client gets CONNACK 0x03. NetGet's client through the unchanged Eclipse Paho MQTT-SN Gateway (C++) in front of Mosquitto: QoS 1, 2 and 0 publishes reach mosquitto_sub, a subscription receives what mosquitto_pub sends, and a message published while the client sleeps is held by the Paho gateway and delivered on wake. NetGet's client against its own gateway covers QoS 2 both ways, a handler-published greeting with a lowered grant, a lost client's will after 1.5 x keep-alive, held messages on wake, a peer-handle injection and raw-socket refusals; every packet type round-trips. The Paho gateway buffers stdout on a pipe, so its readiness is a CONNECT it answers. The gateway is its own broker with no retained-message store; Experimental. Source `9a0595f0`, CI `b5730e6c`.
 
-- [ ] **38. LwM2M** — B/L; proposed feature `lwm2m`. [Specification/reference](https://www.openmobilealliance.org/release/LightweightM2M/V1_2-20201110-A/HTML-Version/OMA-TS-LightweightM2M_Core-V1_2-20201110-A.html).
+- [x] **38. LwM2M** — B/L; proposed feature `lwm2m`. [Specification/reference](https://www.openmobilealliance.org/release/LightweightM2M/V1_2-20201110-A/HTML-Version/OMA-TS-LightweightM2M_Core-V1_2-20201110-A.html).
   - Scope: Management server/device client, registration, bootstrap, object resources, observation and declared security.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 5 LwM2M test functions pass. The unchanged Eclipse Leshan 2.0.0-M15 client demo (Java/Californium) registers with NetGet's server (Device, Location and Temperature objects declared) and is read in text and SenML JSON, written and read back, executed, discovered, refused 4.04 for an object it lacks, and observed, with a notification from its sensor; it deregisters on SIGTERM. NetGet's device against the unchanged Leshan server demo, driven through Leshan's REST API: it appears in Leshan's client list with its objects, answers reads, a write that reads back, an execute and a 4.04, and a notification it sends for Leshan's observation appears in Leshan's event stream; on disconnect Leshan drops it. One defect found by the pair: plain-text values were typed by parsing, so a UTC offset "+02" came back as the number 2; text is now a number only when it reads back exactly. The demo's TLS endpoint reuses the TCP port option, so it is bound to ::1. Wire tests cover codecs, device against server and raw registration refusals. No DTLS, OSCORE, bootstrap, TLV/CBOR or block-wise transfer; Experimental. Source `57ee76c4`, CI `1df0d563`.
 
 - [x] **39. OCPP** — B/M-L; proposed feature `ocpp`. [Specification/reference](https://openchargealliance.org/protocols/open-charge-point-protocol/).
   - Scope: Charging-management server and simulated charge point; pin version with boot/heartbeat/status/transaction workflows.
@@ -1194,33 +1221,37 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Documentation, honest metadata and integrated commit recorded.
   - Validation: 8 checks pass. python ocpp 2.1.0 (schema-validating) as charge point against the CSMS over 1.6 and 2.0.1 (boot, heartbeat, status, authorize, transactions, meter values, NotSupported CALLERROR, accepted remote start) and as central system against the charge point (both workflows, Reset after boot); NetGet pair, subprotocol and frame refusals, handler-less InternalError. No charging database, security profiles or schema engine; Experimental. Source `fec07b02`, CI `54cd5707`.
 
-- [ ] **40. DNP3** — C/L; proposed feature `dnp3`. [Specification/reference](https://github.com/stepfunc/dnp3).
+- [x] **40. DNP3** — C/L; proposed feature `dnp3`. [Specification/reference](https://github.com/stepfunc/dnp3).
   - Scope: Outstation/master, typed measurements, events, polling and declared controls, deterministic timing.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: DNP3: dependency decision is the self-contained Rust selected codec, with unchanged Apache-2.0 OpenDNP3 3.1.2 as an external master/outstation peer. Four checks cover class polls, typed binary/float/counter measurements, confirmed timestamped events, binary direct-operate, CRC errors, bounds, and live stop/rebind. Fixed link addresses 1/10; unconfirmed link data, bounded transport assembly, deterministic handler timestamps and 10-second client deadlines. No commercial dependency, unsolicited reporting, SELECT/OPERATE, analog controls, serial, or Secure Authentication. Experimental. Source `571edcfc`, ownership/lifecycle corrections `068364f0`, integrated master merge `c4ccc5cb`. Standalone all-target feature build and blocking all-target clippy pass; reproducible peer setup and CI job are in `tests/helpers/ICS_PEERS.md`.
 
-- [ ] **41. IEC 60870-5-104** — C/L; proposed feature `iec104`. [Specification/reference](https://github.com/mz-automation/lib60870/blob/master/user_guide.adoc).
+- [x] **41. IEC 60870-5-104** — C/L; proposed feature `iec104`. [Specification/reference](https://github.com/mz-automation/lib60870/blob/master/user_guide.adoc).
   - Scope: Controlled/controlling stations, interrogation, telemetry, commands, sequence windows and timers.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: IEC 104: unchanged lib60870 2.3.4 validates controlled/controlling stations, GI telemetry and direct single commands. Six checks include invalid sequences, send-window exhaustion, t1 acknowledgment timeout, command bounds, and live stop/rebind. Selected ASDUs 1/13/45/100/102; k=12, immediate acknowledgments within w=8/t2, t1=15s and t3=20s. Client accepts spontaneous binary/float telemetry. Select commands, timestamps, files, clock sync and redundancy are outside this scope. Experimental. Source `571edcfc`, ownership/lifecycle corrections `068364f0`, integrated master merge `c4ccc5cb`. Standalone all-target feature build and blocking all-target clippy pass; reproducible peer setup and CI job are in `tests/helpers/ICS_PEERS.md`.
 
-- [ ] **42. EtherNet/IP CIP** — C/L; proposed feature `ethernet_ip`. [Specification/reference](https://github.com/EIPStackGroup/OpENer).
+- [x] **42. EtherNet/IP CIP** — C/L; proposed feature `ethernet_ip`. [Specification/reference](https://github.com/EIPStackGroup/OpENer).
   - Scope: Adapter/scanner discovery and explicit object messaging; cyclic I/O is a separately declared scope.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: EtherNet/IP CIP: unchanged cpppo 5.2.5 validates explicit GetAttributeSingle/SetAttributeSingle in both directions. Four checks cover typed attributes, refused/unknown operations, TCP/unicast UDP ListIdentity, invalid sessions, bounds and TCP/UDP owner stop/rebind. Both sockets are acquired before tasks start. Logical class/instance/attribute paths only; schema declares write types and handler values do not persist. No routing, symbolic tags, ForwardOpen, or cyclic I/O. Experimental. Source `571edcfc`, ownership/lifecycle corrections `068364f0`, integrated master merge `c4ccc5cb`. Standalone all-target feature build and blocking all-target clippy pass; reproducible peer setup and CI job are in `tests/helpers/ICS_PEERS.md`.
 
-- [ ] **43. S7comm** — C/L; proposed feature `s7comm`. [Specification/reference](https://github.com/S7NetPlus/s7netplus).
+- [x] **43. S7comm** — C/L; proposed feature `s7comm`. [Specification/reference](https://github.com/S7NetPlus/s7netplus).
   - Scope: PLC simulator/client, TPKT/COTP, selected legacy data-area reads/writes and protocol errors.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: S7comm: unchanged python-snap7 3.2.1 validates PLC/client selected legacy reads and writes over TPKT/COTP. Four checks cover DB/input/output/marker bytes, write approval, protocol address errors, malformed framing, bounds and live stop/rebind. S7ANY byte items only, 480-byte negotiated PDU, 16 items and 200 bytes/item; no S7plus, authentication, bit/multi-byte items, PLC commands or file operations. Experimental. Source `571edcfc`, ownership/lifecycle corrections `068364f0`, integrated master merge `c4ccc5cb`. Standalone all-target feature build and blocking all-target clippy pass; reproducible peer setup and CI job are in `tests/helpers/ICS_PEERS.md`.
 
 - [x] **44. FastCGI** — B/M; proposed feature `fastcgi`. [Specification/reference](https://fastcgi-archives.github.io/FastCGI_Specification.html).
   - Scope: Application responder/client, parameters, input/output streams, request IDs, abort/end and bounded framing.
@@ -1238,33 +1269,37 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Documentation, honest metadata and integrated commit recorded.
   - Validation: 6 checks pass. c-icap 0.6.5's c-icap-client against the server (OPTIONS, clean/blocked RESPMOD, redacted REQMOD, 512-byte preview continued to 3000 bytes) — it caught a request head wrongly echoed in RESPMOD responses that the NetGet pair had accepted; c-icap's echo service against the client (OPTIONS, RESPMOD, REQMOD, continued preview); framing and refusal tests. No scanning engine, 206 or TLS; Experimental. Source `d0c3d9d1`, CI `4db89756`.
 
-- [ ] **46. NBD** — C/L; proposed feature `nbd`. [Specification/reference](https://github.com/NetworkBlockDevice/nbd/blob/master/doc/proto.md).
+- [x] **46. NBD** — C/L; proposed feature `nbd`. [Specification/reference](https://github.com/NetworkBlockDevice/nbd/blob/master/doc/proto.md).
   - Scope: Read-only scripted block target and userspace client, negotiation, bounds, read/errors and structured replies.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 5 NBD test functions pass. Unchanged libnbd 1.24.3 (C) against NetGet's server: nbdinfo lists both exports with descriptions, describes disk0 (1 MiB, read-only, base:allocation, structured replies, preferred block size, description) and maps its allocation run by run exactly as the handler described it; nbdcopy copies disk0 byte for byte and fails with an I/O error on the export whose error region holds data (with the region in a hole, nbdcopy correctly skipped it via block status); a policy refusal and an unknown export are reported as such. NetGet's client against unchanged nbdkit 1.48.1 (C) with its data plugin and error filter: the export list, size and block sizes, the plugin's bytes, a zero region, allocation from block status, flush, and EIO once the filter is armed. The client against the server covers structured replies, block status, an error offset and EINVAL past the end; a raw client covers simple replies, EPERM for writes and trims, ERR_UNKNOWN, ERR_UNSUP and an oversized option. Read-only, no TLS or extended headers; Experimental. Source `67464673`, CI `7be38c85`.
 
-- [ ] **47. RTMP** — C/L; proposed feature `rtmp`. [Specification/reference](https://rtmp.veriskope.com/pdf/rtmp_specification_1.0.pdf).
+- [x] **47. RTMP** — C/L; proposed feature `rtmp`. [Specification/reference](https://rtmp.veriskope.com/pdf/rtmp_specification_1.0.pdf).
   - Scope: Playback/publication endpoints, handshake, chunks, AMF command handling and supplied media with timestamps.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 4 RTMP test functions pass. Unchanged FFmpeg publishes an H.264/AAC clip that ffprobe reads back (h264 320x240, aac) and FFmpeg decodes, and unchanged MediaMTX 1.21.1 (its own Go RTMP stack) pulls the stream and reports H264 and MPEG-4 Audio tracks; FFmpeg is refused a stream key, an app and a play the policy rejects. NetGet's client plays from MediaMTX (Play.Start, avc/aac, counts, timestamps) and publishes the clip, which MediaMTX's API reports with both tracks. Raw-wire tests cover the handshake echo, connect accept/reject, ping, AMF3 and an oversized message closing the connection, and no handler answer; the NetGet pair covers cached metadata, sequence headers, keyframe join and an injected onTextData. MediaMTX exposed two compatibility points that are now handled: it sends the whole path as the app with an empty stream name, and treats a connection as one reader or publisher (and keeps streaming after deleteStream, which taught the client to wait on one overall deadline). Live relay only, AMF0 only, no RTMPS/RTMPT or digest handshake; Experimental. Source `89e60cda`, CI `fa1ff8cf`.
 
-- [ ] **48. SRT** — C/L; proposed feature `srt`. [Specification/reference](https://github.com/Haivision/srt).
+- [x] **48. SRT** — C/L; proposed feature `srt`. [Specification/reference](https://github.com/Haivision/srt).
   - Scope: Listening/connecting endpoints exchanging supplied media/data through a real retransmission/timing implementation.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 4 SRT test functions pass. Retransmission and timing come from srt-tokio 0.4.4 (pure Rust ARQ/TSBPD/AES). Unchanged libsrt 1.5 (srt-live-transmit) publishes a paced H.264/AAC MPEG-TS stream through the listener that a second libsrt caller reads back and ffprobe decodes, and is refused a forbidden resource; NetGet's caller reads from and publishes to libsrt listeners (reported PMT stream types; ffprobe decodes what libsrt wrote). Wire tests cover the stream-ID parser, handshake refusals (bad ID, forbidden, bidirectional, second publisher, no answer), a byte-exact relay with an injected text, and the idle close with statistics. Findings: srt-tokio puts its payload size in the handshake MSS field, which made libsrt cap messages at 1272 bytes (payload size raised to 1456 on both roles), and MediaMTX's gosrt refuses srt-tokio's SRT 1.3 handshake in both directions, so MediaMTX is not an SRT peer. Live mode only; no rendezvous, bidirectional mode, FEC or bonding; Experimental. Source `24e4800c`, CI `50a4efef`.
 
-- [ ] **49. WebTransport HTTP/3** — B/L; proposed feature `webtransport`. [Specification/reference](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/).
+- [x] **49. WebTransport HTTP/3** — B/L; proposed feature `webtransport`. [Specification/reference](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/).
   - Scope: Pin draft/library compatibility; server/client sessions, streams, datagrams, cancellation and browser interop.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 4 WebTransport test functions pass, plus 4 in `tests/vendored_wtransport_patch_test.rs`. Pinned to the draft-02 wire Chrome and aioquic speak, on wtransport 0.7.2 vendored with an owned driver (closed and aborted on drop), a bounded reader set, checked SETTINGS and extended-CONNECT opt-in, and bounded QPACK field sections (64 fields, 16 KiB, no dynamic table, no duplicates). Unchanged aioquic 1.3.0 as client is admitted with an extra response header, exchanges bidirectional and unidirectional streams and datagrams, answers a stream the server opens (raised back as `webtransport_stream_reply`), sends hex data, has a 1 MiB + 1 stream reset unseen by the handler and an unanswered stream finished empty, and is closed by the handler with code 7; it is refused with 403, 429 and 404, a plain HTTP/3 GET never reaches the handler, and a server with no handler refuses with 429. Headless Chrome's own WebTransport API reaches the self-signed server through `serverCertificateHashes` with the hash the server publishes. NetGet's client against an aioquic server pins its certificate, sends extra headers, answers a server-opened stream, injects a datagram and closes; a refused path, a wrong pin and conflicting trust fail. NetGet pair with injection on both sides. aioquic does not mark bidirectional WebTransport streams it opens itself, so the test peer reads their answers at the QUIC layer; the library is unchanged. A refused session reaches the client only as "rejected" (wtransport does not surface the status). One session per connection; no CLOSE_WEBTRANSPORT_SESSION/DRAIN or flow-control capsules. Experimental. Source `ede90d34`, CI `201609ad`.
 
 - [x] **50. HL7 v2 MLLP** — C/M; proposed feature `hl7`. [Specification/reference](https://www.hl7.eu/refactored/transport01mllp.html).
   - Scope: Integration endpoint/client, MLLP framing, selected message profiles, control IDs and validated acknowledgments.
@@ -1274,19 +1309,21 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Documentation, honest metadata and integrated commit recorded.
   - Validation: 7 checks pass. python-hl7 0.4.5's MLLP client (ADT^A01, ORU^R01, QRY^A19 v2.3) against the endpoint and its MLLP server against the sender (AA, AE with ERR, AR; receiver-side parse asserted); NetGet pair, MLLP framing refusals, `\F\` escaping and segment-forgery refusal, handler-less AE, mismatched MSA-2. No clinical store or profile engine; Experimental. Source `a5aa48ff`, CI `5b86eb17`.
 
-- [ ] **51. DICOM DIMSE** — C/L; proposed feature `dicom`. [Specification/reference](https://dicom.nema.org/medical/dicom/current/output/html/part08.html).
+- [x] **51. DICOM DIMSE** — C/L; proposed feature `dicom`. [Specification/reference](https://dicom.nema.org/medical/dicom/current/output/html/part08.html).
   - Scope: Association/transfer syntax negotiation, C-ECHO and an explicitly selected useful service set, structured actions.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 8 DICOM test functions pass. Unchanged pynetdicom 3.0.4 (on pydicom 3.0.2) as the SCU is refused for a wrong called AE title, a rejected calling AE and an undecided association, negotiates Explicit VR Little Endian, echoes, stores three instances (one refused A700 with its comment) and gets wildcard, date-range, patient-root and empty C-FIND results matched and projected by Rust; as the SCP it decodes what NetGet's client stores (pixel bytes included), answers its C-FIND and refuses a wrong called AE title. Raw PDU tests cover an oversized PDU, a non-RQ first PDU, a SOP UID mismatch (A900, handler not asked), an unknown command (0211) and the idle abort; codec tests use literal Implicit/Explicit LE bytes, hostile lengths, an undelimited sequence and a depth bomb. Services: C-ECHO, C-STORE, C-FIND (Patient and Study Root); no C-MOVE, C-GET, N-services, compressed transfer syntaxes or TLS; Experimental. Source `917f1e24`, CI `7e6e4aa4`.
 
-- [ ] **52. FIX** — C/L; proposed feature `fix`. [Specification/reference](https://fixtrading.org/packages/fix-session-layer-technical-proposal/).
+- [x] **52. FIX** — C/L; proposed feature `fix`. [Specification/reference](https://fixtrading.org/packages/fix-session-layer-technical-proposal/).
   - Scope: Acceptor/initiator session engine, dictionaries, heartbeat/resend/recovery and scripted application messages.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 5 FIX test functions pass. Unchanged QuickFIX/Go 0.9.12, which validates every application message against FIX44.xml before its application sees it, logs on to the acceptor, gets an ExecutionReport and a BusinessMessageReject, exchanges heartbeats at HeartBtInt 1 without a session Reject, logs out, and is refused a wrong SenderCompID; as acceptor it validates and answers NetGet's NewOrderSingle and OrderCancelRequest and takes its Logout. Raw-wire tests cover the Logon rules and timeout, TestRequest, a garbled CheckSum ignored, ResendRequest answered with a gap fill and PossDup resends, gap detection with the held message resent, MsgSeqNum too low, the heartbeat timeout, BusinessMessageReject reason 4 with no model, a Logon with no decision and an injected News through the peer handle; the NetGet pair. Dictionary names generated from FIX44.xml (953 fields, 92 messages); application messages are not validated against it. No FIXT.1.1/FIX 5.0, persistence or encryption; Experimental. Source `1c034b27`, CI `56bc0b7e`.
 
 ## Existing protocol completion checklist
 
@@ -1513,3 +1550,30 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 11. OPC UA: evaluate async-opcua but validate with an independent stack. BACnet and IEC104 have independent reference tools linked above. LwM2M has [Eclipse Leshan](https://github.com/eclipse-leshan/leshan).
 
 Suggested scheduling order: bounded NUT/DoQ/StatsD work first; application Socket.IO/GraphQL and HTTP/3/SFTP/OTLP completion next; infrastructure NETCONF/gNMI/Redfish; then remaining messaging, identity, industrial and specialist families. All checklist entries remain in the authorized scope, regardless of research priority.
+
+- **ICS completion (October 2026):** all six remaining scopes are registered in both roles. Local evidence: 27 focused protocol checks (six independent stacks), 147 shared checks across 36 targets, six standalone all-target builds and blocking all-target clippy; one pre-existing all-protocol-only audit is intentionally ignored in the narrower shared run. Browser/site and native release builds are separate publication gates; no full remote CI green claim.
+
+## Peer-to-peer and news expansion (October 2026)
+
+User-authorized extension of both DC++ hub and file-transfer scopes, NNTP and related peer protocols. New protocol features: `adc`, `dc_peer`, `adc_peer`, `soulseek`, `soulseek_peer`, `gnutella`; the existing `dc` and `nntp` features retain their names. The catalog now contains 240 features. All new roles remain Experimental and declare selected simulator scopes. `tests/peers/README.md` records pinned independent peers; each new source/test directory documents its scope.
+
+- NMDC key authentication now preserves binary octets, escapes all reserved key values and rejects invalid challenges. Hub client framing is bounded.
+- ADC/ADCS adds anonymous hub negotiation, handler-controlled identity/chat/search/results/rendezvous. Peer connectors can use a CID and hub token; listeners can advertise a handler-specified CID.
+- NMDC and ADC peer roles add handler-supplied compressed XML file lists and binary downloads with ranges, refusal codes and optional whole-payload Tiger-tree verification. No autonomous download scheduler or filesystem content store is claimed.
+- NNTP adds POST, IHAVE, sequential streaming feeds, verified implicit TLS and handler-approved AUTHINFO USER/PASS. No STARTTLS, SASL, compression or autonomous feed scheduler is claimed.
+- Soulseek central and P-peer browsing roles add selected login/rooms/chat/status/addresses/search announcements and shared-directory/user-info operations. No Soulseek F-file-transfer channel, distributed tree, obfuscation or public central-service replacement is claimed.
+- Gnutella adds a bounded 0.6 leaf-peer simulator with handshake, ping/pong, query/query-hit and push descriptors. No ultrapeer routing, public crawling, HTTP download service or push dialing is claimed.
+- Existing BitTorrent tracker (`torrent-tracker`), DHT (`torrent-dht`) and peer (`torrent-peer`) role pairs remain in the catalog. Their existing Experimental metadata and limitations remain applicable; this expansion does not claim new third-party compatibility evidence for them.
+
+- [x] All six new listening roles are implemented and registered.
+- [x] All six new connecting roles are implemented and registered.
+- [x] Independent exchanges, malformed/negative input and owner lifecycle checks pass. Local combined evidence: 80 server/client tests with no skips; final client event wiring: 26 passing; seven standalone all-target feature checks and blocking all-target clippy pass. Shared action/startup/event/task/site audits pass; the pre-existing all-features-only description report remains intentionally ignored in the narrow build. Existing BitTorrent review: 40 passing tests, one pre-existing ignored fixture. Static-bzip2 transfer checks also pass.
+- [x] Source/test documentation and honest Experimental metadata are committed in `17a20aae`, integrated into master by signed merge `47e01748` (NMDC key fix `c7978e42` included).
+
+Released [v0.3.3](https://github.com/smotanacom/netget/releases/tag/v0.3.3). Focused Linux peer run [37700988948](https://github.com/smotanacom/netget/actions/runs/37700988948) and the independent-peer gate in tagged release run [37702169346](https://github.com/smotanacom/netget/actions/runs/37702169346) passed. The tagged release run completed successfully: all six native builds, archive/checksum validation, GitHub Release and NPM publication passed. The site is deployed at [netget.net](https://netget.net) with 240 distinct protocol links, asset prefix `v/1dc0239fb011` and completed CloudFront invalidation `I6XF3WJFNZ46I97PN72Z3WO0AT`. Desktop/mobile light/dark checks and browser smoke/NNTP checks pass; live JS, WASM and CSS bytes match the tested local assets. Native release builds bundle bzip2 statically. The peer workflow offers a focused `p2p-news` dispatch without launching unrelated protocol families.
+
+Additional integration coverage: NMDC transfer listener/connector `nickname` can match hub rendezvous identities and rejects delimiter injection. The rebuilt 0.3.3 browser bundle passes general smoke tests and `web/test/nntp.mjs` posting/feed coverage in both roles.
+
+Follow-up verification `392faa31` (signed master merge `48003fd1`) checks actual ncdc file downloads/uploads, whole-file TTH verification and partial ranges in both NMDC and ADC directions; all four independent checks pass locally. Broader CI found a missing CLI provider feature-list declaration, corrected in `7ddd316a` (signed master merge `f85475e6`); both manifest-derived provider audits pass and are now required by focused peer CI. The tagged distribution feature sets already enable that provider block, and shared TLS transports also initialize it before building configs. No full remote CI green claim is made.
+
+Final publication evidence: all seven public `@smotana/netget` packages are at `0.3.3`, have provenance metadata and pin the six optional platform dependencies to that version. A clean main-package-only NPM installation selects the native `darwin-arm64` package and reports `netget 0.3.3`; its documentation dump contains both roles for all six new features plus DC and NNTP. The fresh focused Linux run [37703669196](https://github.com/smotanacom/netget/actions/runs/37703669196), including actual file contents/ranges/TTH and the provider audit, passed. All 13 blocking jobs in broader CI run [37703663382](https://github.com/smotanacom/netget/actions/runs/37703663382) passed; its separate registry-wide advisory audit was still running at this verification, so no complete broad-workflow conclusion is claimed.

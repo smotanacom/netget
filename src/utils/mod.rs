@@ -12,6 +12,7 @@ pub mod sanitize;
 pub mod save_load;
 pub mod shutdown;
 pub mod sql;
+pub mod task_guard;
 pub mod truncate;
 pub mod wire_failure;
 
@@ -21,3 +22,6 @@ pub use wire_failure::{prefixed_wire_failure_text, wire_failure_text, WireFailur
 pub use truncate::{
     truncate_for_llm, truncate_for_log, truncate_str, truncate_with_notice, truncate_with_suffix,
 };
+
+#[cfg(any(feature = "quic", feature = "http3"))]
+pub mod quic;

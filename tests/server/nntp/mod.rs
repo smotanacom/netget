@@ -12,3 +12,5 @@ mod line_limit_test;
 mod llm_failure_test;
 #[cfg(all(test, feature = "nntp"))]
 mod peer_inject_test;
+
+pub mod extensions_test;

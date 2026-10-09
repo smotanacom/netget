@@ -72,23 +72,81 @@ pub async fn call_llm_for_client(
     protocol: &dyn Client,
     status_tx: &mpsc::UnboundedSender<String>,
 ) -> Result<ClientLlmResult> {
+    if let Some(event) = event {
+        anyhow::ensure!(
+            crate::utils::json_budget::within_budget(
+                &event.data,
+                crate::scripting::event_handler::MAX_INTERPOLATION_BYTES,
+                crate::scripting::event_handler::MAX_INTERPOLATION_NODES,
+                crate::scripting::event_handler::MAX_INTERPOLATION_DEPTH,
+            ),
+            "event exceeds the shared JSON budget"
+        );
+    }
+    let offered_actions =
+        crate::llm::actions::client_trait::client_llm_action_set(protocol, state, event);
+    let private_payloads = crate::utils::redact::actions_have_credentials(&offered_actions)
+        || event.is_some_and(|event| crate::utils::redact::contains_credentials(&event.data));
+    let run = call_llm_for_client_inner(
+        llm_client,
+        state,
+        client_id,
+        instruction,
+        memory,
+        event,
+        protocol,
+        status_tx,
+        offered_actions,
+        private_payloads,
+    );
+    if private_payloads {
+        use tracing::instrument::WithSubscriber;
+        run.with_subscriber(tracing::subscriber::NoSubscriber::default())
+            .await
+            .map_err(crate::utils::redact::hide_error_details)
+    } else {
+        run.await
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn call_llm_for_client_inner(
+    llm_client: &OllamaClient,
+    state: &AppState,
+    client_id: String,
+    instruction: &str,
+    memory: &str,
+    event: Option<&Event>,
+    protocol: &dyn Client,
+    status_tx: &mpsc::UnboundedSender<String>,
+    offered_actions: Vec<crate::llm::actions::ActionDefinition>,
+    private_payloads: bool,
+) -> Result<ClientLlmResult> {
     use crate::llm::action_helper::split_client_common_actions;
     use crate::llm::event_handler_executor::{
-        try_execute_client_event_handler, ClientEventHandlerResult, HANDLER_INSTRUCTION_HEADER,
+        try_execute_client_event_handler_with_privacy, ClientEventHandlerResult,
+        HANDLER_INSTRUCTION_HEADER,
     };
 
     // Deterministic script/static routing, before any budget or model involvement.
     let mut handler_instruction: Option<String> = None;
     if let (Some(cid), Some(ev)) = (ClientId::from_string(&client_id), event) {
-        match try_execute_client_event_handler(
+        match try_execute_client_event_handler_with_privacy(
             state,
             cid,
             ev.id(),
             &ev.event_type.description,
             Some(ev.data.clone()),
+            private_payloads,
         )
         .await
-        {
+        .map_err(|e| {
+            if private_payloads {
+                crate::utils::redact::hide_error_details(e)
+            } else {
+                e
+            }
+        }) {
             Ok(ClientEventHandlerResult::Handled { actions }) => {
                 // Common actions (provide_feedback) are executed centrally,
                 // mirroring the LLM path below; the protocol actions go back
@@ -114,7 +172,12 @@ pub async fn call_llm_for_client(
                         None,
                         ev.id(),
                         ev.data.clone(),
-                        protocol_actions.clone(),
+                        protocol_actions
+                            .iter()
+                            .map(|action| {
+                                access_log_action(action, private_payloads, &offered_actions)
+                            })
+                            .collect(),
                     )
                     .await;
                 let _ = status_tx.send("__UPDATE_UI__".to_string());
@@ -201,10 +264,35 @@ pub async fn call_llm_for_client(
                 None,
                 ev.id(),
                 ev.data.clone(),
-                result.actions.clone(),
+                result
+                    .actions
+                    .iter()
+                    .map(|action| access_log_action(action, private_payloads, &offered_actions))
+                    .collect(),
             )
             .await;
     }
 
     Ok(result)
+}
+
+fn access_log_action(
+    action: &serde_json::Value,
+    private_payloads: bool,
+    offered_actions: &[crate::llm::actions::ActionDefinition],
+) -> serde_json::Value {
+    if !private_payloads {
+        return crate::utils::redact::redact_sensitive(action);
+    }
+    // A handler can copy a credential into any parameter or an invalid type.
+    // Record only a name from the already-offered definitions, keeping the
+    // original action untouched for execution and explicit display actions.
+    match action["type"].as_str().filter(|name| {
+        offered_actions
+            .iter()
+            .any(|definition| definition.name == *name)
+    }) {
+        Some(name) => serde_json::json!({"type":name}),
+        None => serde_json::json!({}),
+    }
 }

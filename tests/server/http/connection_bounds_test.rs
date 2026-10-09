@@ -12,7 +12,7 @@
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features http \
-//!       --test server::http::connection_bounds_test -- --test-threads=100
+//!       --test server -- server::http::connection_bounds_test --test-threads=100
 
 #[cfg(all(test, feature = "http"))]
 mod http_connection_bounds {

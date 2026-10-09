@@ -1,9 +1,9 @@
-//! A test count stated in a `tests/**/CLAUDE.md` must be the number of tests that are there.
+//! A test count stated in a `tests/**/AGENTS.md` must be the number of tests that are there.
 //!
 //! "22 tests" was wrong in three files when Programme 2 read them by hand, and a number that
 //! has to be re-typed whenever anyone adds a test will be wrong again. The obvious fixes are
 //! both bad: a script that regenerates the numbers is one more thing nobody runs, and banning
-//! counts outright deletes the useful ones — `tests/server/can/CLAUDE.md`'s opening line ("43
+//! counts outright deletes the useful ones — `tests/server/can/AGENTS.md`'s opening line ("43
 //! tests, all passing, no `#[ignore]`s. 28 in `frame_test.rs`, 15 in `e2e_test.rs`") tells a
 //! reader in one sentence what the suite is.
 //!
@@ -39,13 +39,13 @@
 //!
 //! - **Scope comes from the nearest heading.** Restricting line-initial counts to the doc's
 //!   first section was tried first and cost four correct checks; the heading rule keeps them
-//!   and still excludes `tests/server/db2/CLAUDE.md`'s "8 tests, no LLM calls, sub-millisecond",
+//!   and still excludes `tests/server/db2/AGENTS.md`'s "8 tests, no LLM calls, sub-millisecond",
 //!   which sits under a `` ## `drda_test.rs` `` heading and means that file's eight, not the
 //!   directory's ten.
 //! - **List items are excluded.** `- **4 tests × 3 seconds**: ~12 seconds` is a runtime
 //!   estimate; three of those disagree with their directory total while meaning something
 //!   narrower.
-//! - **The noun must be plural unless the count is 1.** `tests/server/bluetooth_ble/CLAUDE.md`
+//! - **The noun must be plural unless the count is 1.** `tests/server/bluetooth_ble/AGENTS.md`
 //!   says "**3 test cases**" about one file under a heading that names none, and reading "test"
 //!   as the noun for any count turned that into a claim about the whole directory.
 //!
@@ -125,7 +125,7 @@ fn tests_in_dir(dir: &Path) -> usize {
     paths.iter().map(|p| tests_in_file(p)).sum()
 }
 
-/// Every `CLAUDE.md` under `tests/`.
+/// Instruction documents under `tests/`, including the legacy filename.
 fn test_docs(root: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -135,7 +135,10 @@ fn test_docs(root: &Path) -> Vec<PathBuf> {
             let p = entry.path();
             if p.is_dir() {
                 walk(&p, out);
-            } else if p.file_name().is_some_and(|n| n == "CLAUDE.md") {
+            } else if p
+                .file_name()
+                .is_some_and(|n| n == "AGENTS.md" || n == "CLAUDE.md")
+            {
                 out.push(p);
             }
         }
@@ -196,7 +199,7 @@ fn first_test_count(text: &str) -> Option<usize> {
 /// `digits` parsed, but only when `rest` begins with the bare noun this test can check.
 ///
 /// The noun must be "tests", or "test" when the count is 1. That plural rule is load-bearing:
-/// `tests/server/bluetooth_ble/CLAUDE.md` says "**3 test cases**" about one file, under a
+/// `tests/server/bluetooth_ble/AGENTS.md` says "**3 test cases**" about one file, under a
 /// heading that names none, and accepting "test" for any count made that read as a claim about
 /// the whole directory — the only false positive this check has produced.
 fn count_if_followed_by_test_noun(digits: &str, rest: &str) -> Option<usize> {
@@ -450,4 +453,19 @@ fn first_test_count_at_start(text: &str) -> Option<usize> {
         return None; // no whitespace between the number and what follows
     }
     count_if_followed_by_test_noun(&text[..end], rest)
+}
+
+#[test]
+fn instruction_migration_keeps_test_count_documents_discoverable() {
+    let root = tempfile::tempdir().unwrap();
+    let current = root.path().join("tests/server/current");
+    let legacy = root.path().join("tests/server/legacy");
+    std::fs::create_dir_all(&current).unwrap();
+    std::fs::create_dir_all(&legacy).unwrap();
+    std::fs::write(current.join("AGENTS.md"), "1 test in `e2e_test.rs`").unwrap();
+    std::fs::write(legacy.join("CLAUDE.md"), "2 tests in `e2e_test.rs`").unwrap();
+    assert_eq!(
+        test_docs(root.path()),
+        vec![current.join("AGENTS.md"), legacy.join("CLAUDE.md")]
+    );
 }

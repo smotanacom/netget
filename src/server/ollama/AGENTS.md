@@ -1,0 +1,307 @@
+# Ollama Server Implementation
+
+## Overview
+
+The Ollama server provides an LLM-controlled Ollama-compatible API server. Unlike the OpenAI server which passes through
+to the real Ollama backend, this Ollama server acts as a mock/test server where the LLM decides how to respond to Ollama
+API requests.
+
+## Architecture
+
+### HTTP-based Protocol
+
+Ollama uses a simple HTTP-based REST API with these main endpoints:
+
+- `GET /api/tags` - List available models
+- `POST /api/generate` - Text generation
+- `POST /api/chat` - Chat completion
+- `POST /api/embeddings` - Generate embeddings
+- `POST /api/show` - Show model information
+- `POST /api/pull` - Pull a model
+- `POST /api/create` - Create a model
+- `POST /api/copy` - Copy a model
+- `DELETE /api/delete` - Delete a model
+
+### Library Choices
+
+- **HTTP Server**: `hyper` v1.x with `http1` connection handling
+- **JSON**: `serde_json` for request/response parsing
+- **No Client Library**: Unlike OpenAI server which uses `async-openai`, this server constructs responses directly
+
+### Response Format
+
+Ollama API responses use simple JSON format:
+
+```json
+// /api/generate response
+{
+  "model": "llama2",
+  "created_at": "2024-01-01T00:00:00Z",
+  "response": "The capital of France is Paris.",
+  "done": true
+}
+
+// /api/chat response
+{
+  "model": "llama2",
+  "created_at": "2024-01-01T00:00:00Z",
+  "message": {
+    "role": "assistant",
+    "content": "Hello! How can I help?"
+  },
+  "done": true
+}
+```
+
+## LLM Integration
+
+Every endpoint dispatches a protocol event through `call_llm`, which also supports static,
+script and manual routing. NetGet owns HTTP and Ollama's JSON envelopes; the handler or model
+chooses structured actions such as `ollama_generate_response`, `ollama_chat_response`,
+`ollama_models_response` and `ollama_error_response`. An unanswered event fails closed. This is
+a mock API server, not a transparent proxy to the requested model.
+
+### Dual Logging
+
+All operations use dual logging pattern:
+
+- `tracing` macros → `netget.log`
+- `status_tx.send()` → TUI
+
+Example:
+
+```rust
+debug!("Chat: model={}, {} messages", model, messages.len());
+let _ = status_tx.send(format!("[DEBUG] Chat: model={}, {} messages", model, messages.len()));
+```
+
+## Connection Tracking
+
+Each accepted TCP socket is tracked as a connection; hyper can serve multiple requests on it:
+
+1. Accept TCP connection
+2. Create `ConnectionId` and add to `ServerInstance`
+3. Serve HTTP request(s) via `hyper`
+4. Mark connection as closed when done
+
+Connection state includes:
+
+- Remote address
+- Bytes sent/received
+- Packets sent/received
+- Last activity timestamp
+
+## Limitations
+
+### 1. Streaming envelopes are assembled in memory
+
+`stream: true` on generate/chat returns `application/x-ndjson` with word-sized records and a
+final `done: true` record. The whole response is assembled after the handler has answered and
+sent in one body; tokens do not arrive incrementally from the backend. Non-streaming requests
+receive one JSON response.
+
+### 2. Model Management is a decision, not a rubber stamp
+
+`/api/pull`, `/api/create`, `/api/copy` and `/api/delete` perform nothing — there is no model
+store here, by design. What changed in August 2026 is **who decides what to report**.
+
+They used to answer `{"status": "success"}` unconditionally, with no event and no `call_llm`
+anywhere in the path, and `/api/pull` invented a digest of `sha256:0000000000000000`. So a
+server instructed "this instance only serves llama2, refuse anything else" reported every pull
+as downloaded and every delete as removed: the instruction could not be wrong, it simply had no
+effect. That is the fail-open shape from the root `AGENTS.md` in its purest form — the decision
+was never asked for.
+
+All four now raise **`ollama_admin_request`** (`operation`, `model`, `destination`) and require
+an explicit **`ollama_admin_ok`** to report success. `ollama_error_response` refuses with the
+model's own message and status. Three outcomes refuse, kept apart in the log:
+`decision=model_reject`, `decision=fail_closed_no_action`, `decision=fail_closed_llm_error` —
+the last two carry only a `WireFailure` category, never the backend error.
+
+`ollama_admin_ok` may carry `digest` and `total`, which `/api/pull` echoes. Nothing is invented:
+omit them and the reply is just `{"status": "success"}`.
+
+`/api/show` is now the model's answer too, via **`ollama_show_request`** / **`ollama_show_response`**
+(modelfile, parameters, template, details — all optional; no action means the request is
+refused). It used to reply with a fabricated Modelfile (`FROM {name}`), a hardcoded
+`temperature 0.7` and a `gguf`/`llama` details block, for any name at all — so a server told
+"this instance serves only llama2" cheerfully described every model a client asked about,
+including ones it had just refused to pull.
+
+`/api/embeddings` was the last endpoint still answering without asking, and the argument that
+defended it was wrong in one load-bearing detail. The argument: an embedding is a few hundred
+to a few thousand floats, asking a language model to emit them would produce plausible-looking
+noise, and that is the numeric equivalent of the raw-bytes-in-actions rule the root
+`AGENTS.md` forbids. All true. The conclusion it drew — "if an operator ever needs real
+control here the answer is a script handler, not an action" — was not: **the endpoint raised
+no event, so a script handler could not reach it either.** Neither could a static rule, nor
+the instruction, nor anything else an operator can write. It was not a stub with an escape
+hatch; it was a hardcoded 768-element ramp with no way in at all.
+
+It now raises **`ollama_embeddings_request`** (`model`, `prompt`) and answers only on
+**`ollama_embeddings_response`**, refusing otherwise — the same shape as `/api/show`. The
+float problem is solved by not asking for floats: the action takes `dimensions` and the
+executor builds the ramp, so what the model decides is *whether* to embed and *how wide*, not
+what the numbers are. `embedding` remains available for a handler that does have a real
+vector. Both are bounded at 4096 elements, because the vector is serialised into the reply and
+the width is model-supplied.
+
+A `dimensions`-only answer is still numerically meaningless, and both the action description
+and this paragraph say so. That is a different thing from meaninglessness nobody chose.
+
+### 3. Embeddings are shaped, not computed
+
+`/api/embeddings` returns a deterministic ramp of the width the handler asked for. Producing a
+vector that actually encodes the prompt would need a real embedding model behind NetGet; there
+is none, and nothing here pretends otherwise. What the handler controls is the decision and
+the shape.
+
+### 4. No Authentication
+
+Real Ollama has no auth, but a production mock server might want API keys for access control.
+Note that this makes every endpoint below reachable pre-auth, which is why the body cap
+matters.
+
+### 5. Request bodies are capped at 8 MiB
+
+`hyper`'s `Incoming` has no default limit, so `req.collect()` buffers whatever the peer sends.
+Every endpoint here is unauthenticated, so a single `POST /api/generate` with an endless
+chunked body was enough to walk the process out of memory. `read_body_limited` uses
+`http_body_util::Limited`, which errors as soon as the cap is passed rather than after
+buffering, and answers 413. The cap is deliberately small: the body is parsed and then
+embedded in an LLM prompt, and a model cannot read 8 MiB.
+
+A distinct 413 rather than an empty body is the point — a truncated body handed to the model
+looks like a complete one, and the model would answer a request it never saw. The constant is
+declared locally rather than imported from `http_common`, because the `ollama` feature does
+not pull in `http` and that module is configured out of an `--features ollama` build.
+
+After hyper flushes the refusal, NetGet half-closes its write side and drains at most 2 MiB
+for at most two seconds, discarding bytes in an 8 KiB buffer. Dropping the socket immediately
+while the client was still uploading could reset the connection and replace the 413 with
+`ECONNRESET`. The drain keeps an ordinary upload tail from destroying the reply, while both
+limits bound an endless upload or a peer that never closes its write side. Refused bytes never
+reach JSON parsing or the model. `connection_bounds_test` holds the upload tail until after
+413 and EOF for both Content-Length and chunked requests; `response_drain_tests` in
+`src/server/accept_bounded.rs` verifies both shared drain bounds, and the real-client test
+sends a full 9 MiB request through reqwest.
+
+### 6. Request-only
+
+`metadata()` declares `.request_only(…)`: "The Ollama API is HTTP request/response; a server
+cannot send a peer anything unprompted". The dashboard's `[ send message ]` on a peer is disabled
+and shows that reason, and MCP `send_to_peer` refuses with it.
+
+## A refusal must not arrive as a success
+
+`model_error_response` is the only path that turns `ollama_error_response` into an HTTP reply,
+and it read the model's `status_code` with `StatusCode::from_u16(code as u16)`. `as u16` wraps:
+`65736` narrows to `200`, `from_u16(200)` succeeds, and the refusal reached the client as a
+200 whose body happens to carry an `error` key — which every Ollama client reads as an answered
+request. The function's own doc comment already said a refusal and an outage must stay
+distinguishable; arithmetic was quietly erasing a third distinction, refusal versus success.
+
+The conversion is now checked, the range is 100–599 (not `StatusCode`'s own 100–999 — 600+ is
+syntactically valid and means nothing), and a 2xx is rejected even when written literally,
+because this path only ever builds refusals. Anything unusable falls back to 400 with a WARN
+rather than failing the request: the refusal itself is the part that must survive.
+`tests/server/ollama/refusal_status_test.rs` pins all four cases.
+
+## Testing Strategy
+
+See `tests/server/ollama/AGENTS.md` for E2E testing approach.
+
+Key test scenarios:
+
+- List models
+- Generate text
+- Chat completion
+- Error handling
+- Invalid requests
+
+## Use Cases
+
+1. **Client Testing**: Test Ollama clients against controlled server
+2. **Honeypot**: LLM-controlled fake Ollama server
+3. **Protocol Development**: Experiment with Ollama API extensions
+4. **Network Simulation**: Simulate Ollama in isolated environments
+
+## Performance
+
+- Lightweight HTTP server (hyper)
+- No heavy dependencies
+- LLM call overhead same as other protocols
+- Can handle multiple concurrent connections
+
+## Future Enhancements
+
+1. **Streaming**: Send responses incrementally instead of assembling all NDJSON records first
+2. **Interoperability**: Exercise the model-management endpoints with independent clients
+3. **Model State**: Track "pulled" models in memory
+4. **Custom Endpoints**: Support Ollama API extensions
+5. **Metrics**: Track request counts, response times, etc.
+
+## Example Prompts
+
+```
+Start an Ollama-compatible API server on port 11435
+```
+
+```
+Run an Ollama server on 0.0.0.0:11435 that always returns funny responses
+```
+
+```
+Create a fake Ollama server for testing on port 8080
+```
+
+## Connection bounds
+
+A peer that connects and says nothing holds a socket, a task and an `AppState` row. Until
+September 2026 it held them forever: this server had no read deadline and accepted without limit.
+
+| bound | default | overridable with |
+|---|---|---|
+| first request from a connected peer | 30s | `first_byte_timeout_secs` |
+| silence between requests on a keep-alive connection | 300s | `idle_timeout_secs` |
+
+**The two are enforced in different places, and that is the whole design of a hyper server's
+bounds.** hyper owns every read once `serve_connection` starts, and it keeps polling the
+connection for new frames while a request is being answered — so a deadline on *its* reads fires
+in the middle of a model round-trip, which on this server is the normal case rather than the slow
+one. So:
+
+* the first-byte bound is a `TcpStream::peek` **before** `serve_connection` is called. `peek`
+  waits for data without consuming it, so the request line is still there for hyper afterwards;
+* the idle bound is `watch_idle` over a `ConnectionActivity` the service holds busy for the whole
+  of each request. A connection with work in flight is not idle at all, so a model round-trip —
+  and a `manual` rule parking the event for a human — can never be closed from under itself.
+
+This is the shape `etcd` and `s3` established; see `src/server/etcd/mod.rs`.
+
+**Why 30 for the first byte.** HTTP is client-speaks-first, and the peer that made `tcp`,
+`redis` and `whois` settle on 300 cannot exist here. That peer is NetGet's own client of the same
+protocol, created from the dashboard's `[ + ollama client ]` and parked at `[ send message ]`
+having sent nothing — but `src/client/ollama/` normalises the endpoint into a URL, stores it,
+registers a command channel and returns, opening no socket at all. Its first TCP connection is
+made inside the request that carries a body, so there is no state in which it is attached to this
+listener waiting for a person. 30 seconds sits between nginx's `client_header_timeout` default of
+60s and Apache's `RequestReadTimeout header=20`.
+
+**Why 300 for idle — chosen against the clients, not the service.** Every SDK here pools
+connections, and `reqwest` keeps an idle pooled connection for 90 seconds before evicting it. An
+idle bound below that races the pool: the client hands a request to a connection the server has
+just closed, and `/api/generate` is not idempotent, so it surfaces as a failed request rather than
+a retry. At 300 seconds the pool always evicts first.
+
+**Connection cap**: `accept_bounded::DEFAULT_MAX_CONNECTIONS` (256), which turns the 8 MiB
+`MAX_REQUEST_BODY_BYTES` into a total bound. A peer over it is told `503 Service Unavailable` with
+a `Retry-After` and a JSON body carrying `{"error": "..."}` — the envelope real Ollama uses for
+its own errors, so `ollama-rs` surfaces it as a server error with a message rather than as a
+decode failure. A silent close would be indistinguishable from a crash and the client would retry
+immediately and forever.
+
+Tests: `tests/server/ollama/connection_bounds_test.rs`, driven from a raw socket with a static
+routing rule and zero LLM calls. Its third case asserts the refusal's hand-written
+`Content-Length` matches its body — a wrong one hangs every client waiting for bytes that are not
+coming, which is worse than the silent close the refusal replaced.

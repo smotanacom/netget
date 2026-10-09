@@ -29,7 +29,7 @@
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features rtp \
-//!       --test server::rtp::script_fallback_budget_test -- --test-threads=100
+//!       --test server -- server::rtp::script_fallback_budget_test --test-threads=100
 
 #![cfg(feature = "rtp")]
 

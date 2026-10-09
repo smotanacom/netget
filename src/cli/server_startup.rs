@@ -64,8 +64,15 @@ pub async fn start_server_by_id(
     status_tx: &mpsc::UnboundedSender<String>,
 ) -> Result<(), ActionExecutionError> {
     // Get server info
-    let server = match state.get_server(server_id).await {
-        Some(s) => s,
+    let server = match state
+        .with_server_mut(server_id, |current| {
+            crate::protocol::StartupParams::preflight_owned(&mut current.startup_params)?;
+            Ok::<_, crate::protocol::StartupParamError>(current.clone())
+        })
+        .await
+    {
+        Some(Ok(current)) => current,
+        Some(Err(error)) => return Err(ActionExecutionError::Fatal(error.into())),
         None => {
             let _ = status_tx.send(format!("[ERROR] Server #{} not found", server_id.as_u32()));
             return Ok(());
@@ -107,6 +114,9 @@ pub async fn start_server_by_id(
     }
 
     let system_caps = state.get_system_capabilities().await;
+    // The requirement for this start: a protocol's unprivileged test transport needs none.
+    let privilege_requirement =
+        protocol.startup_privilege_requirement(server.startup_params.as_ref());
 
     // Decide whether this start is blocked for lack of privilege.
     //
@@ -116,9 +126,9 @@ pub async fn start_server_by_id(
     // Anything else ANDed in here silently overrides it - in particular, gating a
     // `RawSockets` protocol on `can_bind_privileged_ports` let it through on a
     // host that cannot open raw sockets.
-    let privilege_met = metadata.privilege_requirement.is_met_by(&system_caps);
+    let privilege_met = privilege_requirement.is_met_by(&system_caps);
 
-    let requires_privileges = match &metadata.privilege_requirement {
+    let requires_privileges = match &privilege_requirement {
         crate::protocol::metadata::PrivilegeRequirement::PrivilegedPort(_) => {
             // Only require privileges if actually binding to a privileged port.
             // Port 0 means OS-assigned port, which will always be unprivileged (>1024)
@@ -133,13 +143,13 @@ pub async fn start_server_by_id(
             "Cannot start {} server on port {}: {}. Current capabilities: {}",
             protocol_name,
             server.port,
-            metadata.privilege_requirement.description(),
+            privilege_requirement.description(),
             system_caps.description()
         );
 
         // Provide helpful suggestion based on platform
         let suggestion = if cfg!(target_os = "linux") {
-            match &metadata.privilege_requirement {
+            match &privilege_requirement {
                 crate::protocol::metadata::PrivilegeRequirement::PrivilegedPort(port) => {
                     format!("\nSuggestion: Run as root (sudo) or use a port >= 1024 (e.g., {}, {}, {})",
                         port + 8000, port + 10000, 8080)
@@ -166,7 +176,7 @@ pub async fn start_server_by_id(
         let _ = status_tx.send(format!("[ERROR] {}", full_error));
         let _ = status_tx.send("__UPDATE_UI__".to_string());
         return Err(ActionExecutionError::PrivilegeDenied {
-            requirement: metadata.privilege_requirement.description(),
+            requirement: privilege_requirement.description(),
             message: full_error,
         });
     }
@@ -345,13 +355,14 @@ pub async fn start_server_from_action(
     send_first: bool,
     initial_memory: Option<String>,
     instruction: String,
-    startup_params: Option<serde_json::Value>,
+    mut startup_params: Option<serde_json::Value>,
     event_handlers: Option<Vec<serde_json::Value>>,
     scheduled_tasks: Option<Vec<crate::llm::actions::common::ServerTaskDefinition>>,
     feedback_instructions: Option<String>,
     status_tx: mpsc::UnboundedSender<String>,
 ) -> Result<ServerId> {
     use crate::state::server::ServerStatus;
+    crate::protocol::StartupParams::preflight_owned(&mut startup_params)?;
     let prepared_tasks = crate::state::task::prepare_tasks(
         scheduled_tasks.as_deref(),
         crate::state::task::TaskScope::Global,
@@ -423,7 +434,7 @@ pub async fn start_server_from_action(
         .iter()
         .any(|p| p.name == "send_first");
 
-    let startup_params = if send_first && declares_send_first {
+    let mut startup_params = if send_first && declares_send_first {
         let mut params = startup_params.unwrap_or_else(|| serde_json::json!({}));
         match params.as_object_mut() {
             Some(map) => {
@@ -434,7 +445,7 @@ pub async fn start_server_from_action(
             None => {
                 return Err(anyhow::anyhow!(
                     "startup_params must be a JSON object, got: {}",
-                    params
+                    crate::utils::redact::redact_sensitive(&params)
                 ));
             }
         }
@@ -451,6 +462,8 @@ pub async fn start_server_from_action(
         }
         startup_params
     };
+
+    crate::protocol::StartupParams::preflight_owned(&mut startup_params)?;
 
     // === Validate startup params BEFORE registering the server ===
     //
@@ -547,8 +560,10 @@ pub async fn start_server_from_action(
             )
         };
 
-    // Check privilege requirements
-    let metadata = protocol_impl.metadata();
+    // Check privilege requirements — for this start, so an unprivileged test transport is
+    // not refused for the privilege its real transport needs.
+    let privilege_requirement =
+        protocol_impl.startup_privilege_requirement(startup_params.as_ref());
     let system_caps = state.get_system_capabilities().await;
 
     // Decide whether this start is blocked for lack of privilege.
@@ -557,9 +572,9 @@ pub async fn start_server_from_action(
     // each requirement onto the capability that satisfies it. ANDing an unrelated
     // capability on top (e.g. `can_bind_privileged_ports` for a `RawSockets`
     // protocol) let unprivileged starts through.
-    let privilege_met = metadata.privilege_requirement.is_met_by(&system_caps);
+    let privilege_met = privilege_requirement.is_met_by(&system_caps);
 
-    let requires_privileges = match &metadata.privilege_requirement {
+    let requires_privileges = match &privilege_requirement {
         crate::protocol::metadata::PrivilegeRequirement::PrivilegedPort(_) => {
             // Only require privileges if actually binding to a privileged port.
             // Port 0 means OS-assigned port, which will always be unprivileged (>1024)
@@ -578,7 +593,7 @@ pub async fn start_server_from_action(
         let error_msg = format!(
             "Cannot start {} server: {}. Current capabilities: {}",
             protocol,
-            metadata.privilege_requirement.description(),
+            privilege_requirement.description(),
             system_caps.description()
         );
         return Err(anyhow::anyhow!(error_msg));

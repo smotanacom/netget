@@ -1,8 +1,7 @@
 //! Inert, exactly-owned process fixtures for wrapper lifecycle regressions.
 #![allow(dead_code)]
 
-#[path = "child_guard.rs"]
-mod child_guard;
+use super::child_guard;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -20,12 +19,17 @@ pub fn inert_script(directory: &Path, graceful: bool) -> PathBuf {
     let body = if graceful {
         "while IFS= read -r line; do if [ \"$line\" = exit ]; then exit 0; fi; done"
     } else {
-        // Pipe EOF must not be what kills the child after its parent dies.
-        "exec /bin/sleep 600"
+        // The outer test's unique TempDir owns the lease, not the worker being
+        // killed. A broken death tie must fail the assertion while the lease is
+        // retained; unwinding then revokes it without signalling an orphan PID
+        // that the kernel may have recycled. Self-expiry also bounds leftovers
+        // if the outer test itself is killed before TempDir can be dropped.
+        std::fs::write(path.with_extension("sh.lease"), b"owned fixture lease").unwrap();
+        "remaining=600; while [ -f \"$0.lease\" ] && [ \"$remaining\" -gt 0 ]; do /bin/sleep 0.1; remaining=$((remaining-1)); done"
     };
     std::fs::write(
         &path,
-        format!("#!/bin/sh\nprintf 'FIXTURE_PID=%s\\n' \"$$\"\n{body}\n"),
+        format!("#!/bin/sh\ntrap '' HUP\nprintf 'FIXTURE_PID=%s\\n' \"$$\"\n{body}\n"),
     )
     .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -139,10 +143,8 @@ pub fn assert_parent_death_cleans_child(test_name: &str) {
             break;
         }
         if Instant::now() >= deadline {
-            // This is only the inert fixture PID reported by our own worker.
-            unsafe {
-                libc::kill(pid as libc::pid_t, libc::SIGKILL);
-            }
+            // TempDir cleanup revokes the fixture lease; never signal a numeric
+            // orphan PID, which may now identify an unrelated process.
             panic!("owned child {pid} survived its parent's abrupt death");
         }
         std::thread::sleep(Duration::from_millis(10));

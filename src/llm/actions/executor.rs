@@ -259,6 +259,20 @@ pub async fn execute_actions(
     server_id: Option<crate::state::ServerId>,
     client_id: Option<crate::state::ClientId>,
 ) -> Result<ExecutionResult> {
+    // Static interpolation and parsed JSON have budgets, but manual answers and
+    // direct callers can construct arbitrarily nested Values. Check the whole
+    // batch before cloning, logging, parsing or recursively destroying anything.
+    if !crate::utils::json_budget::within_values_budget(
+        &actions,
+        crate::scripting::event_handler::MAX_INTERPOLATION_BYTES,
+        crate::scripting::event_handler::MAX_INTERPOLATION_NODES,
+        crate::scripting::event_handler::MAX_INTERPOLATION_DEPTH,
+    ) {
+        for action in actions {
+            crate::utils::json_budget::drop_iteratively(action);
+        }
+        anyhow::bail!("action batch exceeds the shared JSON budget");
+    }
     let mut result = ExecutionResult::new();
 
     // Store raw actions for protocols that need manual processing (mDNS, NFS, etc.)

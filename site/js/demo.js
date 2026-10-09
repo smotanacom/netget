@@ -24,6 +24,7 @@
 
 import { mountComposer, offeredActions, entriesFromEnvelope, buildReply } from './composer.js';
 import { splitThinking } from './thinking.js';
+import { Adventure } from './adventure.js';
 import { TelnetDecoder } from './telnet.js';
 
 const PKG = '../demo/pkg/netget_web.js';
@@ -75,25 +76,20 @@ const CLIENT_AFTER_MS = 2000;   // after NetGet boots, connect the Telnet client
 //
 // Connection-open is handled statically; only typed lines reach the model.
 //
-// - The adventure. "run a very small text adventure if they type play", in the instruction
-//   alone, had Gemini Nano answer "play" with a bare "> " prompt 4 times in 5 and no model
-//   start a game; "look" and "go north" then arrived as unrelated lines. The map is in the
-//   instruction so that every answer can place the visitor, starting at the Gate, and the
-//   game's rule is on `telnet_message_received`: with it Nano starts the game 5 times in 5 and
-//   answers "look" in it 4 in 5. Where the visitor is after a move lives only in the server's
-//   memory, and small models rarely write it: Nano did on 1 turn in 67 across four wordings of
-//   this rule, so "go north" is still answered from the Gate (web/README.md has the table).
+// - The adventure. Room transitions are applied by adventure.js before a request reaches a
+//   model or the manual composer. The model receives the current room and command result on
+//   every turn, so a model that never calls set_memory can still play the whole map.
 const TELNET_INSTRUCTION = 'You are the NetGet BBS, a tiny retro bulletin board reached over '
     + 'Telnet. Answer every line a visitor types with send_telnet_line: one or two short, friendly '
     + 'lines of plain text, under 200 characters. Greet them by name, chat, tell a one-line joke '
     + 'when asked, or run a tiny text adventure if they type "play". The adventure\'s map: Gate '
     + '(a rusty lamp; north to Hall), Hall (a sleeping dragon; south to Gate, east to Vault), '
     + 'Vault (a heap of gold; west to Hall). It starts at the Gate.';
-const TELNET_GAME_RULE = 'Answer with send_telnet_line. "play" starts the adventure: describe '
-    + 'the Gate. A game command (look, go <direction>, take <thing>) is answered as the adventure, '
-    + 'from the room Memory names, or from the Gate if it names none: "look" describes that room; '
-    + '"go <direction>" walks to the next room on the map (from the Gate, "go north" reaches the '
-    + 'Hall) and describes it, then set_memory "room: <that room>". Anything else is chat.';
+const TELNET_GAME_RULE = 'Answer with send_telnet_line. The demo owns the adventure state. '
+    + 'Use the Demo adventure state supplied below to describe the current room and the '
+    + 'command result. "play" or "reset" starts at the Gate; "look" describes the room; '
+    + 'north, south, east, west or "go <direction>" moves when an exit exists. '
+    + 'A blocked move stays in the same room. Anything else is chat.';
 const TELNET_EVENT_HANDLERS = [{
     event_pattern: 'telnet_connection_opened',
     handler: { type: 'static', actions: [] },
@@ -114,7 +110,8 @@ const enc = new TextEncoder();
 const app = {
     netget: null,
     dash: null,           // xterm for the dashboard
-    telnet: { term: null, conn: null, line: '', serverUp: false, typing: false },
+    telnet: { term: null, conn: null, line: '', serverUp: false, serverId: null, typing: false },
+    adventure: new Adventure(),
     models: [],           // what the select lists, each with its own state
     selected: null,       // the id the select shows
     active: null,         // the model answering, or null: the visitor answers
@@ -633,6 +630,11 @@ function retireWebLlm(m) {
 
 // What a request is about, for a one-line summary: the event id and the line received.
 function describe(req) {
+    if (req.event) {
+        const ctx = req.event.data || {};
+        const value = ctx.message ?? ctx.data ?? ctx.line ?? ctx.text;
+        return { event: req.event.event_type, detail: typeof value === 'string' ? value : '' };
+    }
     const text = req.messages.map((m) => m.content).join('\n');
     const event = (text.match(/Event ID: ([\w.:-]+)/) || [])[1] || null;
     let detail = '';
@@ -654,7 +656,7 @@ function describe(req) {
 }
 
 function handleLlmRequest(json) {
-    const req = JSON.parse(json);
+    const req = app.adventure.prepare(JSON.parse(json), app.telnet.serverId);
     return new Promise((resolve) => {
         // mode: 'waiting' (for a model that is loading), 'manual' (the visitor has it) or
         // 'model' (a model is answering it).
@@ -742,7 +744,10 @@ function headHtml(entry, state) {
 
 function promptHtml(req) {
     const n = offeredActions(req).length;
-    return `<details class="llm-prompt">
+    const room = req.adventure
+        ? `<div class="llm-note adventure-state">Room: <b>${escapeHtml(req.adventure.room)}</b>. ${escapeHtml(req.adventure.detail)}</div>`
+        : '';
+    return room + `<details class="llm-prompt">
         <summary>The prompt NetGet sent · ${req.messages.length} message${req.messages.length === 1 ? '' : 's'}${n ? ` · ${n} actions offered` : ''}</summary>
         ${req.messages.map((m) => `<span class="llm-role">${escapeHtml(m.role)}</span><pre>${escapeHtml(m.content)}</pre>`).join('')}
       </details>`;
@@ -1259,6 +1264,7 @@ function startTelnetServer(attempt = 0) {
             banner.textContent = `Could not open the Telnet server: ${r.error}`;
             return;
         }
+        app.telnet.serverId = r.id;
     });
 }
 
@@ -1270,6 +1276,12 @@ function whenListening(port, then, deadline = performance.now() + 15000) {
         return;
     }
     setTimeout(() => whenListening(port, then, deadline), 100);
+}
+
+// The adventure's game state is per connection; drop it for peers that have gone.
+function pruneAdventure() {
+    if (!app.netget) return;
+    app.netget.servers((json) => app.adventure.prune(JSON.parse(json)));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1327,6 +1339,8 @@ async function main() {
     setTimeout(() => whenListening(TELNET_PORT, () => typed.then(() => {
         telnetConnect();
     })), CLIENT_AFTER_MS);
+
+    setInterval(pruneAdventure, 2000);
 
     $('#theme-toggle')?.addEventListener('click', () => {
         setTimeout(() => { for (const t of [app.dash, app.telnet.term]) t.options.theme = xtermTheme(); }, 0);

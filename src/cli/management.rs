@@ -138,6 +138,7 @@ fn validate_params_declared(
     schema: &[ParameterDefinition],
     protocol: &str,
 ) -> Result<()> {
+    crate::protocol::StartupParams::preflight(params)?;
     crate::protocol::spawn_context::StartupParams::new_validated(params.clone(), schema.to_vec())
         .map(|_| ())
         .map_err(|e| anyhow::anyhow!("Invalid startup_params for {}: {}", protocol, e))
@@ -195,10 +196,11 @@ impl ServerForm {
     /// Create a brand new server from this form. Thin wrapper over the shared
     /// `start_server_from_action` executor — no logic is duplicated.
     pub async fn create(
-        self,
+        mut self,
         state: &AppState,
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<ServerId> {
+        crate::protocol::StartupParams::preflight_owned(&mut self.startup_params)?;
         let instruction = self.instruction.clone().unwrap_or_else(|| {
             format!(
                 "You are a {} server. Handle requests appropriately.",
@@ -229,11 +231,12 @@ impl ClientForm {
     /// Create a brand new client from this form. Thin wrapper over the shared
     /// `start_client_from_action` executor.
     pub async fn create(
-        self,
+        mut self,
         state: &AppState,
         llm_client: OllamaClient,
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<ClientId> {
+        crate::protocol::StartupParams::preflight_owned(&mut self.startup_params)?;
         let remote_addr = self
             .remote_addr
             .clone()
@@ -265,6 +268,17 @@ impl ClientForm {
 /// the merged object. Used so a partial `startup_params` update keeps the params
 /// it does not mention.
 fn merge_params(base: Option<&Value>, overlay: &Value) -> Result<Value> {
+    // Budget the entire borrowed input batch before cloning either object.
+    if !crate::utils::json_budget::within_values_budget(
+        base.into_iter().chain(std::iter::once(overlay)),
+        crate::protocol::spawn_context::MAX_STARTUP_PARAM_BYTES,
+        crate::protocol::spawn_context::MAX_STARTUP_PARAM_NODES,
+        crate::protocol::spawn_context::MAX_STARTUP_PARAM_DEPTH,
+    ) {
+        return Err(anyhow::anyhow!(
+            "startup_params exceeds the merged JSON size, node or depth budget"
+        ));
+    }
     let map = overlay
         .as_object()
         .ok_or_else(|| anyhow::anyhow!("startup_params must be a JSON object"))?;
@@ -300,13 +314,17 @@ fn server_needs_restart(form: &ServerForm) -> bool {
 pub async fn update_server(
     state: &AppState,
     server_id: ServerId,
-    form: ServerForm,
+    mut form: ServerForm,
     status_tx: mpsc::UnboundedSender<String>,
 ) -> Result<UpdateOutcome> {
+    crate::protocol::StartupParams::preflight_owned(&mut form.startup_params)?;
     let current = state
-        .get_server(server_id)
+        .with_server_mut(server_id, |current| {
+            crate::protocol::StartupParams::preflight_owned(&mut current.startup_params)?;
+            Ok::<_, crate::protocol::StartupParamError>(current.clone())
+        })
         .await
-        .ok_or_else(|| anyhow::anyhow!("Server #{} not found", server_id.as_u32()))?;
+        .ok_or_else(|| anyhow::anyhow!("Server #{} not found", server_id.as_u32()))??;
 
     // Protocol is immutable on update.
     if !form.protocol.is_empty() && !form.protocol.eq_ignore_ascii_case(&current.protocol_name) {
@@ -506,14 +524,18 @@ fn client_needs_restart(form: &ClientForm) -> bool {
 pub async fn update_client(
     state: &AppState,
     client_id: ClientId,
-    form: ClientForm,
+    mut form: ClientForm,
     llm_client: OllamaClient,
     status_tx: mpsc::UnboundedSender<String>,
 ) -> Result<UpdateOutcome> {
+    crate::protocol::StartupParams::preflight_owned(&mut form.startup_params)?;
     let current = state
-        .get_client(client_id)
+        .with_client_mut(client_id, |current| {
+            crate::protocol::StartupParams::preflight_owned(&mut current.startup_params)?;
+            Ok::<_, crate::protocol::StartupParamError>(current.clone())
+        })
         .await
-        .ok_or_else(|| anyhow::anyhow!("Client #{} not found", client_id.as_u32()))?;
+        .ok_or_else(|| anyhow::anyhow!("Client #{} not found", client_id.as_u32()))??;
 
     if !form.protocol.is_empty() && !form.protocol.eq_ignore_ascii_case(&current.protocol_name) {
         return Err(anyhow::anyhow!(

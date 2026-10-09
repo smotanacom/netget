@@ -4,6 +4,12 @@
 //! and controls RPC request/response handling through JSON.
 
 pub mod actions;
+#[cfg(any(feature = "grpc-web", feature = "connect_rpc"))]
+pub mod http1;
+mod reflection;
+pub(crate) mod schema;
+pub mod stream_codec;
+pub(crate) mod streaming;
 pub mod value_codec;
 pub use value_codec::{dynamic_message_to_json, json_to_dynamic_message, proto_value_to_json};
 
@@ -41,8 +47,6 @@ use prost::Message;
 #[cfg(feature = "grpc")]
 use prost_reflect::{DescriptorPool, DynamicMessage};
 #[cfg(feature = "grpc")]
-use prost_types::FileDescriptorSet;
-#[cfg(feature = "grpc")]
 use serde_json::json;
 
 /// Largest request body buffered, before gRPC framing. Matches gRPC's own default
@@ -63,16 +67,10 @@ const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 
 /// How long a connection may do nothing at all once it is up.
 ///
-/// gRPC's own keepalive is **off by default** on both sides (grpc-go's
-/// `keepalive.ClientParameters.Time` is unset, and its server enforcement policy refuses pings
-/// more often than five minutes), so there is no interval to copy. Fifteen minutes is safe
-/// because of a property of *this* server rather than of gRPC: it is unary-only — there is no
-/// server-streaming route at all, reflection included — so no legitimate request is held open
-/// waiting for something to happen, and a connection with no RPC for fifteen minutes is a client
-/// that has gone away. A request still being answered is not silence: the watchdog reads
-/// `ConnectionActivity`, which reports a busy connection as not idle at all, so an LLM
-/// round-trip or a `manual` rule parked for a human cannot close the connection it is an answer
-/// for.
+/// Keepalive is off by default. This watchdog runs only while there are no live
+/// RPCs: a response body retains its busy guard through EOS/drop, including
+/// a subscription, flow-control stall or parked handler. Each stream separately
+/// has a whole-operation deadline.
 #[cfg(feature = "grpc")]
 const IDLE_BETWEEN_REQUESTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
 
@@ -330,15 +328,30 @@ impl GrpcServer {
         trace!("Proto schema:\n{}", proto_schema);
         Log::new(Some(&status_tx)).debug("Compiling protobuf schema for gRPC server");
 
-        // Compile proto schema to FileDescriptorSet
-        let file_descriptor_set = Self::compile_proto_schema(&proto_schema)
-            .context("Failed to compile protobuf schema")?;
-
-        // Build descriptor pool for dynamic message handling
-        let mut fd_bytes = Vec::new();
-        file_descriptor_set.encode(&mut fd_bytes)?;
-        let descriptor_pool = DescriptorPool::decode(fd_bytes.as_slice())
-            .context("Failed to create descriptor pool from FileDescriptorSet")?;
+        let descriptor_pool = schema::load(&proto_schema)
+            .await
+            .context("Failed to compile/load protobuf schema")?;
+        let reflection_enabled = startup_params
+            .as_ref()
+            .map(|p| p.get_optional_bool("enable_reflection"))
+            .transpose()?
+            .flatten()
+            .unwrap_or(streaming::DEFAULT_REFLECTION);
+        let timeout_secs = startup_params
+            .as_ref()
+            .map(|p| p.get_optional_u64("stream_timeout_secs"))
+            .transpose()?
+            .flatten()
+            .unwrap_or(streaming::DEFAULT_TIMEOUT_SECS);
+        anyhow::ensure!(
+            (1..=3600).contains(&timeout_secs),
+            "stream_timeout_secs must be 1..3600"
+        );
+        let reflection = if reflection_enabled {
+            Some(reflection::Reflection::new(&descriptor_pool)?)
+        } else {
+            None
+        };
 
         let services = descriptor_pool.services().collect::<Vec<_>>();
 
@@ -360,25 +373,6 @@ impl GrpcServer {
         let protocol = Arc::new(GrpcProtocol::new());
         let descriptor_pool_arc = Arc::new(descriptor_pool.clone());
 
-        // Server reflection is NOT served.
-        //
-        // This used to build a `tonic_reflection` service into a variable named
-        // `_reflection_service`, drop it at the end of scope, and log "gRPC reflection
-        // enabled". The router below has no route for
-        // `/grpc.reflection.v1.ServerReflection/ServerReflectionInfo`, so reflection requests
-        // fell through to "unknown service". `grpcurl` with no -proto/-protoset starts with
-        // exactly that call, which is why it could never introspect this server. Reflection is
-        // also server-streaming, which this unary-only server cannot do at all.
-        //
-        // The `enable_reflection` startup parameter has been removed with it; it only ever
-        // changed a log line.
-        warn!(
-            "gRPC server reflection is not implemented; clients must be given the schema \
-             out of band (grpcurl -proto / -protoset)"
-        );
-        Log::new(Some(&status_tx))
-            .warn("gRPC reflection is not served; pass the schema to clients out of band");
-
         // Create dynamic gRPC service
         let dynamic_service = DynamicGrpcService {
             llm_client: llm_client.clone(),
@@ -387,6 +381,10 @@ impl GrpcServer {
             server_id,
             descriptor_pool: descriptor_pool_arc,
             protocol,
+            reflection,
+            stream_timeout: std::time::Duration::from_secs(timeout_secs),
+            streams: Arc::new(tokio::sync::Semaphore::new(streaming::MAX_ACTIVE)),
+            next_stream_id: Arc::new(std::sync::atomic::AtomicU32::new(1)),
         };
 
         // Start HTTP/2 server for gRPC
@@ -503,23 +501,48 @@ impl GrpcServer {
                                     crate::server::accept_bounded::ConnectionActivity::new(),
                                 );
                                 let activity_for_service = Arc::clone(&activity);
+                                let executor = streaming::OwnedExecutor::default();
+                                let _children = streaming::ConnectionTasks(executor.clone());
+                                let registry = streaming::Registry::default();
+                                let peer_rx = crate::server::peer_support::register_peer_channel(
+                                    &app_state_clone,
+                                    server_id,
+                                    connection_id.as_u32(),
+                                )
+                                .await;
+                                let _ = executor.spawn(streaming::command_loop(
+                                    peer_rx,
+                                    registry.clone(),
+                                    service_clone.clone(),
+                                    connection_id,
+                                ));
+                                let executor_for_service = executor.clone();
 
                                 // Create service function for this connection
                                 let grpc_service = hyper::service::service_fn(move |req| {
                                     let service = service_clone.clone();
                                     let conn_id = connection_id;
                                     let activity = Arc::clone(&activity_for_service);
+                                    let registry = registry.clone();
+                                    let executor = executor_for_service.clone();
                                     async move {
-                                        let _busy = activity.busy();
-                                        service.handle_grpc_request(req, conn_id).await
+                                        let busy = activity.busy();
+                                        service
+                                            .handle_grpc_request(
+                                                req, conn_id, busy, registry, executor,
+                                            )
+                                            .await
                                     }
                                 });
 
                                 // Serve HTTP/2 connection
-                                let conn = hyper::server::conn::http2::Builder::new(
-                                    hyper_util::rt::TokioExecutor::new(),
-                                )
-                                .serve_connection(io, grpc_service);
+                                let conn = hyper::server::conn::http2::Builder::new(executor)
+                                    .max_concurrent_streams(16)
+                                    .initial_stream_window_size(65536)
+                                    .initial_connection_window_size(1048576)
+                                    .max_header_list_size(32768)
+                                    .max_frame_size(16384)
+                                    .serve_connection(io, grpc_service);
                                 tokio::pin!(conn);
                                 tokio::select! {
                                     result = &mut conn => {
@@ -542,6 +565,9 @@ impl GrpcServer {
 
                                 // Clean up connection
                                 app_state_clone
+                                    .remove_peer_handle(server_id, connection_id.as_u32())
+                                    .await;
+                                app_state_clone
                                     .remove_connection_from_server(server_id, connection_id)
                                     .await;
                                 let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
@@ -562,151 +588,147 @@ impl GrpcServer {
 
         Ok(actual_addr)
     }
-
-    /// Parse protobuf schema into FileDescriptorSet
-    ///
-    /// Supports multiple input formats:
-    /// 1. Base64-encoded FileDescriptorSet (recommended - no protoc needed)
-    /// 2. .proto file path (requires protoc in PATH)
-    /// 3. .proto text content (requires protoc in PATH)
-    fn compile_proto_schema(proto_schema: &str) -> Result<FileDescriptorSet> {
-        use base64::engine::general_purpose::STANDARD;
-        use base64::Engine;
-
-        // Try base64 decode first (FileDescriptorSet encoded as base64)
-        if let Ok(decoded) = STANDARD.decode(proto_schema.trim()) {
-            match FileDescriptorSet::decode(decoded.as_slice()) {
-                Ok(fds) => {
-                    debug!(
-                        "Loaded FileDescriptorSet from base64 ({} bytes)",
-                        decoded.len()
-                    );
-                    return Ok(fds);
-                }
-                Err(e) => {
-                    // Base64 decoded successfully but FileDescriptorSet decode failed
-                    // This is likely the correct format but corrupted data
-                    bail!(
-                        "Successfully decoded base64 but failed to parse FileDescriptorSet: {}. \
-                           The base64 string may be corrupted or not a valid FileDescriptorSet.",
-                        e
-                    );
-                }
-            }
-        }
-
-        // Check if it's a file path
-        if proto_schema.ends_with(".proto") || proto_schema.ends_with(".pb") {
-            return Self::load_proto_from_file(proto_schema);
-        }
-
-        // Assume it's .proto text and compile with protoc
-        Self::compile_proto_text(proto_schema)
-    }
-
-    /// Load FileDescriptorSet from a .proto or .pb file
-    fn load_proto_from_file(path: &str) -> Result<FileDescriptorSet> {
-        use std::path::Path;
-        let path = Path::new(path);
-
-        if !path.exists() {
-            bail!("Proto file not found: {}", path.display());
-        }
-
-        // If it's a .pb file (pre-compiled descriptor), load directly
-        if path.extension().and_then(|e| e.to_str()) == Some("pb") {
-            let bytes = std::fs::read(path)?;
-            let fds = FileDescriptorSet::decode(bytes.as_slice())
-                .context("Failed to decode .pb file as FileDescriptorSet")?;
-            debug!(
-                "Loaded FileDescriptorSet from {} ({} files)",
-                path.display(),
-                fds.file.len()
-            );
-            return Ok(fds);
-        }
-
-        // Otherwise, compile the .proto file with protoc
-        Self::compile_proto_file(path)
-    }
-
-    /// Compile .proto file using protoc
-    fn compile_proto_file(path: &std::path::Path) -> Result<FileDescriptorSet> {
-        use std::process::Command;
-
-        // Unique per invocation. A fixed name meant two gRPC servers starting concurrently
-        // wrote and read back the same descriptor file and could load each other's schema.
-        let output_path = std::env::temp_dir().join(format!(
-            "netget_grpc_descriptor_{}.pb",
-            uuid::Uuid::new_v4()
-        ));
-
-        // Get the directory containing the proto file for proto_path
-        let proto_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let filename = path.file_name().context("Invalid proto file path")?;
-
-        // Run protoc to generate FileDescriptorSet
-        let output = Command::new("protoc")
-            .arg("--include_imports")
-            .arg("--include_source_info")
-            .arg(format!("--descriptor_set_out={}", output_path.display()))
-            .arg(format!("--proto_path={}", proto_dir.display()))
-            .arg(filename)
-            .output()
-            .context("Failed to execute protoc. Is protoc installed and in PATH?")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("protoc failed: {}", stderr);
-        }
-
-        // Load the generated descriptor set
-        let bytes = std::fs::read(&output_path)?;
-        let _ = std::fs::remove_file(&output_path);
-        let fds = FileDescriptorSet::decode(bytes.as_slice())
-            .context("Failed to decode protoc output")?;
-
-        debug!(
-            "Compiled {} with protoc ({} files)",
-            path.display(),
-            fds.file.len()
-        );
-        Ok(fds)
-    }
-
-    /// Compile .proto text using protoc
-    fn compile_proto_text(proto_text: &str) -> Result<FileDescriptorSet> {
-        use std::io::Write;
-
-        // Write to temporary file with unique name to avoid conflicts when running multiple servers in parallel
-        let temp_dir = std::env::temp_dir();
-        let unique_id = uuid::Uuid::new_v4();
-        let proto_file = temp_dir.join(format!("netget_grpc_{}.proto", unique_id));
-
-        {
-            let mut file = std::fs::File::create(&proto_file)?;
-            file.write_all(proto_text.as_bytes())?;
-        }
-
-        // Compile with protoc
-        let result = Self::compile_proto_file(&proto_file);
-
-        // Clean up temp file
-        let _ = std::fs::remove_file(&proto_file);
-
-        result
-    }
 }
 
 /// Dynamic gRPC service that handles requests using LLM
 #[cfg(feature = "grpc")]
+#[derive(Clone)]
 struct DynamicGrpcService {
     llm_client: OllamaClient,
     app_state: Arc<AppState>,
     status_tx: mpsc::UnboundedSender<String>,
     server_id: crate::state::ServerId,
     descriptor_pool: Arc<DescriptorPool>,
-    protocol: Arc<GrpcProtocol>,
+    protocol: Arc<dyn crate::llm::actions::protocol_trait::Server>,
+    reflection: Option<Arc<reflection::Reflection>>,
+    stream_timeout: std::time::Duration,
+    streams: Arc<tokio::sync::Semaphore>,
+    next_stream_id: Arc<std::sync::atomic::AtomicU32>,
+}
+
+/// HTTP/1 RPC bindings share typed method handling, admission and cancellation with native
+/// gRPC. Each binding owns its framing; legacy unary behavior is untouched.
+#[cfg(any(feature = "grpc-web", feature = "connect_rpc"))]
+#[derive(Clone)]
+pub(crate) struct HttpCore(Arc<DynamicGrpcService>);
+#[cfg(any(feature = "grpc-web", feature = "connect_rpc"))]
+pub(crate) struct WebAdmission {
+    pub(crate) deadline: tokio::time::Instant,
+    permit: tokio::sync::OwnedSemaphorePermit,
+    timer: streaming::DeadlineGuard,
+    pub(crate) method: prost_reflect::MethodDescriptor,
+    id: u32,
+}
+#[cfg(any(feature = "grpc-web", feature = "connect_rpc"))]
+impl WebAdmission {
+    /// Wrap the final status-converted body, so admission survives every reply path.
+    pub(crate) fn guard(
+        self,
+        response: Response<tonic::body::BoxBody>,
+        busy: crate::server::accept_bounded::BusyGuard,
+    ) -> Response<tonic::body::BoxBody> {
+        response.map(|body| http1::hold_body(body, (self.permit, busy, self.timer)))
+    }
+}
+#[cfg(any(feature = "grpc-web", feature = "connect_rpc"))]
+impl HttpCore {
+    pub(crate) fn new(
+        ctx: &crate::protocol::SpawnContext,
+        pool: DescriptorPool,
+        protocol: Arc<dyn crate::llm::actions::protocol_trait::Server>,
+        timeout: std::time::Duration,
+    ) -> Self {
+        Self(Arc::new(DynamicGrpcService {
+            llm_client: ctx.llm_client.clone(),
+            app_state: ctx.state.clone(),
+            status_tx: ctx.status_tx.clone(),
+            server_id: ctx.server_id,
+            descriptor_pool: Arc::new(pool),
+            protocol,
+            reflection: None,
+            stream_timeout: timeout,
+            streams: Arc::new(tokio::sync::Semaphore::new(streaming::MAX_ACTIVE)),
+            next_stream_id: Arc::new(std::sync::atomic::AtomicU32::new(1)),
+        }))
+    }
+    pub(crate) async fn commands(
+        self,
+        commands: mpsc::Receiver<crate::state::client_handles::ClientCommand>,
+        registry: streaming::Registry,
+        connection: crate::server::connection::ConnectionId,
+    ) {
+        streaming::command_loop(commands, registry, self.0, connection).await;
+    }
+    pub(crate) fn prepare(
+        &self,
+        request: &Request<tonic::body::BoxBody>,
+        executor: streaming::OwnedExecutor,
+    ) -> Result<WebAdmission, tonic::Status> {
+        let method = DynamicGrpcService::parse_grpc_path(request.uri().path())
+            .ok()
+            .and_then(|(service, method)| {
+                self.0
+                    .descriptor_pool
+                    .get_service_by_name(&service)
+                    .and_then(|service| {
+                        service
+                            .methods()
+                            .find(|candidate| candidate.name() == method)
+                    })
+            });
+        let method = method.ok_or_else(|| tonic::Status::unimplemented("unknown RPC method"))?;
+        if method.is_client_streaming() {
+            return Err(tonic::Status::unimplemented(
+                "HTTP/1 RPC binding supports unary and server-streaming methods only",
+            ));
+        }
+        let timeout = streaming::timeout(request.headers(), self.0.stream_timeout)?;
+        let deadline = tokio::time::Instant::now() + timeout;
+        let permit = self
+            .0
+            .streams
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| tonic::Status::unavailable("server at RPC capacity"))?;
+        let timer = executor.deadline(deadline)?.retain_expired();
+        let id = match self.0.next_stream_id.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |id| id.checked_add(1),
+        ) {
+            Ok(id) => id,
+            Err(_) => {
+                return Err(tonic::Status::resource_exhausted(
+                    "RPC identifiers exhausted",
+                ))
+            }
+        };
+        Ok(WebAdmission {
+            deadline,
+            permit,
+            timer,
+            method,
+            id,
+        })
+    }
+    pub(crate) async fn request(
+        &self,
+        request: Request<tonic::body::BoxBody>,
+        connection: crate::server::connection::ConnectionId,
+        registry: streaming::Registry,
+        admission: &WebAdmission,
+    ) -> Response<tonic::body::BoxBody> {
+        streaming::dispatch(
+            request,
+            self.0.clone(),
+            connection,
+            admission.method.clone(),
+            registry,
+            admission.deadline,
+            admission.id,
+        )
+        .await
+    }
 }
 
 /// A gRPC response body: the length-prefixed message, then a **trailing HEADERS frame**
@@ -729,7 +751,7 @@ struct DynamicGrpcService {
 ///
 /// The identical defect was found and fixed in `src/server/etcd/mod.rs` at the same time.
 #[cfg(feature = "grpc")]
-type GrpcBody = http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>;
+type GrpcBody = tonic::body::BoxBody;
 
 /// A message frame followed by trailers carrying `grpc-status`.
 ///
@@ -749,28 +771,129 @@ fn grpc_body_with_trailers(body: Bytes, status: i32, message: &str) -> GrpcBody 
         HeaderValue::from_str(message).unwrap_or_else(|_| HeaderValue::from_static("")),
     );
 
-    let frames: Vec<std::result::Result<hyper::body::Frame<Bytes>, std::convert::Infallible>> = vec![
+    let frames: Vec<std::result::Result<hyper::body::Frame<Bytes>, tonic::Status>> = vec![
         Ok(hyper::body::Frame::data(body)),
         Ok(hyper::body::Frame::trailers(trailers)),
     ];
 
-    BodyExt::boxed(StreamBody::new(futures::stream::iter(frames)))
+    BodyExt::boxed_unsync(StreamBody::new(futures::stream::iter(frames)))
 }
 
 /// An empty body, for a Trailers-Only reply whose status rides in the initial headers.
 #[cfg(feature = "grpc")]
 fn empty_grpc_body() -> GrpcBody {
-    BodyExt::boxed(http_body_util::Empty::<Bytes>::new())
+    http_body_util::Empty::<Bytes>::new()
+        .map_err(|never| match never {})
+        .boxed_unsync()
 }
 
 #[cfg(feature = "grpc")]
 impl DynamicGrpcService {
     /// Handle a gRPC HTTP/2 request
     async fn handle_grpc_request(
-        &self,
+        self: Arc<Self>,
         req: Request<Incoming>,
         connection_id: crate::server::connection::ConnectionId,
+        busy: crate::server::accept_bounded::BusyGuard,
+        registry: streaming::Registry,
+        executor: streaming::OwnedExecutor,
     ) -> Result<Response<GrpcBody>, hyper::Error> {
+        let reflection = matches!(
+            req.uri().path(),
+            "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo"
+                | "/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo"
+        );
+        let method = Self::parse_grpc_path(req.uri().path())
+            .ok()
+            .and_then(|(service, method)| {
+                self.descriptor_pool
+                    .get_service_by_name(&service)
+                    .and_then(|service| {
+                        service
+                            .methods()
+                            .find(|candidate| candidate.name() == method)
+                    })
+            });
+        let streaming_method =
+            method.filter(|method| method.is_client_streaming() || method.is_server_streaming());
+        if reflection || streaming_method.is_some() {
+            if req.method() != hyper::Method::POST
+                || req.version() != hyper::Version::HTTP_2
+                || !req.headers().get("content-type").is_some_and(|value| {
+                    value
+                        .to_str()
+                        .is_ok_and(|value| value.starts_with("application/grpc"))
+                })
+            {
+                return Ok(tonic::Status::invalid_argument(
+                    "streaming requires POST application/grpc over HTTP/2",
+                )
+                .into_http());
+            }
+            let maximum = if reflection {
+                std::time::Duration::from_secs(30)
+            } else {
+                self.stream_timeout
+            };
+            let timeout = match streaming::timeout(req.headers(), maximum) {
+                Ok(timeout) => timeout,
+                Err(status) => return Ok(status.into_http()),
+            };
+            let deadline = tokio::time::Instant::now() + timeout;
+            let permit = match self.streams.clone().try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(_) => {
+                    return Ok(tonic::Status::unavailable("server at stream capacity").into_http())
+                }
+            };
+            let timer = match executor.deadline(deadline) {
+                Ok(timer) => timer,
+                Err(status) => return Ok(status.into_http()),
+            };
+            let response = if reflection {
+                let Some(state) = self.reflection.clone() else {
+                    return Ok(tonic::Status::unimplemented("reflection disabled").into_http());
+                };
+                reflection::dispatch(req, state, deadline).await
+            } else {
+                let id = match self.next_stream_id.fetch_update(
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                    |id| id.checked_add(1),
+                ) {
+                    Ok(id) => id,
+                    Err(_) => {
+                        return Ok(tonic::Status::resource_exhausted(
+                            "stream identifiers exhausted",
+                        )
+                        .into_http())
+                    }
+                };
+                streaming::dispatch(
+                    req.map(|body| {
+                        body.map_err(|_| tonic::Status::internal("request transport failed"))
+                            .boxed_unsync()
+                    }),
+                    self.clone(),
+                    connection_id,
+                    streaming_method.unwrap(),
+                    registry,
+                    deadline,
+                    id,
+                )
+                .await
+            };
+            return Ok(response.map(|body| {
+                streaming::BodyGuard {
+                    body,
+                    _permit: permit,
+                    _busy: busy,
+                    _timer: timer,
+                }
+                .boxed_unsync()
+            }));
+        }
+        let _busy = busy;
         // Extract service and method from path (format: /package.Service/Method)
         let path = req.uri().path();
         let (service_name, method_name) = match Self::parse_grpc_path(path) {

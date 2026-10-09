@@ -70,6 +70,8 @@ struct Inner {
     udps: RefCell<HashMap<u32, mpsc::UnboundedSender<(u16, Vec<u8>)>>>,
     /// The dashboard's status channel, once the loop hands it over.
     status_tx: RefCell<Option<mpsc::UnboundedSender<String>>>,
+    /// Opens native dashboard forms when a page action needs configuration.
+    ui_tx: RefCell<Option<mpsc::UnboundedSender<netget::tui::uimsg::UiMsg>>>,
 }
 
 /// One running NetGet.
@@ -177,6 +179,7 @@ impl NetGet {
             next_conn: Cell::new(1),
             udps: RefCell::new(HashMap::new()),
             status_tx: RefCell::new(None),
+            ui_tx: RefCell::new(None),
         });
 
         // The model bridge: every request the LLM client makes is handed to the page.
@@ -220,8 +223,9 @@ impl NetGet {
                 settings,
                 &args,
                 palette,
-                Some(Box::new(move |status_tx| {
+                Some(Box::new(move |status_tx, ui_tx| {
                     *ready_inner.status_tx.borrow_mut() = Some(status_tx);
+                    *ready_inner.ui_tx.borrow_mut() = Some(ui_tx);
                 })),
             )
             .await
@@ -330,7 +334,7 @@ impl NetGet {
     }
 
     /// The servers NetGet has, as a JSON array of
-    /// `{id, protocol, port, status, connections}`, delivered to `callback`.
+    /// `{id, protocol, port, status, connections, active_connection_ids}`, delivered to `callback`.
     pub fn servers(&self, callback: Function) {
         let state = self.inner.state.clone();
         spawn_local(async move {
@@ -344,6 +348,9 @@ impl NetGet {
                         "port": s.local_addr.map(|a| a.port()).unwrap_or(s.port),
                         "status": format!("{:?}", s.status),
                         "connections": s.connections.len(),
+                        "active_connection_ids": s.connections.values()
+                            .filter(|c| matches!(c.status, netget::state::server::ConnectionStatus::Active))
+                            .map(|c| c.id.as_u32()).collect::<Vec<_>>(),
                     })
                 })
                 .collect();
@@ -414,11 +421,15 @@ impl NetGet {
     /// `[ + <proto> client ]` button does (`tui::actions::client_form_for_server` and the form's
     /// own apply, so the client gets the dashboard's default routing). `callback` receives
     /// `{"id": n, "protocol": "HTTP", "remote_addr": "127.0.0.1:8080"}` or `{"error": "..."}`.
+    /// Missing configuration opens a focused dashboard form and returns
+    /// `{"configuration_required":"client_id","protocol":"OAuth2","form_opened":true}`.
+    /// The user supplies the fields and applies or cancels the form in the terminal.
     pub fn connect_client_to_server(&self, server_id: u32, callback: Function) {
         let Some(status_tx) = self.status_tx_or_report(&callback) else {
             return;
         };
         let state = self.inner.state.clone();
+        let ui_tx = self.inner.ui_tx.borrow().clone();
         spawn_local(async move {
             let result = async {
                 let id = netget::state::ServerId::new(server_id);
@@ -427,34 +438,43 @@ impl NetGet {
                     .await
                     .ok_or_else(|| format!("no server #{server_id}"))?;
                 let local = server.local_addr.map(|a| a.to_string());
-                let model = netget::tui::actions::client_form_for_server(
+                let mut model = netget::tui::actions::client_form_for_server(
                     id,
                     &server.protocol_name,
                     local.as_deref(),
                     server.port,
+                    server.startup_params.as_ref(),
                 )?;
                 if let Some(missing) = model.missing_required() {
-                    return Err(format!("{} needs {missing}", model.protocol));
+                    let protocol = model.protocol.clone();
+                    model.focus_first_missing_required();
+                    model.error = Some(format!(
+                        "{protocol} needs {missing} before it can connect — fill it in and press [ Apply ]"
+                    ));
+                    ui_tx
+                        .as_ref()
+                        .ok_or_else(|| "the dashboard is not running yet".to_string())?
+                        .send(netget::tui::uimsg::UiMsg::OpenForm(Box::new(model)))
+                        .map_err(|_| "the dashboard has stopped".to_string())?;
+                    return Ok(serde_json::json!({
+                        "configuration_required": missing,
+                        "protocol": protocol,
+                        "form_opened": true,
+                    }));
                 }
                 let llm = state
                     .get_llm_client()
                     .await
                     .ok_or_else(|| "the model bridge is not ready yet".to_string())?;
-                let before: Vec<u32> = state
-                    .get_all_clients()
-                    .await
-                    .iter()
-                    .map(|c| c.id.as_u32())
-                    .collect();
-                model
-                    .apply(&state, llm, &status_tx)
+                let created_id = model
+                    .to_client_form()
+                    .map_err(|e| format!("{e:#}"))?
+                    .create(&state, llm, status_tx.clone())
                     .await
                     .map_err(|e| format!("{e:#}"))?;
                 let created = state
-                    .get_all_clients()
+                    .get_client(created_id)
                     .await
-                    .into_iter()
-                    .find(|c| !before.contains(&c.id.as_u32()))
                     .ok_or_else(|| "the client was created and is already gone".to_string())?;
                 Ok(serde_json::json!({
                     "id": created.id.as_u32(),

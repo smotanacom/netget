@@ -46,15 +46,20 @@ pub mod http_common;
 // so POP3S could not be built at all.
 #[cfg(any(
     feature = "dot",
+    feature = "doq",
     feature = "doh",
     feature = "http",
     feature = "http2",
     feature = "quic",
+    feature = "http3",
     feature = "smtp",
     feature = "pop3",
     feature = "tls",
     feature = "kubernetes-server",
-    feature = "gemini"
+    feature = "gemini",
+    feature = "acme",
+    feature = "jmap",
+    feature = "epp"
 ))]
 pub mod tls_cert_manager;
 
@@ -691,8 +696,14 @@ pub use nntp::actions::NntpProtocol;
 #[cfg(feature = "nntp")]
 pub use nntp::NntpServer;
 
+#[cfg(feature = "managesieve")]
+pub mod managesieve;
 #[cfg(feature = "mqtt")]
 pub mod mqtt;
+#[cfg(feature = "mqtt_sn")]
+pub mod mqtt_sn;
+#[cfg(feature = "nbd")]
+pub mod nbd;
 #[cfg(feature = "mqtt")]
 pub use mqtt::actions::MqttProtocol;
 #[cfg(feature = "mqtt")]
@@ -922,8 +933,14 @@ pub use mcp::actions::McpProtocol;
 #[cfg(feature = "mcp")]
 pub use mcp::McpServer;
 
+#[cfg(feature = "connect_rpc")]
+pub mod connect_rpc;
+#[cfg(feature = "gnmi")]
+pub mod gnmi;
 #[cfg(feature = "grpc")]
 pub mod grpc;
+#[cfg(feature = "grpc-web")]
+pub mod grpc_web;
 #[cfg(feature = "grpc")]
 pub use grpc::actions::GrpcProtocol;
 #[cfg(feature = "grpc")]
@@ -1217,3 +1234,163 @@ pub use bluetooth_ble_weight_scale::actions::BluetoothBleWeightScaleProtocol;
 pub use bluetooth_ble_weight_scale::BluetoothBleWeightScale;
 
 pub use connection::{Connection, ConnectionId};
+
+#[cfg(feature = "doq")]
+pub mod doq;
+#[cfg(feature = "nut")]
+pub mod nut;
+#[cfg(feature = "statsd")]
+pub mod statsd;
+
+#[cfg(feature = "graphite")]
+pub mod graphite;
+
+#[cfg(feature = "gelf")]
+pub mod gelf;
+
+#[cfg(feature = "http3")]
+pub mod http3;
+#[cfg(feature = "http3")]
+pub use http3::actions::Http3Protocol;
+#[cfg(feature = "fluent-forward")]
+pub mod fluent_forward;
+
+#[cfg(feature = "influxdb")]
+pub mod influxdb;
+
+#[cfg(feature = "ipfix")]
+pub mod ipfix;
+
+#[cfg(feature = "sflow")]
+pub mod sflow;
+
+#[cfg(feature = "loki")]
+pub mod loki;
+
+#[cfg(feature = "prometheus-remote-write")]
+pub mod prometheus_remote_write;
+
+#[cfg(feature = "netflow-v9")]
+pub mod netflow_v9;
+
+#[cfg(feature = "a2a")]
+pub mod a2a;
+#[cfg(feature = "acme")]
+pub mod acme;
+#[cfg(feature = "amqp1")]
+pub mod amqp1;
+#[cfg(feature = "bmp")]
+pub mod bmp;
+#[cfg(feature = "caldav")]
+pub mod caldav;
+#[cfg(feature = "carddav")]
+pub mod carddav;
+#[cfg(any(feature = "caldav", feature = "carddav"))]
+pub mod dav_common;
+#[cfg(feature = "dicom")]
+pub mod dicom;
+#[cfg(feature = "fastcgi")]
+pub mod fastcgi;
+#[cfg(feature = "fix")]
+pub mod fix;
+#[cfg(feature = "graphql")]
+pub mod graphql;
+#[cfg(feature = "hl7")]
+pub mod hl7;
+#[cfg(feature = "icap")]
+pub mod icap;
+#[cfg(feature = "netconf")]
+pub mod netconf;
+#[cfg(feature = "ocpp")]
+pub mod ocpp;
+#[cfg(feature = "rdap")]
+pub mod rdap;
+#[cfg(feature = "redfish")]
+pub mod redfish;
+#[cfg(feature = "rpki_rtr")]
+pub mod rpki_rtr;
+#[cfg(feature = "rtmp")]
+pub mod rtmp;
+#[cfg(feature = "scim")]
+pub mod scim;
+#[cfg(feature = "socketio")]
+pub mod socketio;
+#[cfg(feature = "srt")]
+pub mod srt;
+#[cfg(feature = "tacacs")]
+pub mod tacacs;
+#[cfg(feature = "thrift")]
+pub mod thrift;
+#[cfg(feature = "wamp")]
+pub mod wamp;
+
+#[cfg(feature = "diameter")]
+pub mod diameter;
+#[cfg(feature = "epp")]
+pub mod epp;
+#[cfg(feature = "jmap")]
+pub mod jmap;
+#[cfg(feature = "lwm2m")]
+pub mod lwm2m;
+#[cfg(feature = "restconf")]
+pub mod restconf;
+#[cfg(feature = "webtransport")]
+pub mod webtransport;
+#[cfg(feature = "zenoh")]
+pub mod zenoh;
+
+#[cfg(feature = "s7comm")]
+pub mod s7comm;
+
+#[cfg(any(
+    feature = "s7comm",
+    feature = "ethernet_ip",
+    feature = "dnp3",
+    feature = "iec104",
+    feature = "bacnet",
+    feature = "opcua"
+))]
+pub mod ics_support;
+
+#[cfg(feature = "ethernet_ip")]
+pub mod ethernet_ip;
+
+#[cfg(feature = "dnp3")]
+pub mod dnp3;
+
+#[cfg(feature = "iec104")]
+pub mod iec104;
+
+#[cfg(feature = "bacnet")]
+pub mod bacnet;
+
+#[cfg(feature = "opcua")]
+pub mod opcua;
+
+#[cfg(any(
+    feature = "dc_peer",
+    feature = "adc",
+    feature = "adc_peer",
+    feature = "soulseek",
+    feature = "gnutella",
+    feature = "nntp"
+))]
+pub mod p2p_support;
+
+#[cfg(feature = "dc_peer")]
+pub mod dc_peer;
+
+#[cfg(feature = "adc")]
+pub mod adc;
+
+#[cfg(feature = "adc_peer")]
+pub mod adc_peer;
+
+#[cfg(feature = "soulseek")]
+pub mod soulseek;
+
+#[cfg(feature = "soulseek_peer")]
+pub mod soulseek_peer;
+
+#[cfg(feature = "gnutella")]
+pub mod gnutella;
