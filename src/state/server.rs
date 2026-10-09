@@ -304,6 +304,46 @@ pub struct ServerInstance {
     pub connection_opened_at: HashMap<ConnectionId, Instant>,
 }
 
+/// Longest accepted `append_to_log` output name.
+pub const MAX_LOG_OUTPUT_NAME_LEN: usize = 64;
+
+/// Check an `append_to_log` `output_name` before it becomes part of a filename.
+///
+/// Same allowlist as `sqlite::validate_database_name`, for the same reason: the value is
+/// model-authored, the model is influenced by the peer, and a name is **rejected** rather
+/// than rewritten so the model's own bookkeeping (it reuses the name) matches what is on
+/// disk.
+pub fn validate_log_output_name(name: &str) -> anyhow::Result<()> {
+    if name.is_empty() {
+        anyhow::bail!(
+            "Invalid output_name: it must not be empty. Allowed: 1-{} characters from A-Z, \
+             a-z, 0-9, '_' and '-' (it becomes part of the filename netget_<name>_<time>.log).",
+            MAX_LOG_OUTPUT_NAME_LEN
+        );
+    }
+    if name.len() > MAX_LOG_OUTPUT_NAME_LEN {
+        anyhow::bail!(
+            "Invalid output_name '{}': {} bytes exceeds the {}-byte limit.",
+            name,
+            name.len(),
+            MAX_LOG_OUTPUT_NAME_LEN
+        );
+    }
+    if let Some(bad) = name
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || *c == '_' || *c == '-'))
+    {
+        anyhow::bail!(
+            "Invalid output_name '{}': character {:?} is not allowed. An output name may \
+             contain only A-Z, a-z, 0-9, '_' and '-' (it becomes part of the filename \
+             netget_<name>_<time>.log).",
+            name,
+            bad
+        );
+    }
+    Ok(())
+}
+
 impl ServerInstance {
     /// Create a new server instance
     pub fn new(id: ServerId, port: u16, protocol_name: String, instruction: String) -> Self {
@@ -376,9 +416,16 @@ impl ServerInstance {
     /// example prompts use — produced the *same path* and appended into each other's file.
     /// Nothing detected that: each server's own `log_files` map is per-server and perfectly
     /// consistent, so both believed they owned the file.
-    pub fn get_or_create_log_path(&mut self, output_name: &str) -> PathBuf {
+    ///
+    /// **`output_name` is model-authored and becomes part of a filename**, so it is checked
+    /// against the same allowlist as a database name and refused otherwise. The prefix and
+    /// suffix meant `..` could only escape through a directory literally named `netget_<x>`
+    /// in the working directory, which is one `mkdir` away from an append into any file the
+    /// process can write, and `append_to_log` is offered to the model on network events.
+    pub fn get_or_create_log_path(&mut self, output_name: &str) -> anyhow::Result<PathBuf> {
+        validate_log_output_name(output_name)?;
         if let Some(path) = self.log_files.get(output_name) {
-            return path.clone();
+            return Ok(path.clone());
         }
 
         // Calculate the absolute time when the server was created
@@ -401,7 +448,7 @@ impl ServerInstance {
 
         self.log_files
             .insert(output_name.to_string(), log_path.clone());
-        log_path
+        Ok(log_path)
     }
 
     /// Get a summary for display
