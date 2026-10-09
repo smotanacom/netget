@@ -1195,7 +1195,7 @@ pub fn append_to_log_action() -> ActionDefinition {
             Parameter {
                 name: "output_name".to_string(),
                 type_hint: "string".to_string(),
-                description: "Name of the log output (e.g., 'access_logs'). Used to construct the log filename.".to_string(),
+                description: "Name of the log output (e.g., 'access_logs'). Used to construct the log filename netget_<name>_<time>.log, so it may contain only A-Z, a-z, 0-9, '_' and '-' (1-64 characters); anything else is refused.".to_string(),
                 required: true,
             },
             Parameter {

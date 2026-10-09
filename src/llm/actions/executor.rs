@@ -515,6 +515,16 @@ async fn execute_common_action(
                         server.get_or_create_log_path(&output_name)
                     })
                     .await;
+                let log_path = match log_path {
+                    Some(Ok(path)) => Some(path),
+                    Some(Err(e)) => {
+                        // Refused, not rewritten: the name is model-authored and would
+                        // have become part of a path.
+                        warn!("append_to_log refused: {e}");
+                        None
+                    }
+                    None => None,
+                };
 
                 if let Some(log_path) = log_path {
                     // Append content to the log file
