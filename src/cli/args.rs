@@ -190,11 +190,14 @@ pub struct Args {
     )]
     pub event_handler_mode: Option<String>,
 
-    /// Listen address for servers (default: 127.0.0.1)
+    /// Bind address for the MCP HTTP control endpoint (default: 127.0.0.1)
+    ///
+    /// Read only by `--mcp-http`. Protocol servers take their bind address from
+    /// each `start_server` / `open_server` call's `host`, not from this flag.
     #[clap(
         long = "listen-addr",
         value_name = "ADDRESS",
-        help = "IP address to bind servers to (e.g., 127.0.0.1, 0.0.0.0)"
+        help = "IP address the --mcp-http control endpoint binds (default 127.0.0.1). Protocol servers are NOT affected; they bind per start_server 'host'. A non-loopback address requires --mcp-token or NETGET_MCP_TOKEN."
     )]
     pub listen_addr: Option<String>,
 
@@ -561,6 +564,14 @@ pub struct Args {
     )]
     pub mcp_http: Option<u16>,
 
+    /// Bearer token every --mcp-http request must carry
+    #[clap(
+        long = "mcp-token",
+        value_name = "TOKEN",
+        help = "Require 'Authorization: Bearer <TOKEN>' on every --mcp-http request. PREFER the NETGET_MCP_TOKEN environment variable: an argument is visible to every local user in the process table. Required to bind --listen-addr to anything but a loopback address; without it the endpoint admits loopback Host/Origin only."
+    )]
+    pub mcp_token: Option<String>,
+
     /// Prompt/command to execute (can be specified after --, or as trailing args, or via stdin)
     #[clap(value_name = "PROMPT", num_args = 0..)]
     pub prompt: Vec<String>,
@@ -585,6 +596,16 @@ fn warn_api_key_on_command_line() {
     });
 }
 
+/// Same warning as `warn_api_key_on_command_line`, for `--mcp-token`.
+fn warn_mcp_token_on_command_line() {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        const MSG: &str = "--mcp-token puts the token in this process's command line, where any local user can read it (ps / /proc). Prefer the NETGET_MCP_TOKEN environment variable.";
+        tracing::warn!("{}", MSG);
+        eprintln!("⚠  {}", MSG);
+    });
+}
+
 impl Args {
     /// Resolve the API key from NETGET_API_KEY / OPENAI_API_KEY, or the
     /// `--api-key` flag.
@@ -600,6 +621,20 @@ impl Args {
         std::env::var("NETGET_API_KEY")
             .ok()
             .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+    }
+
+    /// Resolve the MCP HTTP bearer token from `--mcp-token` or `NETGET_MCP_TOKEN`.
+    ///
+    /// Same shape as `resolve_api_key`: the flag wins and warns, the variable is
+    /// the documented way in. An empty value counts as unset.
+    pub fn resolve_mcp_token(&self) -> Option<String> {
+        if let Some(token) = &self.mcp_token {
+            warn_mcp_token_on_command_line();
+            return Some(token.clone()).filter(|t| !t.is_empty());
+        }
+        std::env::var(crate::mcp_stdio::http_guard::TOKEN_ENV)
+            .ok()
+            .filter(|t| !t.is_empty())
     }
 
     /// Get the effective log level from --log-level flag
