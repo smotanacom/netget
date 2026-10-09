@@ -66,6 +66,8 @@ const UNDECLARED_CONNECTIONLESS_BASELINE: &[&str] = &[];
 /// Protocols that write nothing on LLM failure, deliberately. Each declares it in `metadata()`
 /// with its reason; the per-protocol `CLAUDE.md` failure section says why.
 const DOCUMENTED_SILENT: &[&str] = &[
+    // A2S defines no error reply: every response asserts a server's info, players or rules.
+    "a2s",
     "arp",
     // RFC 7854 defines no collector-to-router message; failed handling closes the session.
     "bmp",

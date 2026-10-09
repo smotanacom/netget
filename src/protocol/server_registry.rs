@@ -412,6 +412,8 @@ impl ServerRegistry {
         self.register(Arc::new(crate::server::inetd::actions::TimeProtocol::new()));
         #[cfg(feature = "rcon")]
         self.register(Arc::new(crate::server::rcon::actions::RconProtocol::new()));
+        #[cfg(feature = "a2s")]
+        self.register(Arc::new(crate::server::a2s::actions::A2sProtocol::new()));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1628,6 +1630,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("Chargen", "inetd"),
     ("Time", "inetd"),
     ("RCON", "rcon"),
+    ("A2S", "a2s"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),

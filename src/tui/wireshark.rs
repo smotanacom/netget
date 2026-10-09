@@ -205,6 +205,9 @@ pub fn wire_for(protocol: &str) -> Wire {
         // ---- transports --------------------------------------------------
         "tcp" | "reverse_shell" | "dc" | "zookeeper" | "svn" => PLAIN_TCP,
         "udp" | "statsd" | "dogstatsd" => PLAIN_UDP,
+        // Steam server query has no dissector in this build (`tshark -G protocols` lists none);
+        // it is UDP, so the TCP fallback would capture nothing.
+        "a2s" => with_note(PLAIN_UDP, "Wireshark has no A2S dissector: each datagram starts FF FF FF FF (FE FF FF FF for split answers), then T/U/V for a query and A/I/D/E for a challenge or answer."),
         "gelf" | "graylog" => Wire {
             transport: Transport::TcpOrUdp,
             decode_as: None,
