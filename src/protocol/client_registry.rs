@@ -546,6 +546,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::epp::actions::EppClientProtocol::new(),
         ));
+        #[cfg(feature = "lmtp")]
+        self.register(Arc::new(
+            crate::client::lmtp::actions::LmtpClientProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1067,6 +1071,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("WebTransport", "webtransport"),
     ("JMAP", "jmap"),
     ("EPP", "epp"),
+    ("LMTP", "lmtp"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),

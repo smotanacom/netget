@@ -106,6 +106,7 @@ fn golden_duals_map() {
         "WebTransport",
         "JMAP",
         "EPP",
+        "LMTP",
         "Nostr",
         "Vault",
         "Bolt",

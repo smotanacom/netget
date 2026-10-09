@@ -388,6 +388,8 @@ impl ServerRegistry {
         self.register(Arc::new(crate::server::jmap::actions::JmapProtocol::new()));
         #[cfg(feature = "epp")]
         self.register(Arc::new(crate::server::epp::actions::EppProtocol::new()));
+        #[cfg(feature = "lmtp")]
+        self.register(Arc::new(crate::server::lmtp::actions::LmtpProtocol::new()));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1595,6 +1597,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("WebTransport", "webtransport"),
     ("JMAP", "jmap"),
     ("EPP", "epp"),
+    ("LMTP", "lmtp"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),

@@ -334,6 +334,9 @@ pub fn wire_for(protocol: &str) -> Wire {
         ),
         // ---- mail / text -------------------------------------------------
         "smtp" => tcp("smtp"),
+        // LMTP (RFC 2033) has no dissector of its own; it shares SMTP's command and reply syntax,
+        // so the SMTP dissector reads it, apart from naming LHLO as an unknown command.
+        "lmtp" => with_note(tcp("smtp"), "Wireshark has no LMTP dissector; decoded as SMTP, which reads the shared command and reply syntax. Expect one reply per accepted recipient after the final dot."),
         "pop3" => tcp("pop"),
         "imap" => tcp("imap"),
         "nntp" => tcp("nntp"),

@@ -1330,6 +1330,8 @@ pub mod diameter;
 pub mod epp;
 #[cfg(feature = "jmap")]
 pub mod jmap;
+#[cfg(feature = "lmtp")]
+pub mod lmtp;
 #[cfg(feature = "lwm2m")]
 pub mod lwm2m;
 #[cfg(feature = "restconf")]
