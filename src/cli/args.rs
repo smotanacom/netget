@@ -596,6 +596,11 @@ fn warn_api_key_on_command_line() {
     });
 }
 
+/// Environment variable read when `--mcp-token` is not passed. Lives here rather than in
+/// `mcp_stdio::http_guard` because that module is compiled only with `mcp-stdio` /
+/// `mcp-http`, and `Args` is parsed at every feature set.
+pub const MCP_TOKEN_ENV: &str = "NETGET_MCP_TOKEN";
+
 /// Same warning as `warn_api_key_on_command_line`, for `--mcp-token`.
 fn warn_mcp_token_on_command_line() {
     static WARNED: std::sync::Once = std::sync::Once::new();
@@ -632,9 +637,7 @@ impl Args {
             warn_mcp_token_on_command_line();
             return Some(token.clone()).filter(|t| !t.is_empty());
         }
-        std::env::var(crate::mcp_stdio::http_guard::TOKEN_ENV)
-            .ok()
-            .filter(|t| !t.is_empty())
+        std::env::var(MCP_TOKEN_ENV).ok().filter(|t| !t.is_empty())
     }
 
     /// Get the effective log level from --log-level flag
