@@ -34,9 +34,20 @@ pub fn instance_line<'a>(
     focused: bool,
 ) -> Line<'a> {
     let marker = if cursor && !focused { "▸" } else { " " };
+    let busy = app
+        .snapshot
+        .llm_activity
+        .iter()
+        .any(|work| crate::tui::llm_activity::owner(work) == Some(line.key));
+    let glyph = if busy { app.spinner() } else { line.glyph };
+    let glyph_tone = if busy {
+        Tone::Reasoning
+    } else {
+        line.glyph_tone
+    };
     let head = format!(
         "{marker}{} #{:<3}{:<8} ",
-        line.glyph,
+        glyph,
         line.id,
         fit(&line.protocol, 8)
     );
@@ -51,7 +62,7 @@ pub fn instance_line<'a>(
         let mut spans = vec![
             Span::styled(
                 head,
-                row_style(app, tone_style(app, line.glyph_tone), cursor, focused),
+                row_style(app, tone_style(app, glyph_tone), cursor, focused),
             ),
             Span::styled(target, row_style(app, app.styles.normal, cursor, focused)),
             Span::styled(
@@ -91,7 +102,7 @@ pub fn instance_line<'a>(
     let mut spans = vec![
         Span::styled(
             head,
-            row_style(app, tone_style(app, line.glyph_tone), cursor, focused),
+            row_style(app, tone_style(app, glyph_tone), cursor, focused),
         ),
         Span::styled(
             target_padded,

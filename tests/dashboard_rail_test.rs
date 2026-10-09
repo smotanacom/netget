@@ -128,6 +128,122 @@ fn rows_for(snap: &RailSnapshot, state: &CardState, width: usize) -> Vec<Row> {
     cards::rows(snap, state, &HashMap::new(), width)
 }
 
+#[test]
+fn generation_is_nested_under_the_owning_peer_and_survives_folding() {
+    use netget::server::connection::ConnectionId;
+    use netget::state::app_state::ConversationSource;
+    use netget::state::llm_activity::LlmActivityTracker;
+    let tracker = LlmActivityTracker::default();
+    let _work = tracker.begin(
+        ConversationSource::Network {
+            server_id: ServerId::new(1),
+            connection_id: Some(ConnectionId::new(2)),
+        },
+        "tcp_data_received".into(),
+    );
+    let mut snap = snapshot(
+        vec![server(
+            vec![conn(1, true, true), conn(2, true, true)],
+            vec![],
+        )],
+        vec![],
+    );
+    snap.llm_activity = tracker.snapshot();
+    let key = UiKey::Server(ServerId::new(1));
+    let peer = NodeId::Peer(key, Some(2));
+    let mut state = CardState::default();
+    let rows = rows_for(&snap, &state, 60);
+    let index = rows
+        .iter()
+        .position(|r| r.on_enter == Activate::Toggle(peer.clone()))
+        .unwrap();
+    let generating = rows
+        .iter()
+        .position(|r| r.text().contains("LLM generating"))
+        .unwrap();
+    assert!(generating > index);
+    assert_eq!(rows[generating].depth, 3);
+    assert!(rows[generating].busy);
+    assert!(rows[generating].text().contains("tcp_data_received"));
+    assert_eq!(
+        rows.iter().filter(|r| r.busy).count(),
+        1,
+        "the other peer is idle"
+    );
+    assert_eq!(
+        rows[generating].positions(),
+        0,
+        "status is not a keyboard stop"
+    );
+
+    state.close(&peer);
+    let rows = rows_for(&snap, &state, 60);
+    assert!(
+        rows.iter()
+            .find(|r| r.on_enter == Activate::Toggle(peer.clone()))
+            .unwrap()
+            .busy
+    );
+    assert!(!rows.iter().any(|r| r.text().contains("LLM generating")));
+    state.close(&NodeId::Group(key, Group::Peers));
+    let rows = rows_for(&snap, &state, 60);
+    assert!(group_row(&rows, key, Group::Peers).busy);
+
+    snap.llm_activity.clear();
+    assert!(!rows_for(&snap, &state, 60).iter().any(|r| r.busy));
+}
+
+#[test]
+fn connectionless_work_appears_before_the_first_completed_request() {
+    use netget::state::app_state::ConversationSource;
+    let tracker = netget::state::llm_activity::LlmActivityTracker::default();
+    let _work = tracker.begin(
+        ConversationSource::Network {
+            server_id: ServerId::new(1),
+            connection_id: None,
+        },
+        "dns_query".into(),
+    );
+    let mut snap = snapshot(vec![server(vec![], vec![])], vec![]);
+    snap.llm_activity = tracker.snapshot();
+    let rows = rows_for(&snap, &CardState::default(), 60);
+    assert!(rows.iter().any(|r| r.text().contains("connectionless")));
+    assert!(rows
+        .iter()
+        .any(|r| r.busy && r.depth == 3 && r.text().contains("dns_query")));
+    assert!(!rows.iter().any(|r| r.text().contains("no connections yet")));
+}
+
+#[test]
+fn client_generation_is_nested_under_its_connection() {
+    use netget::state::app_state::ConversationSource;
+    let tracker = netget::state::llm_activity::LlmActivityTracker::default();
+    let _work = tracker.begin(
+        ConversationSource::Client {
+            client_id: ClientId::new(4),
+        },
+        "tcp_data_received".into(),
+    );
+    let mut client = client(ClientStatus::Connected, SendState::Ready);
+    client.connection = Some(conn(9, true, false));
+    let mut snap = snapshot(vec![], vec![client]);
+    snap.llm_activity = tracker.snapshot();
+    let rows = rows_for(&snap, &CardState::default(), 60);
+    let connection = rows
+        .iter()
+        .position(|r| {
+            r.on_enter == Activate::Toggle(NodeId::Attempt(UiKey::Client(ClientId::new(4)), 0))
+        })
+        .unwrap();
+    let generating = rows.iter().position(|r| r.busy).unwrap();
+    assert!(generating > connection);
+    assert_eq!(rows[generating].depth, 3);
+    assert!(rows[generating + 1]
+        .buttons
+        .iter()
+        .any(|b| b.label == "send message"));
+}
+
 /// The rows of one card, from its header to the next header (or the end).
 fn card_rows<'a>(rows: &'a [Row], key: UiKey) -> &'a [Row] {
     let start = cards::header_index(rows, key).expect("card header");

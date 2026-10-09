@@ -32,11 +32,39 @@ pub fn draw_input(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
     } else {
         " Tab → chat "
     };
+    let mut title = vec![];
+    let replies: Vec<_> = app
+        .snapshot
+        .llm_activity
+        .iter()
+        .filter(|work| {
+            matches!(
+                work.source,
+                crate::state::app_state::ConversationSource::User
+            )
+        })
+        .collect();
+    if let Some(first) = replies.first() {
+        let extra = if replies.len() > 1 {
+            format!(" · {} replies", replies.len())
+        } else {
+            String::new()
+        };
+        title.push(Span::styled(
+            format!(
+                " {} Generating reply · {}{extra} ",
+                app.spinner(),
+                crate::tui::metrics::human_duration(first.started_at.elapsed().as_secs())
+            ),
+            app.styles.reasoning,
+        ));
+    }
+    title.push(Span::styled(hint, app.styles.dimmed));
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(border_style)
-        .title(Span::styled(hint, app.styles.dimmed));
+        .title(Line::from(title));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.hits.push(inner, HitTarget::ChatInput);

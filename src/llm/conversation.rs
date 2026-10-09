@@ -661,6 +661,17 @@ impl ConversationHandler {
         web_search_mode: WebSearchMode,
         available_actions: Vec<ActionDefinition>,
     ) -> Result<Vec<serde_json::Value>> {
+        // This handle belongs to this generation, including its tool/retry loop.
+        // Dropping the future (e.g. stopping a server) also clears its activity.
+        let _activity = self
+            .state
+            .as_ref()
+            .zip(self.source.as_ref())
+            .map(|(state, source)| {
+                state
+                    .llm_activity
+                    .begin(source.clone(), self.details.clone().unwrap_or_default())
+            });
         // Register conversation if tracking is enabled and not already registered
         if !self.registered {
             if let (Some(state), Some(source), Some(details)) =

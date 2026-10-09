@@ -20,6 +20,8 @@ pub enum ConversationSource {
         server_id: ServerId,
         connection_id: Option<ConnectionId>,
     },
+    /// A model deciding what a network client should do next.
+    Client { client_id: ClientId },
     /// Scheduled task execution
     Task { task_name: String },
     /// Scripting mode execution
@@ -41,6 +43,7 @@ impl ConversationSource {
                 }
             }
             ConversationSource::Task { task_name } => format!("[Task:{}]", task_name),
+            ConversationSource::Client { client_id } => format!("[Client #{}]", client_id.as_u32()),
             ConversationSource::Scripting => "[Scripting]".to_string(),
         }
     }
@@ -308,6 +311,7 @@ pub struct DueFeedback {
 #[derive(Clone)]
 pub struct AppState {
     inner: Arc<RwLock<AppStateInner>>,
+    pub llm_activity: super::llm_activity::LlmActivityTracker,
 }
 
 struct AppStateInner {
@@ -584,6 +588,7 @@ impl AppState {
         let rate_limiter = crate::llm::RateLimiter::new(crate::llm::RateLimiterConfig::default());
 
         Self {
+            llm_activity: super::llm_activity::LlmActivityTracker::default(),
             inner: Arc::new(RwLock::new(AppStateInner {
                 mode: Mode::Idle,
                 servers: HashMap::new(),
