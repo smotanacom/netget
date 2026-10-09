@@ -760,6 +760,8 @@ pub mod diameter;
 #[cfg(feature = "bolt")]
 pub mod bolt;
 
+#[cfg(feature = "a2s")]
+pub mod a2s;
 #[cfg(feature = "epp")]
 pub mod epp;
 #[cfg(feature = "inetd")]

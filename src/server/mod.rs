@@ -1324,6 +1324,8 @@ pub mod thrift;
 #[cfg(feature = "wamp")]
 pub mod wamp;
 
+#[cfg(feature = "a2s")]
+pub mod a2s;
 #[cfg(feature = "diameter")]
 pub mod diameter;
 #[cfg(feature = "epp")]

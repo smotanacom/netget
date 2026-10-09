@@ -364,6 +364,8 @@ pub mod zenoh;
 #[cfg(feature = "lwm2m")]
 pub mod lwm2m;
 
+#[cfg(feature = "a2s")]
+pub mod a2s;
 #[cfg(feature = "epp")]
 pub mod epp;
 #[cfg(feature = "inetd")]
