@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetGet — Interactive protocol demo</title>
+    <meta name="description" content="Explore the NetGet dashboard with a Telnet client and a simulated network in your browser.">
+    <meta property="og:title" content="NetGet — Interactive protocol demo">
+    <meta property="og:description" content="Explore the NetGet dashboard with a Telnet client and a simulated network in your browser.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://netget.net/demo.html">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <script>try { var t = localStorage.getItem('theme'); if (t) document.documentElement.setAttribute('data-theme', t); } catch (e) {}</script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+    <link rel="stylesheet" href="css/demo.css">
+</head>
+<body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <nav class="nav" aria-label="Main navigation">
+        <a class="logo" href="./" aria-label="NetGet home">net<span>get</span></a>
+        <div class="nav-right">
+            <a class="nav-link" href="https://github.com/smotanacom/netget">GitHub ↗</a>
+            <a class="button button-small" href="demo.html" aria-current="page">Demo</a>
+            <button class="theme-btn" id="theme-toggle" aria-label="Toggle color theme">◐</button>
+        </div>
+    </nav>
+    <main id="main" class="demo-main">
+        <header class="demo-intro">
+            <h1>Demo</h1>
+            <p>NetGet compiled to WASM for demonstration only</p>
+        </header>
+    <section class="demo" id="demo">
+        <div class="demo-banner" id="demo-banner">Loading NetGet…</div>
+
+        <div class="demo-grid">
+            <!-- The Telnet client -->
+            <div class="machine machine-client" id="machine-telnet">
+                <div class="machine-label"><span class="machine-dot"></span> Telnet<span class="spacer"></span><span class="conn-badge" id="telnet-state">not connected</span></div>
+                <div class="screen screen-client"><div class="term-host"><div id="telnet-term"></div></div></div>
+            </div>
+
+            <!-- The model: beside the Telnet client on a wide screen -->
+            <div class="machine machine-model">
+                <div class="machine-label llm-header">
+                    <span class="machine-dot"></span> LLM
+                    <select id="model-select" aria-label="Model"><option>Looking for a model this browser can run…</option></select>
+                    <button class="btn btn-primary" id="llm-load" hidden>Download</button>
+                </div>
+                <div class="llm-source" id="llm-source">
+                    <div class="llm-progress" id="llm-progress" hidden><span id="llm-progress-bar"></span></div>
+                    <div class="llm-status" id="llm-status"></div>
+                </div>
+                <div class="screen screen-model" id="llm-current">
+                    <div class="llm-idle">Send a Telnet message to begin.</div>
+                </div>
+            </div>
+
+            <!-- Both cables run down to NetGet (on a narrow screen: Telnet, NetGet, the model) -->
+            <div class="cable cable-client"><span class="cable-line"></span><span class="cable-tag">request</span></div>
+
+            <div class="cable cable-model"><span class="cable-line"></span><span class="cable-tag">prompt</span></div>
+
+            <!-- NetGet, under both -->
+            <div class="machine machine-netget">
+                <div class="machine-label"><span class="machine-dot"></span> netget</div>
+                <div class="screen"><div class="term-host"><div id="dash-term"></div></div></div>
+
+            </div>
+        </div>
+    </section>
+
+    </main>
+    <footer class="footer">
+        <a href="https://github.com/smotanacom/netget">GitHub</a>
+        <span class="sep">/</span>
+        <a href="https://github.com/smotanacom/netget/blob/master/LICENSE">AGPL-3.0</a>
+    </footer>
+    <script src="js/main.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+    <script type="module" src="js/demo.js"></script>
+</body>
+</html>

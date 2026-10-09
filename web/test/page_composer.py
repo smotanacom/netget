@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The landing page's demo, in a real headless browser.
+"""The standalone demo, in a real headless browser.
 
     ./web/build.sh && python3 web/test/page_composer.py
 
@@ -12,7 +12,7 @@ from the LLM machine's `data-answerer`.
    download size (and "thinks" for Qwen3), then "You are the model"; the default is selected,
    one button names the download, and nothing is downloaded. The Telnet server opens by itself and the Telnet terminal reads as a shell:
    `$ telnet localhost 2323`, then telnet's own `Trying 127.0.0.1...`, `Connected to
-   localhost.`, `Escape character is '^]'.`. The connection's first request lands in the LLM
+   localhost.`, `Escape character is '^]'.`. The model stays idle until a typed line lands in the LLM
    panel as the "you are the model" composer, prefilled from the example of the protocol's
    first action; the test edits it, sends, and reads the banner in the Telnet terminal. A
    typed line is echoed locally and answered through the composer; a third is answered with
@@ -51,19 +51,20 @@ from the LLM machine's `data-answerer`.
 7. A stub whose availability() is "downloadable" and whose create() refuses without a user
    activation, as Chrome's does. The page shows "Download Gemini Nano" and does not start
    the download until the visitor's first keypress in the Telnet terminal; the stub then
-   reports progress, and the model takes over the request the visitor had not touched.
+   reports progress, and the model answers only after the visitor submits the line.
 8. A stub whose create() is held (released by the test, seconds later) while the Telnet client
-   connects: the connect request shows as "waiting for Gemini Nano" and never opens the
+   connects and sends a line: that request shows as "waiting for Gemini Nano" and never opens the
    composer, at any point from page load; released, the model answers it. Screenshots of the
    waiting state at 1440x900 and 390x844 when SCREENSHOT_DIR is set.
 9. The same, with create() failing: the request that waited goes to the composer, saying why.
 10. "You are the model" chosen in the select with the stub model loaded: the next request is
    the composer's and the model is not asked; choosing the model again hands requests back with
    no new session; after a reload the choice is still selected, the model is not loaded, and
-   the connect request is the composer's.
-11. The adventure with stateless model stubs that never call set_memory: play/north/east/west/
-   south, invalid exits, look and reset receive authoritative room state through both built-in
-   identities, all six WebLLM choices and the manual composer.
+   the first typed message is the composer's.
+11. The adventure with a stub model that follows the game's rule and remembers nothing itself:
+   "hello" is small talk; "play", "look", "go north", "look" end in the Hall, which the stub
+   can know only from the Memory its own set_memory left in the next prompt (verbatim); the
+   game's rule is the last thing in the prompt.
 12. A 390x844 phone: the select shows the short option labels ("Qwen2.5 3B · 2 GB") and each
    fits the select, measured in its own font; with the real xterm.js the dashboard stacks its
    columns (the canvas above the stream) at 10px or more instead of 80 columns of 6px text;
@@ -91,7 +92,6 @@ web/test/smoke.mjs also checks the bundle without a DOM.
 
 import functools
 import http.server
-import json
 import os
 import re
 import sys
@@ -152,7 +152,6 @@ LANGUAGE_MODEL_STUB = r"""
     let msg = '';
     try { msg = JSON.parse(text.slice(text.lastIndexOf('Context data:') + 13).trim().split('\n\n')[0]).message || ''; } catch (e) {}
     if (msg === 'garble') return 'I am not JSON at all';
-    if (event === 'telnet_connection_opened') return JSON.stringify({ actions: [{ type: 'send_telnet_line', line: 'Hello from the stub model. Your name?' }] });
     return JSON.stringify({ actions: [{ type: 'send_telnet_line', line: 'stub model heard: ' + msg }] });
   };
   const session = (opts) => ({
@@ -198,7 +197,7 @@ export async function hasModelInCache(id) { log.cacheQueries.push(id); return ca
 // Qwen3 thinks: its stream is a `<think>` block and then the answer. While
 // `window.__webllmHold` is true it stops inside the block, before `</think>`, until the test
 // calls `window.__webllmRelease()`.
-const THINK_PIECES = ['<think>\nThe visitor', ' just connected (zeta7). A BBS greets first,', ' then asks for a name.\nKeep it to two lines.\n', '</think>\n\n'];
+const THINK_PIECES = ['<think>\nThe visitor', ' sent a line (zeta7). The BBS answers,', ' following the instructions.\nKeep it to two lines.\n', '</think>\n\n'];
 export async function CreateMLCEngine(id, opts, chatOpts) {
   log.creates.push(id);
   log.chatOpts = (log.chatOpts || []).concat([chatOpts || null]);
@@ -211,7 +210,6 @@ export async function CreateMLCEngine(id, opts, chatOpts) {
   const set = cached(); set.add(id); localStorage.setItem(KEY, JSON.stringify([...set]));
   const answer = (messages) => {
     const text = messages.map((m) => m.content).join('\n');
-    if (window.__adventureAnswer) return JSON.stringify(window.__adventureAnswer(text));
     let msg = '';
     try { msg = JSON.parse(text.slice(text.lastIndexOf('Context data:') + 13).trim().split('\n\n')[0]).message || ''; } catch (e) {}
     return JSON.stringify({ actions: [{ type: 'send_telnet_line', line: `webllm ${id} heard: ${msg}` }] });
@@ -230,7 +228,7 @@ export async function CreateMLCEngine(id, opts, chatOpts) {
       // max_tokens is spent and ends with finish_reason "length", its <think> never closed.
       if (window.__webllmRunaway && req.extra_body && req.extra_body.enable_thinking) {
         return (async function* () {
-          for (const p of ['<think>\nThe visitor connected. Maybe a banner.', ' Or maybe not. Let me reconsider the banner', ' once more (runaway7)...']) {
+          for (const p of ['<think>\nThe visitor sent a line. Maybe a short answer.', ' Or maybe not. Let me reconsider the answer', ' once more (runaway7)...']) {
             await new Promise((r) => setTimeout(r, 40));
             yield { choices: [{ delta: { content: p } }] };
           }
@@ -265,10 +263,7 @@ STREAMING_LANGUAGE_MODEL_STUB = r"""
     const event = (/Event ID: (\S+)/.exec(text) || [])[1] || '';
     let msg = '';
     try { msg = JSON.parse(text.slice(text.lastIndexOf('Context data:') + 13).trim().split('\n\n')[0]).message || ''; } catch (e) {}
-    if (event === 'telnet_connection_opened') {
-      return ['{"actions":[{"type":"send_telnet_line",', '"line":"Hello from the ', 'streaming stub. Your name?"}', ']}'];
-    }
-    return ['{"actions":[{"type":', '"send_telnet_line","line":', '"stream heard: ' + msg + '"}]}'];
+    return ['{"actions":[{"type":"send_telnet_line",', '"line":"stream heard: ', msg + '"}', ']}'];
   };
   const session = () => ({
     async prompt() { throw new Error('the page should stream'); },
@@ -300,24 +295,26 @@ STREAMING_LANGUAGE_MODEL_STUB = r"""
 })();
 """
 
-# A stateless model: it only describes the authoritative room supplied by the demo. It
-# never emits set_memory, so passing cannot conceal the small-model bug with a smarter stub.
+# A built-in model that plays the demo's adventure by its rule and remembers nothing itself:
+# "play" describes the Gate and sets memory to "room: Gate"; a game command is played in the room
+# the prompt's Memory names (the Gate if none), and "go north" from the Gate arrives in the Hall
+# and sets memory to "room: Hall". Anything else is chat. A room in its answer to a later "look"
+# is proof the server's memory carried it from one line's prompt to the next.
 ADVENTURE_STUB = r"""
 (() => {
   const log = window.__lm = { prompts: [], creates: 0 };
-  window.__adventureCalls = [];
-  window.__adventureAnswer = (text) => {
-    let state = null;
-    const marker = 'Demo adventure state:\n';
-    const at = text.lastIndexOf(marker);
-    if (at >= 0) state = JSON.parse(text.slice(at + marker.length).split('\n')[0]);
-    const turn = window.__adventureCalls.length + 1;
-    const line = state ? `Room ${state.room}; ${state.result}; turn ${turn}.` : `Chat or welcome; turn ${turn}.`;
-    window.__adventureCalls.push({ text, state, line });
-    return { actions: [{ type: 'send_telnet_line', line }] };
+  const answer = (text) => {
+    const event = (/Event ID: (\S+)/.exec(text) || [])[1] || '';
+    let msg = '';
+    try { msg = JSON.parse(text.slice(text.lastIndexOf('Context data:') + 13).trim().split('\n\n')[0]).message || ''; } catch (e) {}
+    const room = ((/- \*\*Memory\*\*: room: (\w+)/.exec(text) || [])[1]) || 'Gate';
+    if (msg === 'play') return { actions: [{ type: 'send_telnet_line', line: 'You stand at the Gate.' }, { type: 'set_memory', value: 'room: Gate' }] };
+    if (msg === 'look') return { actions: [{ type: 'send_telnet_line', line: 'You look around the ' + room + '.' }] };
+    if (msg === 'go north' && room === 'Gate') return { actions: [{ type: 'send_telnet_line', line: 'You walk into the Hall.' }, { type: 'set_memory', value: 'room: Hall' }] };
+    return { actions: [{ type: 'send_telnet_line', line: 'Just chatting: ' + msg }] };
   };
   const session = () => ({
-    async prompt(text, o) { log.prompts.push({ text, options: o }); return JSON.stringify(window.__adventureAnswer(text)); },
+    async prompt(text, o) { log.prompts.push({ text, options: o }); return JSON.stringify(answer(text)); },
     async clone() { return session(); },
     destroy() {},
   });
@@ -433,7 +430,7 @@ def open_page(browser, origin, size=(1280, 800), init_script=None):
         return r.abort()
 
     page.route("**/*", route)
-    page.goto(origin + "/index.html")
+    page.goto(origin + "/demo.html")
     return page, errors
 
 
@@ -461,15 +458,22 @@ def type_line(page, text):
 
 def wait_for_autostart(page):
     """The server and the client come up with no clicks; returns seconds from the bundle
-    being ready to each."""
+    being ready to the client connection."""
     expect(page.locator("#demo-banner")).to_be_hidden(timeout=90_000)
     ready = time.time()
-    # The server list is refreshed the moment start_server answers.
-    expect(page.locator("#server-list")).to_contain_text("telnet", timeout=30_000)
-    server = time.time() - ready
-    expect(page.locator("#telnet-state")).to_have_text(re.compile(r"^connected to :2323$"), timeout=30_000)
-    client = time.time() - ready
-    return server, client
+    expect(page.locator("#telnet-state")).to_have_text("connected to :2323", timeout=30_000)
+    connected = time.time() - ready
+    page.wait_for_timeout(500)
+    expect(page.locator("#llm-current .llm-idle")).to_be_visible()
+    expect(page.locator("#llm-current .llm-head")).to_have_count(0)
+    assert page.evaluate("window.__lm?.prompts?.length || 0") == 0, "connection opened called the built-in model"
+    assert page.evaluate("window.__webllm?.prompts?.length || 0") == 0, "connection opened called WebLLM"
+    expect(page.locator("#server-list, .machine-base")).to_have_count(0)
+    expect(page.locator(".demo-intro p")).to_have_text("NetGet compiled to WASM for demonstration only")
+    expect(page.locator("#llm-current .llm-idle")).to_have_text("Send a Telnet message to begin.")
+    assert "WASM demo in your tab" not in page.locator("#demo").inner_text()
+    assert "a client on the virtual network" not in page.locator("#demo").inner_text()
+    return connected
 
 
 # Where the machines are, as [left, top, right, bottom].
@@ -557,8 +561,7 @@ REMOVED_TEXTS = [
 
 def check_removed_texts(page):
     """None of the removed text is on the page, in the DOM or in view, and nothing is left
-    of the elements that held it; the Install section reads As CLI, As Local STDIO MCP, From
-    source, in that order."""
+    of the elements that held it. The demo is separate from the landing page."""
     html = page.content()
     text = page.locator("body").inner_text()
     present = [t for t in REMOVED_TEXTS if t in html or t in text]
@@ -566,7 +569,8 @@ def check_removed_texts(page):
     for sel in ("#demo-steps", ".demo-steps", ".demo-notes", "[id^=step-]", ".section-how .caption"):
         assert page.locator(sel).count() == 0, f"{sel} is still on the page"
     headings = [h.strip() for h in page.locator("h3.sub-h").all_text_contents()]
-    assert headings == ["As CLI", "As Local STDIO MCP", "From source"], headings
+    assert headings == [], headings
+    expect(page.locator('nav a[href="demo.html"]')).to_have_attribute("aria-current", "page")
     assert "150+" not in html, "the page rounds the protocol count down again"
 
 
@@ -574,7 +578,11 @@ def run_you_are_the_model(browser, origin):
     # WebGPU but no built-in model: the select lists only the WebLLM models, the default one
     # selected, and nothing downloads until the visitor asks.
     page, errors = open_page(browser, origin, init_script=NO_LANGUAGE_MODEL + GPU_STUB)
-    server_s, client_s = wait_for_autostart(page)
+    # The visitor can browse the page while the runtime starts. Startup, connection,
+    # and the incoming request must all leave their chosen focus alone.
+    page.locator("#theme-toggle").focus()
+    client_s = wait_for_autostart(page)
+    expect(page.locator("#theme-toggle")).to_be_focused()
 
     # The Telnet terminal is a shell session: the command, then telnet(1)'s own lines.
     for line in ("$ telnet localhost 2323", "Trying 127.0.0.1...", "Connected to localhost.", "Escape character is '^]'."):
@@ -586,22 +594,23 @@ def run_you_are_the_model(browser, origin):
     expect(page.locator("#model-select")).to_have_value("Qwen2.5-1.5B-Instruct-q4f16_1-MLC")
     assert model_labels(page) == WEBLLM_LABELS + [YOU_LABEL], model_labels(page)
     expect(page.locator("#llm-load")).to_have_text("Download Qwen2.5 1.5B · ~1 GB", timeout=10_000)
-    expect(page.locator("#llm-status")).to_contain_text("Needs a click to download")
-    expect(page.locator("#llm-status")).to_contain_text("you")
+    expect(page.locator("#llm-status")).to_have_text("Download to use this model.")
     expect_who(page, "you")
     assert page.evaluate("typeof window.__lm") == "undefined"
 
-    # The connection's greeting request is the composer, prefilled from the example.
+    # The first typed line opens the composer, prefilled from the action example.
+    type_line(page, "hello")
+    page.locator("#theme-toggle").focus()
     llm = page.locator("#llm-current")
-    expect(llm.locator(".llm-kind")).to_have_text("telnet_connection_opened", timeout=30_000)
+    expect(llm.locator(".llm-kind")).to_have_text("telnet_message_received", timeout=30_000)
     expect(llm.locator(".llm-state")).to_have_text("waiting for you")
     picker = llm.locator("select.cmp-picker")
     expect(picker).to_have_value("send_telnet_message")
     field = llm.locator(".cmp-field textarea, .cmp-field input[type=text]").first
     assert field.input_value() == "Hello\n", repr(field.input_value())
     expect(llm.get_by_label("send line breaks as CRLF")).to_be_checked()
-    # The composer did not take the focus from the Telnet terminal.
-    assert page.evaluate("document.activeElement && document.activeElement.closest('#telnet-term') !== null")
+    # Neither the terminal nor the composer takes focus while the visitor is browsing.
+    expect(page.locator("#theme-toggle")).to_be_focused()
 
     check_no_scrollbars(page, "composer")
 
@@ -610,17 +619,18 @@ def run_you_are_the_model(browser, origin):
     expect_telnet(page, "Welcome to the page-test BBS")
     expect(llm.locator(".llm-idle")).to_be_visible(timeout=10_000)
     expect(llm.locator(".llm-head")).to_have_count(0)
+    assert not page.evaluate("!!document.activeElement.closest('#telnet-term')"), "sending a reply stole terminal focus"
 
     # A typed line: echoed locally, then answered through the composer.
     type_line(page, "Ada")
+    page.locator("#theme-toggle").focus()
     expect_telnet(page, "Your name? Ada")
     expect(llm.locator(".llm-kind")).to_have_text("telnet_message_received", timeout=30_000)
     expect(llm.locator(".llm-meta")).to_have_text("“Ada”")
     expect(llm.locator(".llm-head")).to_have_count(1)
+    expect(page.locator("#theme-toggle")).to_be_focused()
     llm.locator(".cmp-field textarea, .cmp-field input[type=text]").first.fill("Hello, Ada!\n")
-    llm.get_by_role("tab", name="Raw JSON").click()
-    assert '"Hello, Ada!\\r\\n"' in llm.locator("textarea.cmp-raw-input").input_value()
-    llm.get_by_role("tab", name="Form").click()
+    expect(llm.locator('[role="tab"], .llm-reply-label, .cmp-raw')).to_have_count(0)
     llm.get_by_role("button", name="Send reply").click()
     expect_telnet(page, "Hello, Ada!")
 
@@ -648,9 +658,9 @@ def run_you_are_the_model(browser, origin):
     after = telnet_text(page).split("Connection closed by foreign host.")[-1]
     for line in ("$ telnet localhost 2323", "Trying 127.0.0.1...", "Connected to localhost.", "Escape character is '^]'."):
         assert line in after, f"{line!r} missing from the reconnect: {after!r}"
-    expect(llm.locator(".llm-kind")).to_have_text("telnet_connection_opened", timeout=30_000)
-    llm.get_by_role("button", name="Answer with nothing").click()
-    expect(llm.locator(".llm-idle")).to_be_visible(timeout=10_000)
+    page.wait_for_timeout(500)
+    expect(llm.locator(".llm-idle")).to_be_visible()
+    expect(llm.locator(".llm-head")).to_have_count(0)
 
     # Nothing was downloaded or loaded without a click; the runtime was asked what it has.
     log = page.evaluate("window.__webllm")
@@ -660,7 +670,7 @@ def run_you_are_the_model(browser, origin):
     check_no_scrollbars(page, "idle")
     assert not errors, f"page errors: {errors}"
     page.close()
-    return server_s, client_s
+    return client_s
 
 
 def run_no_model_at_all(browser, origin):
@@ -672,7 +682,7 @@ def run_no_model_at_all(browser, origin):
     assert model_labels(page) == [l.replace("download", "").rsplit(" · ", 1)[0] + " · needs WebGPU" for l in WEBLLM_LABELS] + [YOU_LABEL], model_labels(page)
     assert [o.strip() for o in page.locator("#model-select option:not([disabled])").all_text_contents()] == [YOU_LABEL]
     expect(page.locator("#model-select")).to_have_value("you")
-    expect(page.locator("#llm-status")).to_contain_text("neither a built-in model nor WebGPU")
+    expect(page.locator("#llm-status")).to_have_text("Local models unavailable. Reply manually.")
     expect(page.locator("#llm-load")).to_be_hidden()
     expect_who(page, "you")
     assert page.evaluate("typeof window.__webllm") == "undefined", "the WebLLM runtime was loaded without WebGPU"
@@ -692,7 +702,8 @@ def run_chrome_available(browser, origin):
     assert model_labels(page)[0] == "Gemini Nano (built into Chrome)", model_labels(page)
     expect(page.locator("#llm-load")).to_be_hidden()
     expect(page.locator("#llm-status")).to_contain_text("Ready: Gemini Nano")
-    expect_telnet(page, "Hello from the stub model. Your name?")
+    type_line(page, "hello")
+    expect_telnet(page, "stub model heard: hello")
     type_line(page, "Grace")
     expect_telnet(page, "stub model heard: Grace")
     assert page.evaluate("window.__composerSeen") == 0, "the composer opened although the model answered"
@@ -745,7 +756,8 @@ def run_switching(browser, origin):
     assert model_labels(page) == ["Gemini Nano (built into Chrome)"] + WEBLLM_LABELS + [YOU_LABEL], model_labels(page)
     expect(sel).to_have_value("builtin")
     expect_who(page, "Gemini Nano")
-    expect_telnet(page, "Hello from the stub model. Your name?")
+    type_line(page, "hello")
+    expect_telnet(page, "stub model heard: hello")
 
     # A WebLLM model that is not downloaded: one button naming the size, and no download.
     sel.select_option("Qwen2.5-3B-Instruct-q4f16_1-MLC")
@@ -792,7 +804,8 @@ def run_switching(browser, origin):
     wait_for_autostart(page)
     expect(sel).to_have_value("Qwen2.5-3B-Instruct-q4f16_1-MLC")
     expect_who(page, "Qwen2.5 3B", timeout=15_000)
-    expect_telnet(page, "webllm Qwen2.5-3B-Instruct-q4f16_1-MLC heard:")
+    type_line(page, "hello again")
+    expect_telnet(page, "webllm Qwen2.5-3B-Instruct-q4f16_1-MLC heard: hello again")
     page.close()
 
 
@@ -824,21 +837,23 @@ def run_streaming_builtin(browser, origin):
     expect_who(page, "Gemini Nano")
     llm = page.locator("#llm-current")
 
-    # Mid-stream: two chunks of the greeting are on screen, the rest is not written yet, and
+    type_line(page, "hello")
+
+    # Mid-stream: two chunks of the reply are on screen, the rest is not written yet, and
     # nothing has reached the Telnet terminal.
     answer = llm.locator(".llm-answer-body")
-    expect(answer).to_contain_text('"line":"Hello from the', timeout=30_000)
-    assert "streaming stub" not in answer.inner_text(), answer.inner_text()
+    expect(answer).to_contain_text('"line":"stream heard:', timeout=30_000)
+    assert 'hello' not in answer.inner_text(), answer.inner_text()
     expect(llm.locator(".llm-state")).to_have_text("the model is answering")
     expect(llm.locator(".llm-think")).to_be_hidden()
-    assert "Hello from the" not in telnet_text(page)
+    assert "stream heard:" not in telnet_text(page)
     check_no_scrollbars(page, "nano-streaming")
     shoot(page, "nano-mid")
 
     page.evaluate("window.__lmHold = false; window.__lmRelease()")
-    expect_telnet(page, "Hello from the streaming stub. Your name?")
+    expect_telnet(page, "stream heard: hello")
     expect(llm.locator(".llm-state")).to_have_text(re.compile(r"^answered in \d+\.\d s$"))
-    expect(answer).to_contain_text("streaming stub. Your name?")
+    expect(answer).to_contain_text("stream heard: hello")
     expect(llm.locator(".llm-think")).to_be_hidden()
     check_no_scrollbars(page, "nano-answered")
     shoot(page, "nano-done")
@@ -867,8 +882,9 @@ def run_webllm_thinking(browser, origin):
     page, errors = open_page(browser, origin, init_script=NO_LANGUAGE_MODEL + GPU_STUB)
     wait_for_autostart(page)
     llm = page.locator("#llm-current")
-    # The visitor has the greeting until the model is ready; the model then takes it over.
-    expect(llm.locator(".llm-kind")).to_have_text("telnet_connection_opened", timeout=30_000)
+    # A typed line waits in the composer until the model takes it over.
+    type_line(page, "hello")
+    expect(llm.locator(".llm-kind")).to_have_text("telnet_message_received", timeout=30_000)
     sel = page.locator("#model-select")
     sel.select_option("Qwen3-1.7B-q4f16_1-MLC")
     btn = page.locator("#llm-load")
@@ -881,7 +897,7 @@ def run_webllm_thinking(browser, origin):
     think = llm.locator(".llm-think")
     body = llm.locator(".llm-think-body")
     expect(think).to_be_visible(timeout=15_000)
-    expect(body).to_contain_text("then asks for a name.")
+    expect(body).to_contain_text("following the instructions.")
     expect(llm.locator(".llm-think-label")).to_have_text("Thinking…")
     assert "<think>" not in body.inner_text(), body.inner_text()
     expect(llm.locator(".llm-answer")).to_be_hidden()
@@ -948,18 +964,16 @@ def run_chrome_downloadable(browser, origin):
     expect(btn).to_be_visible()
     expect(btn).to_have_text("Download Gemini Nano")
     assert model_labels(page)[0] == "Gemini Nano (built into Chrome)", model_labels(page)
-    expect(page.locator("#llm-status")).to_contain_text("first click or keypress")
+    expect(page.locator("#llm-status")).to_have_text("Download to use this model.")
     # No interaction yet: no download, and the visitor is the model.
     llm = page.locator("#llm-current")
-    expect(llm.locator(".llm-kind")).to_have_text("telnet_connection_opened", timeout=30_000)
-    expect(llm.locator("select.cmp-picker")).to_be_visible()
+    expect(llm.locator(".llm-idle")).to_be_visible()
     expect_who(page, "you")
     assert page.evaluate("window.__lm.downloaded") is False
     assert True not in page.evaluate("window.__lm.activeAtCreate"), "create() was called with an activation nobody gave"
     check_no_scrollbars(page, "downloadable")
 
-    # The first keypress in the Telnet terminal starts the download; the model then answers
-    # the greeting nobody had touched.
+    # The first keypress starts the download, but only a submitted line calls the model.
     page.locator("#telnet-term .xterm-helper-textarea").focus()
     page.keyboard.type("x")
     expect(page.locator("#llm-progress")).to_be_visible(timeout=5_000)
@@ -967,7 +981,9 @@ def run_chrome_downloadable(browser, origin):
     expect_who(page, "Gemini Nano")
     assert True in page.evaluate("window.__lm.activeAtCreate")
     expect(btn).to_be_hidden()
-    expect_telnet(page, "Hello from the stub model. Your name?")
+    assert page.evaluate("window.__lm.prompts.length") == 0
+    page.keyboard.press("Enter")
+    expect_telnet(page, "stub model heard: x")
     expect(llm.locator(".cmp-picker")).to_have_count(0)
 
     assert not errors, f"page errors: {errors}"
@@ -1016,12 +1032,12 @@ def open_held(browser, origin):
     page, errors = open_page(browser, origin, init_script=LANGUAGE_MODEL_STUB % {"mode": "available"} + HOLD_CREATE + PANEL_WATCH)
     wait_for_autostart(page)
     llm = page.locator("#llm-current")
-    # The Telnet client connected while create() was still running: its connect request waits
-    # for the model, named, and nobody is asked to answer it.
-    expect(llm.locator(".llm-kind")).to_have_text("telnet_connection_opened", timeout=30_000)
+    # Connection is idle while create() runs; a typed line waits for the model.
+    type_line(page, "hello")
+    expect(llm.locator(".llm-kind")).to_have_text("telnet_message_received", timeout=30_000)
     expect(llm.locator(".llm-state")).to_have_text("waiting for Gemini Nano")
     expect(llm.locator(".llm-waiting")).to_contain_text("Waiting for Gemini Nano to load…")
-    expect(page.locator("#llm-status")).to_contain_text("Starting Gemini Nano… Requests wait for it.")
+    expect(page.locator("#llm-status")).to_have_text("Starting Gemini Nano…")
     expect_who(page, "Gemini Nano")
     assert page.evaluate("window.__lm.createHeldAt") is not None
     return page, errors, llm
@@ -1029,7 +1045,7 @@ def open_held(browser, origin):
 
 def run_model_still_loading(browser, origin):
     """(a) The built-in model's create() takes seconds and the Telnet client connects meanwhile:
-    the connect request waits for the model (never the composer) and the model answers it
+    a typed line waits for the model (never the composer) and the model answers it
     once create() resolves."""
     page, errors, llm = open_held(browser, origin)
     check_no_scrollbars(page, "waiting")
@@ -1037,12 +1053,12 @@ def run_model_still_loading(browser, origin):
     # Seconds later it is still waiting, and still nobody else has answered.
     page.wait_for_timeout(3000)
     expect(llm.locator(".llm-state")).to_have_text("waiting for Gemini Nano")
-    assert "Hello from the stub model" not in telnet_text(page)
+    assert "stub model heard:" not in telnet_text(page)
     held_ms = page.evaluate("performance.now() - window.__lm.createHeldAt")
     assert held_ms > 3000, held_ms
 
     page.evaluate("window.__lmCreateRelease()")
-    expect_telnet(page, "Hello from the stub model. Your name?")
+    expect_telnet(page, "stub model heard: hello")
     expect(llm.locator(".llm-state")).to_have_text(re.compile(r"^answered in \d+\.\d s$"))
     expect(page.locator("#llm-status")).to_contain_text("Ready: Gemini Nano")
     type_line(page, "Ada")
@@ -1065,9 +1081,9 @@ def run_model_fails_to_load(browser, origin):
     expect(llm.locator(".llm-state")).to_have_text("waiting for you")
     expect(page.locator("#llm-status")).to_contain_text("Could not load Gemini Nano")
     expect_who(page, "you")
-    llm.locator(".cmp-field textarea, .cmp-field input[type=text]").first.fill("the person answered the banner\n")
+    llm.locator(".cmp-field textarea, .cmp-field input[type=text]").first.fill("the person answered the message\n")
     llm.get_by_role("button", name="Send reply").click()
-    expect_telnet(page, "the person answered the banner")
+    expect_telnet(page, "the person answered the message")
     assert not errors, f"page errors: {errors}"
     page.close()
 
@@ -1075,20 +1091,19 @@ def run_model_fails_to_load(browser, origin):
 def run_you_are_selected(browser, origin):
     """(c) "You are the model" in the select: with the stub model loaded, choosing it makes
     the next request the composer's; choosing the model again hands requests back to it with
-    no new session; the choice survives a reload, where nothing is loaded and the connect
-    request is the composer's."""
+    no new session; after a reload nothing is loaded until a typed line needs an answer."""
     page, errors = open_page(browser, origin, init_script=LANGUAGE_MODEL_STUB % {"mode": "available"})
     wait_for_autostart(page)
     sel = page.locator("#model-select")
     llm = page.locator("#llm-current")
-    expect_telnet(page, "Hello from the stub model. Your name?")
+    type_line(page, "hello")
+    expect_telnet(page, "stub model heard: hello")
     expect_who(page, "Gemini Nano")
     creates = page.evaluate("window.__lm.creates")
 
     sel.select_option("you")
     expect_who(page, "you")
     expect(page.locator("#llm-status")).to_contain_text("You are the model")
-    expect(page.locator("#llm-status")).to_contain_text("Gemini Nano stays loaded")
     type_line(page, "Ada")
     expect(llm.locator(".llm-meta")).to_have_text("“Ada”", timeout=30_000)
     expect(llm.locator("select.cmp-picker")).to_be_visible()
@@ -1112,7 +1127,8 @@ def run_you_are_selected(browser, origin):
     wait_for_autostart(page)
     expect(sel).to_have_value("you")
     expect_who(page, "you")
-    expect(llm.locator(".llm-kind")).to_have_text("telnet_connection_opened", timeout=30_000)
+    type_line(page, "hello again")
+    expect(llm.locator(".llm-kind")).to_have_text("telnet_message_received", timeout=30_000)
     expect(llm.locator("select.cmp-picker")).to_be_visible()
     assert page.evaluate("window.__lm.creates") == 0, "the model was loaded although the visitor is the model"
     assert not errors, f"page errors: {errors}"
@@ -1120,66 +1136,21 @@ def run_you_are_selected(browser, origin):
 
 
 def run_adventure_state(browser, origin):
-    """Every model adapter and the human composer see deterministic rooms; no model saves memory."""
-    commands = (("play", "Gate", "start"), ("north", "Hall", "move"),
-                ("east", "Vault", "move"), ("west", "Hall", "move"),
-                ("south", "Gate", "move"), ("east", "Gate", "blocked"),
-                ("go north", "Hall", "move"), ("look", "Hall", "look"),
-                ("reset", "Gate", "start"))
-
-    def check_model(page):
-        for line, room, result in commands:
-            before = page.evaluate("window.__adventureCalls.length")
-            type_line(page, line)
-            page.wait_for_function("n => window.__adventureCalls.length > n", arg=before)
-            call = page.evaluate("window.__adventureCalls.at(-1)")
-            assert call["state"] and call["state"]["room"] == room, (line, call)
-            assert call["state"]["result"] == result, (line, call)
-            assert "- **Memory**: (empty)" in call["text"], "the model never had to save room memory"
-            expect_telnet(page, call["line"])
-
-    page, errors = open_page(browser, origin, init_script=ADVENTURE_STUB + GPU_STUB)
+    """The demo's adventure keeps its place across lines through the server's memory, with a
+    model that follows the rule and remembers nothing itself: the rule on
+    `telnet_message_received` is the last thing in each line's prompt, the Memory the stub's
+    set_memory wrote is in the next line's prompt verbatim, and "look" after "go north" names
+    the Hall. "hello" stays small talk."""
+    page, errors = open_page(browser, origin, init_script=ADVENTURE_STUB)
     wait_for_autostart(page)
-    expect_telnet(page, "Chat or welcome; turn 1.")
-    check_model(page)  # Chrome's built-in Prompt API route.
-    models = page.locator("#model-select option").evaluate_all(
-        "os => os.filter(o => !['you', 'builtin'].includes(o.value)).map(o => [o.value, o.textContent.split(' · ')[0]])")
-    for model_id, name in models:
-        page.locator("#model-select").select_option(model_id)
-        page.locator("#llm-load").click()  # Fake module; no model weights or network download.
-        expect_who(page, name)
-        check_model(page)
-
-    # The same state reaches the manual composer. A human only supplies the response line.
-    page.locator("#model-select").select_option("you")
-    expect_who(page, "you")
-    before = page.evaluate("window.__adventureCalls.length")
-    llm = page.locator("#llm-current")
-    for turn, (line, room, result) in enumerate(commands):
+    for line, want in (("hello", "Just chatting: hello"), ("play", "You stand at the Gate."),
+                       ("look", "You look around the Gate."), ("go north", "You walk into the Hall."),
+                       ("look", "You look around the Hall.")):
         type_line(page, line)
-        expect(llm.locator(".llm-state")).to_have_text("waiting for you", timeout=30_000)
-        expect(llm.locator(".adventure-state b")).to_have_text(room)
-        llm.locator(".llm-prompt summary").click()
-        prompt = llm.locator(".llm-prompt pre").last.inner_text()
-        state = json.loads(prompt.rsplit("Demo adventure state:\n", 1)[1].split("\n")[0])
-        assert state["result"] == result, (line, state)
-        llm.locator(".llm-prompt summary").click()
-        llm.locator("select.cmp-picker").select_option("send_telnet_line")
-        answer = f"Manual {room}; {result}; turn {turn}."
-        llm.locator(".cmp-field textarea, .cmp-field input[type=text]").first.fill(answer)
-        llm.get_by_role("button", name="Send reply").click()
-        expect_telnet(page, answer)
-    assert page.evaluate("window.__adventureCalls.length") == before, "manual turns never ask a model"
-    assert not errors, f"page errors: {errors}"
-    page.close()
-
-    # Edge uses the same Prompt API adapter, with its own supported built-in model identity.
-    edge = "Object.defineProperty(Navigator.prototype, 'userAgent', {get() {return 'Mozilla/5.0 Edg/143.0';}});"
-    page, errors = open_page(browser, origin, init_script=ADVENTURE_STUB + edge)
-    wait_for_autostart(page)
-    expect_who(page, "Phi-4-mini")
-    expect_telnet(page, "Chat or welcome; turn 1.")
-    check_model(page)
+        expect_telnet(page, want)
+    last = page.evaluate("window.__lm.prompts.map((p) => p.text)")[-1]
+    assert last.rstrip().endswith("Anything else is chat."), last[-400:]
+    assert "- **Memory**: room: Hall" in last, last[last.find("# Current State"):][:600]
     assert not errors, f"page errors: {errors}"
     page.close()
 
@@ -1253,9 +1224,9 @@ def run_real_prompt_api(browser, origin):
     if availability in ("downloadable", "downloading"):
         assert model_labels(page)[0] == "Gemini Nano (built into Chrome)", model_labels(page)
         expect(page.locator("#llm-load")).to_be_visible()
-        expect(page.locator("#llm-status")).to_contain_text("first click or keypress")
+        expect(page.locator("#llm-status")).to_have_text("Download to use this model.")
         expect_who(page, "you")
-        expect(page.locator("#llm-current .llm-kind")).to_have_text("telnet_connection_opened", timeout=30_000)
+        expect(page.locator("#llm-current .llm-idle")).to_be_visible()
     assert not errors, f"page errors: {errors}"
     page.close()
     return availability
@@ -1276,7 +1247,7 @@ def main():
     with sync_playwright() as p:
         browser = launch(p)
         version = browser.version
-        server_s, client_s = run_you_are_the_model(browser, origin)
+        client_s = run_you_are_the_model(browser, origin)
         run_no_model_at_all(browser, origin)
         run_chrome_available(browser, origin)
         run_streaming_builtin(browser, origin)
@@ -1293,7 +1264,7 @@ def main():
 
     server.shutdown()
     print(f"browser: {version}; xterm: {'real, from ' + XTERM_DIR if XTERM_DIR else 'stub'}")
-    print(f"ok: with no clicks the Telnet server opened {server_s:.1f}s and the client connected "
+    print(f"ok: with no clicks the Telnet server started and the client connected "
           f"{client_s:.1f}s after the bundle was ready; the terminal read as a telnet session; you "
           "answered through the composer and the answers reached the Telnet terminal; a hang-up "
           "printed telnet's line and Enter at the prompt reconnected; the machines laid out and no scrollbars at "
@@ -1310,14 +1281,14 @@ def main():
           "button and downloaded nothing until clicked; back to Gemini Nano re-used its session; "
           "the WebLLM model again loaded from the cache with no click; the choice survived a reload")
     print("ok: a stub LanguageModel ('downloadable') waited for the first keypress, showed the "
-          "button and progress, then took over the untouched request")
-    print(f"ok: while the built-in model's create() ran ({held_ms / 1000:.1f}s), the connect request waited for it, "
+          "button and progress, then answered the submitted line")
+    print(f"ok: while the built-in model's create() ran ({held_ms / 1000:.1f}s), a typed message waited for it, "
           "named, and no composer ever opened; the model answered it once create() resolved")
     print("ok: when create() failed, the request that waited went to the composer with the reason")
     print("ok: 'You are the model' made the next request the composer's with the model loaded; choosing the "
           "model again handed requests back with no new session; the choice survived a reload")
-    print("ok: deterministic adventure movement, invalid exits and reset reached both built-in model "
-          "identities, all six WebLLM choices and the manual composer; no model wrote set_memory")
+    print("ok: the adventure kept its place across lines through the server's memory with a stub model that "
+          "follows the rule and remembers nothing: \"look\" after \"go north\" named the Hall")
     print("ok: at 390x844 the select showed the short labels, each fitting the select, and the full ones "
           "again at 1280" + (f"; the dashboard stacked its columns at {mobile_font}px" if mobile_font else ""))
     print(f"real Prompt API in this browser: availability() = {real!r}"

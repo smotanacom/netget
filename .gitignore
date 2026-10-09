@@ -16,6 +16,23 @@ netget.log
 
 logs
 *.log
+# Rotated logs (netget.log.1, netget.log.2, …), which *.log does not match
+*.log.*
+
+# Python bytecode from scripts/ and fuzz/ helpers
+__pycache__/
+*.py[cod]
+
+# Paseo workspace config, written per machine
+/paseo.json
+
+# Worktrees and ad-hoc checkouts of this repository made inside it
+/.claude/worktrees/
+/.worktrees/
+/worktrees/
+/.audit-integration-*/
+/.p2p-news-work/
+/.*-work/
 
 # Ollama lock files for concurrent instance coordination
 ollama.lock
