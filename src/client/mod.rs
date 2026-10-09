@@ -784,6 +784,8 @@ pub mod oci_registry;
 pub mod rcon;
 #[cfg(feature = "restconf")]
 pub mod restconf;
+#[cfg(feature = "smpp")]
+pub mod smpp;
 #[cfg(feature = "webtransport")]
 pub mod webtransport;
 #[cfg(feature = "zenoh")]
