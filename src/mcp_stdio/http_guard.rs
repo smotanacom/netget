@@ -33,7 +33,7 @@ use http::header::{AUTHORIZATION, CONTENT_LENGTH, HOST, ORIGIN};
 use http::{HeaderMap, StatusCode, Uri};
 
 /// Environment variable read when `--mcp-token` is not passed.
-pub const TOKEN_ENV: &str = "NETGET_MCP_TOKEN";
+pub const TOKEN_ENV: &str = crate::cli::MCP_TOKEN_ENV;
 
 /// Largest request body accepted on `/mcp`. A JSON-RPC tool call is a few kilobytes;
 /// 4 MiB leaves room for a large `event_handlers` table or `initial_memory`.
