@@ -30,7 +30,7 @@ fn send_file() -> ActionDefinition {
         "srt_send_file",
         "Send an MPEG-TS file the operator supplied, 7 TS packets (1316 bytes) per SRT message, paced at a bitrate",
         vec![
-            parameter("path", "string", "Path of a .ts file on this machine (64 MiB at most)", true),
+            parameter("path", "string", "Path of a .ts file under the client's media_root directory (64 MiB at most); a relative path is resolved against that directory, and nothing outside it is read", true),
             parameter("bitrate_kbps", "number", "Pacing bitrate in kbit/s, 100 to 50000 (default 2000)", false),
         ],
         json!({"type": "srt_send_file", "path": "/tmp/clip.ts", "bitrate_kbps": 2000}),
@@ -176,6 +176,13 @@ impl Protocol for SrtClientProtocol {
                 "string",
                 "AES-128 passphrase (10 to 79 characters) when the listener encrypts",
                 json!("correct horse battery"),
+                None,
+            ),
+            p(
+                crate::client::media_root::MEDIA_ROOT_PARAM,
+                "string",
+                "Directory srt_send_file may read files from; nothing outside it is sent. Defaults to NetGet's own media directory under the platform's local-data dir.",
+                json!("/var/lib/netget/media"),
                 None,
             ),
         ]

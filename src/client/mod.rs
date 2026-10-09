@@ -11,6 +11,8 @@ pub mod command_support;
 /// client over the virtual loopback in the browser build.
 pub mod http_fetch;
 pub mod llm_budget;
+/// The directory a media client may read local files from (`srt`, `rtmp`).
+pub mod media_root;
 pub mod response_reader;
 pub mod wire_values;
 
