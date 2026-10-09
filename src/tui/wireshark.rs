@@ -339,6 +339,13 @@ pub fn wire_for(protocol: &str) -> Wire {
         "lmtp" => with_note(tcp("smtp"), "Wireshark has no LMTP dissector; decoded as SMTP, which reads the shared command and reply syntax. Expect one reply per accepted recipient after the final dot."),
         // Wireshark's `lpd` dissector reads RFC 1179 command codes and the receive-job subcommands.
         "lpd" => tcp("lpd"),
+        // The classic inetd services: Wireshark ships `echo`, `discard`, `daytime`, `chargen`
+        // and `time` dissectors (checked with `tshark -G protocols`); qotd has none.
+        "echo" => tcp("echo"),
+        "discard" => tcp("discard"),
+        "daytime" => tcp("daytime"),
+        "chargen" => tcp("chargen"),
+        "time" => tcp("time"),
         "pop3" => tcp("pop"),
         "imap" => tcp("imap"),
         "nntp" => tcp("nntp"),

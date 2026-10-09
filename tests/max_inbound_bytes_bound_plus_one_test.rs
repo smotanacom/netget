@@ -135,11 +135,18 @@ const DECISION_DEADLINE: Duration = Duration::from_secs(20);
 /// Keys are matched against the registry's protocol name, case-insensitively — that name is
 /// the display form (`"Bitcoin P2P"`, `"XML-RPC"`, `"SSH Agent"`), not the source directory.
 /// A first version keyed these tables on the directory name and every entry silently missed.
-const STREAMING_BOUND: &[(&str, &str)] = &[(
-    "tcp",
-    "MAX_QUEUED_BYTES bounds data queued behind an in-flight LLM call, not one message; TCP \
-     answers each read by design",
-)];
+const STREAMING_BOUND: &[(&str, &str)] = &[
+    (
+        "tcp",
+        "MAX_QUEUED_BYTES bounds data queued behind an in-flight LLM call, not one message; TCP \
+         answers each read by design",
+    ),
+    (
+        "echo",
+        "READ_CHUNK bounds one read, not one message; RFC 862 echo answers each read by design, \
+         so the handler sees every chunk of an over-bound send",
+    ),
+];
 
 /// Protocols that are probed and **do not** pass, each with what the probe found.
 ///

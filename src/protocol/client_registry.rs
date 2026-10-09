@@ -554,6 +554,30 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::lpd::actions::LpdClientProtocol::new(),
         ));
+        #[cfg(feature = "inetd")]
+        self.register(Arc::new(
+            crate::client::inetd::actions::EchoClientProtocol::new(),
+        ));
+        #[cfg(feature = "inetd")]
+        self.register(Arc::new(
+            crate::client::inetd::actions::DiscardClientProtocol::new(),
+        ));
+        #[cfg(feature = "inetd")]
+        self.register(Arc::new(
+            crate::client::inetd::actions::DaytimeClientProtocol::new(),
+        ));
+        #[cfg(feature = "inetd")]
+        self.register(Arc::new(
+            crate::client::inetd::actions::QotdClientProtocol::new(),
+        ));
+        #[cfg(feature = "inetd")]
+        self.register(Arc::new(
+            crate::client::inetd::actions::ChargenClientProtocol::new(),
+        ));
+        #[cfg(feature = "inetd")]
+        self.register(Arc::new(
+            crate::client::inetd::actions::TimeClientProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1077,6 +1101,12 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("EPP", "epp"),
     ("LMTP", "lmtp"),
     ("LPD", "lpd"),
+    ("Echo", "inetd"),
+    ("Discard", "inetd"),
+    ("Daytime", "inetd"),
+    ("QOTD", "inetd"),
+    ("Chargen", "inetd"),
+    ("Time", "inetd"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),
