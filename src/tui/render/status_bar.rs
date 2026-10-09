@@ -17,6 +17,16 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
 
     // (text, id, style)
     let mut segments: Vec<(String, SegmentId, ratatui::style::Style)> = Vec::new();
+    // Live work takes priority over cumulative usage, model names and toggles,
+    // including on the narrow stacked layout.
+    let active = app.snapshot.llm_activity.len();
+    if active > 0 {
+        segments.push((
+            format!(" {} {active} generating ", app.spinner()),
+            SegmentId::Usage,
+            app.styles.reasoning,
+        ));
+    }
     segments.push((
         format!(
             " {servers} server{} · {clients} client{} ",
@@ -53,13 +63,6 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
             ),
             SegmentId::Usage,
             app.styles.dimmed,
-        ));
-    }
-    if app.status.active_conversations > 0 {
-        segments.push((
-            format!(" ∴ {} thinking ", app.status.active_conversations),
-            SegmentId::Usage,
-            app.styles.reasoning,
         ));
     }
     segments.push((

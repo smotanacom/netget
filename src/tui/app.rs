@@ -163,6 +163,7 @@ pub struct DashboardApp {
     pub status: StatusModel,
     pub styles: Styles,
     pub dirty: bool,
+    pub animation_tick: usize,
     pub mouse_capture: bool,
     pub should_quit: bool,
     /// Clone of the status channel, so modal actions (create/update/send) can
@@ -202,6 +203,7 @@ impl DashboardApp {
             status: StatusModel::default(),
             styles,
             dirty: true,
+            animation_tick: 0,
             mouse_capture: true,
             should_quit: false,
         }
@@ -225,10 +227,47 @@ impl DashboardApp {
         )
     }
 
+    /// Called on the 100ms UI tick. Only the small live-work registry is polled;
+    /// the full state projection and traffic samples keep their slower cadence.
+    pub fn tick_llm_activity(&mut self, activity: Vec<crate::state::llm_activity::LlmActivity>) {
+        if self.snapshot.llm_activity != activity {
+            // Transient status rows must not move the operator onto a different button.
+            let cursor = self.rows().get(self.cards.row).cloned();
+            self.snapshot.active_conversations = activity.len();
+            self.snapshot.llm_activity = activity;
+            if let Some(cursor) = cursor {
+                let rows = self.rows();
+                if let Some(index) = rows.iter().position(|row| {
+                    row.key == cursor.key
+                        && row.on_enter == cursor.on_enter
+                        && row.buttons == cursor.buttons
+                        && row.positions() > 0
+                }) {
+                    self.cards.row = index;
+                }
+                self.clamp_cursor_to(&rows);
+            }
+            self.dirty = true;
+        }
+        if !self.snapshot.llm_activity.is_empty() {
+            self.animation_tick = self.animation_tick.wrapping_add(1);
+            self.dirty = true;
+        }
+    }
+
+    pub fn spinner(&self) -> &'static str {
+        crate::tui::llm_activity::spinner(self.animation_tick)
+    }
+
     /// Take a freshly built snapshot: derive activity from the change, keep
     /// the cursor on a row that exists, drop per-instance state for
     /// instances that are gone.
     pub fn absorb_snapshot(&mut self, snapshot: RailSnapshot) {
+        let cursor = if self.snapshot.llm_activity != snapshot.llm_activity {
+            self.rows().get(self.cards.row).cloned()
+        } else {
+            None
+        };
         let events = self.tracker.diff(&snapshot);
         for event in events {
             self.activity.push(event);
@@ -242,6 +281,18 @@ impl DashboardApp {
             self.focus_card(key);
         }
         let rows = self.rows();
+        if newest.is_none() {
+            if let Some(cursor) = cursor {
+                if let Some(index) = rows.iter().position(|row| {
+                    row.key == cursor.key
+                        && row.on_enter == cursor.on_enter
+                        && row.buttons == cursor.buttons
+                        && row.positions() > 0
+                }) {
+                    self.cards.row = index;
+                }
+            }
+        }
         self.clamp_cursor_to(&rows);
         self.dirty = true;
     }

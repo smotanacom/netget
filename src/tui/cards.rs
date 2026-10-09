@@ -13,8 +13,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::state::app_state::AccessLogEntry;
+use crate::state::llm_activity::LlmActivity;
 use crate::tui::app::{InstanceRef, UiKey};
 use crate::tui::driver::{driver_of, specific_rule_count};
+use crate::tui::llm_activity;
 use crate::tui::metrics::{clock, human_bytes, human_duration, human_rate, Throughput};
 use crate::tui::projection::{ClientRow, RailSnapshot, SendState, ServerRow};
 use crate::tui::rail::{client_line, fit, server_line, InstanceLine, Tone};
@@ -226,7 +228,12 @@ impl CardState {
             {
                 valid.insert(NodeId::Peer(key, Some(id)));
             }
-            if server.requests.iter().any(|r| r.connection_id.is_none()) {
+            if server.requests.iter().any(|r| r.connection_id.is_none())
+                || snapshot.llm_activity.iter().any(|work| {
+                    llm_activity::owner(work) == Some(key)
+                        && llm_activity::connection(work).is_none()
+                })
+            {
                 valid.insert(NodeId::Peer(key, None));
             }
         }
@@ -298,6 +305,8 @@ pub struct Row {
     pub on_enter: Activate,
     /// Present on collapsible rows.
     pub expanded: Option<bool>,
+    /// Animate before the label without changing the row's identity or actions.
+    pub busy: bool,
 }
 
 impl Row {
@@ -311,6 +320,7 @@ impl Row {
             button_width: 0,
             on_enter: Activate::None,
             expanded: None,
+            busy: false,
         }
     }
 
@@ -826,11 +836,20 @@ fn config_rows(instance: InstanceRef<'_>, state: &CardState, width: usize, rows:
     }
 }
 
+fn generating_rows(rows: &mut Vec<Row>, key: UiKey, depth: u16, activity: &[&LlmActivity]) {
+    for work in activity {
+        let mut row = Row::note(key, depth, llm_activity::label(work), Tone::Reasoning);
+        row.busy = true;
+        rows.push(row);
+    }
+}
+
 fn server_rows(
     row: &ServerRow,
     state: &CardState,
     metrics: Option<&Throughput>,
     width: usize,
+    activity: &[&LlmActivity],
 ) -> Vec<Row> {
     let key = UiKey::Server(row.id);
     let instance = InstanceRef::Server(row);
@@ -888,12 +907,13 @@ fn server_rows(
 
     // Peers, each with the conversation on it beneath.
     let live = row.conns.iter().filter(|c| c.active).count();
-    let (group, open) = group_row(
+    let (mut group, open) = group_row(
         key,
         Group::Peers,
         state,
         format!("{live} live · {} recent", row.recent.len()),
     );
+    group.busy = !open && !activity.is_empty();
     rows.push(group);
     if open {
         let mut any = false;
@@ -910,7 +930,13 @@ fn server_rows(
                 .iter()
                 .any(|v| v.connection_id == Some(conn.id));
             let peer_open = state.is_open(&node);
+            let generating: Vec<_> = activity
+                .iter()
+                .copied()
+                .filter(|work| llm_activity::connection(work) == Some(conn.id))
+                .collect();
             let mut peer = Row::new(Some(key), 2);
+            peer.busy = !peer_open && !generating.is_empty();
             peer.spans = vec![
                 (
                     if conn.active { "● " } else { "○ " }.to_string(),
@@ -950,6 +976,7 @@ fn server_rows(
             rows.push(peer);
             if peer_open {
                 conversation(&mut rows, state, &node, key, 3, &mine);
+                generating_rows(&mut rows, key, 3, &generating);
                 if conn.active {
                     let mut send = Row::new(Some(key), 3);
                     send.buttons.push(if conn.can_message {
@@ -976,7 +1003,13 @@ fn server_rows(
                 .filter(|r| r.connection_id == Some(closed.id))
                 .collect();
             let peer_open = state.is_open(&node);
+            let generating: Vec<_> = activity
+                .iter()
+                .copied()
+                .filter(|work| llm_activity::connection(work) == Some(closed.id))
+                .collect();
             let mut peer = Row::new(Some(key), 2);
+            peer.busy = !peer_open && !generating.is_empty();
             peer.spans = vec![
                 ("○ ".to_string(), Tone::Dim),
                 (closed.remote_addr.clone(), Tone::Dim),
@@ -995,6 +1028,7 @@ fn server_rows(
             rows.push(peer);
             if peer_open {
                 conversation(&mut rows, state, &node, key, 3, &mine);
+                generating_rows(&mut rows, key, 3, &generating);
             }
         }
         let loose: Vec<&AccessLogEntry> = row
@@ -1002,11 +1036,17 @@ fn server_rows(
             .iter()
             .filter(|r| r.connection_id.is_none())
             .collect();
-        if !loose.is_empty() {
+        let generating: Vec<_> = activity
+            .iter()
+            .copied()
+            .filter(|work| llm_activity::connection(work).is_none())
+            .collect();
+        if !loose.is_empty() || !generating.is_empty() {
             any = true;
             let node = NodeId::Peer(key, None);
             let bucket_open = state.is_open(&node);
             let mut bucket = Row::new(Some(key), 2);
+            bucket.busy = !bucket_open && !generating.is_empty();
             bucket.spans = vec![
                 ("· (connectionless)".to_string(), Tone::Dim),
                 (format!(" · {}", loose.len()), Tone::Dim),
@@ -1016,8 +1056,21 @@ fn server_rows(
             rows.push(bucket);
             if bucket_open {
                 conversation(&mut rows, state, &node, key, 3, &loose);
+                generating_rows(&mut rows, key, 3, &generating);
             }
         }
+        // A connection can disappear before its last model call completes.
+        let orphaned: Vec<_> = activity
+            .iter()
+            .copied()
+            .filter(|work| {
+                llm_activity::connection(work).is_some_and(|id| {
+                    !row.conns.iter().any(|c| c.id == id) && !row.recent.iter().any(|c| c.id == id)
+                })
+            })
+            .collect();
+        generating_rows(&mut rows, key, 2, &orphaned);
+        any |= !orphaned.is_empty();
         if !any {
             rows.push(Row::note(
                 key,
@@ -1057,6 +1110,7 @@ fn client_rows(
     state: &CardState,
     metrics: Option<&Throughput>,
     width: usize,
+    activity: &[&LlmActivity],
 ) -> Vec<Row> {
     let key = UiKey::Client(row.id);
     let instance = InstanceRef::Client(row);
@@ -1167,12 +1221,13 @@ fn client_rows(
     // Connections: every attempt, the conversation on it beneath (attributed
     // by time), and the way to add to it.
     let connection_count = row.history.len().max(usize::from(row.connection.is_some()));
-    let (group, open) = group_row(
+    let (mut group, open) = group_row(
         key,
         Group::Connections,
         state,
         format!("{connection_count} · {} messages", row.requests.len()),
     );
+    group.busy = !open && !activity.is_empty();
     rows.push(group);
     if open {
         let send_button = || match row.send_state {
@@ -1199,6 +1254,7 @@ fn client_rows(
                     let node = NodeId::Attempt(key, 0);
                     let conn_open = state.is_open(&node);
                     let mut r = Row::new(Some(key), 2);
+                    r.busy = !conn_open && !activity.is_empty();
                     r.spans = vec![
                         ("● ".to_string(), Tone::Good),
                         (c.remote_addr.clone(), Tone::Normal),
@@ -1218,12 +1274,18 @@ fn client_rows(
                     if conn_open {
                         let all: Vec<&AccessLogEntry> = row.requests.iter().collect();
                         conversation(&mut rows, state, &node, key, 3, &all);
+                        generating_rows(&mut rows, key, 3, activity);
                         let mut send = Row::new(Some(key), 3);
                         send.buttons.push(send_button());
                         rows.push(send);
                     }
                 }
-                None => rows.push(Row::note(key, 2, "(no connections yet)", Tone::Dim)),
+                None => {
+                    generating_rows(&mut rows, key, 2, activity);
+                    if activity.is_empty() {
+                        rows.push(Row::note(key, 2, "(no connections yet)", Tone::Dim));
+                    }
+                }
             }
         } else {
             let starts: Vec<u64> = row.history.iter().map(|a| a.started_unix_ms).collect();
@@ -1241,6 +1303,7 @@ fn client_rows(
                 let node = NodeId::Attempt(key, attempt.started_unix_ms);
                 let conn_open = state.is_open(&node);
                 let mut r = Row::new(Some(key), 2);
+                r.busy = index == last && !conn_open && !activity.is_empty();
                 r.spans = vec![
                     (
                         if live { "● " } else { "○ " }.to_string(),
@@ -1270,6 +1333,9 @@ fn client_rows(
                 rows.push(r);
                 if conn_open {
                     conversation(&mut rows, state, &node, key, 3, &mine);
+                    if index == last {
+                        generating_rows(&mut rows, key, 3, activity);
+                    }
                     if live {
                         let mut send = Row::new(Some(key), 3);
                         send.buttons.push(send_button());
@@ -1294,19 +1360,31 @@ pub fn rows(
 ) -> Vec<Row> {
     let mut rows = Vec::new();
     for server in &snapshot.servers {
+        let activity: Vec<_> = snapshot
+            .llm_activity
+            .iter()
+            .filter(|work| llm_activity::owner(work) == Some(UiKey::Server(server.id)))
+            .collect();
         rows.extend(server_rows(
             server,
             state,
             metrics.get(&UiKey::Server(server.id)),
             width,
+            &activity,
         ));
     }
     for client in &snapshot.clients {
+        let activity: Vec<_> = snapshot
+            .llm_activity
+            .iter()
+            .filter(|work| llm_activity::owner(work) == Some(UiKey::Client(client.id)))
+            .collect();
         rows.extend(client_rows(
             client,
             state,
             metrics.get(&UiKey::Client(client.id)),
             width,
+            &activity,
         ));
     }
     let mut new = Row::new(None, 0);

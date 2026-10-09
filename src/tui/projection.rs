@@ -106,6 +106,7 @@ pub struct RailSnapshot {
     pub clients: Vec<ClientRow>,
     pub pipe_count: usize,
     pub active_conversations: usize,
+    pub llm_activity: Vec<crate::state::llm_activity::LlmActivity>,
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
     pub total_llm_calls: u64,
@@ -137,7 +138,7 @@ pub async fn build_snapshot(state: &AppState) -> RailSnapshot {
     let servers = state.get_all_servers().await;
     let clients = state.get_all_clients().await;
     let tasks = state.get_all_tasks().await;
-    let conversations = state.get_active_conversations().await;
+    let llm_activity = state.llm_activity.snapshot();
     let (total_input_tokens, total_output_tokens, total_llm_calls) = state.get_llm_stats().await;
     let pipe_count = state.list_pipes().await.len();
 
@@ -290,7 +291,8 @@ pub async fn build_snapshot(state: &AppState) -> RailSnapshot {
         servers: server_rows,
         clients: client_rows,
         pipe_count,
-        active_conversations: conversations.len(),
+        active_conversations: llm_activity.len(),
+        llm_activity,
         total_input_tokens,
         total_output_tokens,
         total_llm_calls,
