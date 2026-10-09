@@ -186,6 +186,13 @@ Attributes are transmitted as typed values (String, Number, Binary).
 (optional, and only used together); when both are given they install a static credentials
 provider on the SQS client and the ambient chain is not consulted for them.
 
+**With a custom endpoint they are required** (`client::aws_support::refuse_ambient_credentials`,
+shared with `dynamodb`): the default chain would otherwise sign requests to a model-settable
+host with the operator's ambient identity — and on EC2 or under an assumed role the session
+token itself goes along in `x-amz-security-token`. The ambient chain is consulted only when
+the target is AWS proper (no `endpoint_url`, empty `remote_addr`). Any value works for a
+local emulator. `tests/client/sqs/ambient_credentials_test.rs`.
+
 They exist because of what happens otherwise. With them absent the SDK's default chain runs:
 
 1. Environment variables: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`

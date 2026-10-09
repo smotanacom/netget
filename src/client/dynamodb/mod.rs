@@ -91,6 +91,14 @@ impl DynamoDbClient {
         // targeting AWS proper is done by passing that URL explicitly.
         let endpoint_url = endpoint_url.or_else(|| endpoint_url_from_remote_addr(&remote_addr));
 
+        // A custom endpoint and no credentials would sign with the operator's ambient AWS
+        // identity against a host the model may have chosen; see `aws_support`.
+        crate::client::aws_support::refuse_ambient_credentials(
+            "DynamoDB",
+            endpoint_url.as_deref(),
+            access_key_id.is_some() && secret_access_key.is_some(),
+        )?;
+
         info!(
             "DynamoDB client {} initializing for region {}",
             client_id, region
