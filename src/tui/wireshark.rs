@@ -345,6 +345,7 @@ pub fn wire_for(protocol: &str) -> Wire {
         "lpd" => tcp("lpd"),
         // Wireshark's `9p` dissector decodes 9P2000 (and .u/.L) on TCP; checked with `tshark -d`.
         "9p" => tcp("9p"),
+        "clickhouse" => with_note(PLAIN_TCP, "Wireshark has no ClickHouse native-protocol dissector: packets start with a VarUInt type (client 0 hello, 1 query, 2 data, 4 ping; server 0 hello, 1 data, 2 exception, 5 end of stream) followed by length-prefixed strings and column blocks."),
         // Wireshark's `smpp` dissector decodes SMPP 3.4 PDUs, receipts and TLVs.
         "smpp" => tcp("smpp"),
         "zeromq" => with_note(PLAIN_TCP, "Wireshark ships no ZMTP dissector (the zeromq project publishes a Lua one): after a 64-byte greeting starting FF and ending the signature 7F, each frame is a flags byte (01 more, 02 long, 04 command) and a 1- or 8-byte size."),

@@ -426,6 +426,10 @@ impl ServerRegistry {
         ));
         #[cfg(feature = "smpp")]
         self.register(Arc::new(crate::server::smpp::actions::SmppProtocol::new()));
+        #[cfg(feature = "clickhouse")]
+        self.register(Arc::new(
+            crate::server::clickhouse::actions::ClickhouseProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1647,6 +1651,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("9P", "ninep"),
     ("ZeroMQ", "zeromq"),
     ("SMPP", "smpp"),
+    ("ClickHouse", "clickhouse"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),

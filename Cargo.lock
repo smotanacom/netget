@@ -8383,6 +8383,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "naive-cityhash"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fce7b49e1e6d8aa67232ef1c4c936c0af58756eb2db6f65c40bacb39035e7f42"
+
+[[package]]
 name = "nanorand"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8598,12 +8604,14 @@ dependencies = [
  "lettre",
  "libc",
  "llama-cpp-2",
+ "lz4_flex 0.11.5",
  "matchit 0.8.6",
  "md-5 0.10.6",
  "mdns-sd",
  "memmap2",
  "mongodb",
  "mysql_async",
+ "naive-cityhash",
  "native-tls",
  "nectar",
  "netgauze-bgp-pkt",

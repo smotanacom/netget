@@ -120,6 +120,7 @@ fn golden_duals_map() {
         "9P",
         "ZeroMQ",
         "SMPP",
+        "ClickHouse",
         "Nostr",
         "Vault",
         "Bolt",
