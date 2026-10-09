@@ -117,6 +117,7 @@ fn golden_duals_map() {
         "RCON",
         "A2S",
         "Minecraft",
+        "9P",
         "Nostr",
         "Vault",
         "Bolt",

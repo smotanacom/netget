@@ -1342,6 +1342,8 @@ pub mod lpd;
 pub mod lwm2m;
 #[cfg(feature = "minecraft")]
 pub mod minecraft;
+#[cfg(feature = "ninep")]
+pub mod ninep;
 #[cfg(feature = "rcon")]
 pub mod rcon;
 #[cfg(feature = "restconf")]
