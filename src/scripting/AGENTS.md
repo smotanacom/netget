@@ -30,6 +30,15 @@ it costs no model call, is reproducible, and returns in milliseconds.
 > This is a deliberate design choice for a local developer tool, not an
 > oversight — but it is a boundary that must be stated, not assumed. See
 > [Future work](#future-work) for sandboxing options if the threat model changes.
+>
+> **One thing a script does not get: this process's credentials.** Every interpreter
+> spawn goes through `process_io::ProcessGroup::configure`, which withholds
+> `NETGET_API_KEY`, `OPENAI_API_KEY`, `NETGET_MCP_TOKEN`, the AWS secret and session
+> token, and any variable whose name contains `SECRET`, `PASSWORD`, `API_KEY`,
+> `*_TOKEN`, `PRIVATE_KEY` or `CREDENTIAL` (`STRIPPED_ENV`, `SECRET_NAME_PARTS`).
+> Nothing a handler does needs the model backend's key, and a handler's stderr is
+> logged. `PATH`, `HOME`, `LANG`, `PYTHONPATH` and the rest pass through.
+> `tests/scripting_env_secrets_test.rs` runs a Python handler that tries to read them.
 
 ## Files
 
