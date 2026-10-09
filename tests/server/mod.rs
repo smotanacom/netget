@@ -485,6 +485,8 @@ pub mod epp;
 pub mod jmap;
 #[cfg(feature = "lmtp")]
 pub mod lmtp;
+#[cfg(feature = "lpd")]
+pub mod lpd;
 #[cfg(feature = "restconf")]
 pub mod restconf;
 #[cfg(feature = "webtransport")]

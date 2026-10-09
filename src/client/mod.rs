@@ -766,6 +766,8 @@ pub mod epp;
 pub mod jmap;
 #[cfg(feature = "lmtp")]
 pub mod lmtp;
+#[cfg(feature = "lpd")]
+pub mod lpd;
 #[cfg(feature = "lwm2m")]
 pub mod lwm2m;
 #[cfg(feature = "oci-registry")]
