@@ -361,7 +361,9 @@ mod usb_msc_e2e {
                         "port": 0,
                         "base_stack": "USB-MassStorage",
                         "instruction": "Allow writes",
-                        "startup_params": { "disk_image": image }
+                        // The image lives in a temp dir, so the server's image_dir is the
+                        // temp root: every disk_image must sit under it (image_dir_test.rs).
+                        "startup_params": { "disk_image": image, "image_dir": std::env::temp_dir() }
                     }]))
                     .expect_calls(1)
                     .and()
@@ -469,7 +471,9 @@ mod usb_msc_e2e {
                         "port": 0,
                         "base_stack": "USB-MassStorage",
                         "instruction": "Mount a disk image on attach",
-                        "startup_params": { "disk_image": scratch }
+                        // Both images live in temp dirs, so the server's image_dir is the
+                        // temp root: every disk_image must sit under it (image_dir_test.rs).
+                        "startup_params": { "disk_image": scratch, "image_dir": std::env::temp_dir() }
                     }]))
                     .expect_calls(1)
                     .and()
