@@ -72,6 +72,8 @@ pub(crate) fn actions_launch_stdout_owner(actions: &[serde_json::Value]) -> bool
 /// and only when the process happens to be chatty — is not.
 pub(crate) fn emit_status_line(line: &str, to_stderr: bool) {
     use std::io::Write;
+    // This is a real terminal more often than not, and the line may quote a peer.
+    let line = crate::utils::sanitize::multiline(line);
     if to_stderr {
         let mut sink = std::io::stderr().lock();
         let _ = writeln!(sink, "{line}");
