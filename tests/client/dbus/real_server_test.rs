@@ -32,6 +32,9 @@ const BUS_CONF: &str = r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus 
   <auth>EXTERNAL</auth>
   <auth>ANONYMOUS</auth>
   <allow_anonymous/>
+  <!-- Ubuntu's dbus-daemon mediates with AppArmor, and asking AppArmor about a TCP peer fails
+       ("Protocol not available"), which drops every TCP connection during authentication. -->
+  <apparmor mode="disabled"/>
   <policy context="default">
     <allow send_destination="*" eavesdrop="true"/>
     <allow eavesdrop="true"/>
