@@ -122,6 +122,7 @@ fn golden_duals_map() {
         "SMPP",
         "ClickHouse",
         "MessagePack-RPC",
+        "Zipkin",
         "Nostr",
         "Vault",
         "Bolt",
