@@ -141,3 +141,56 @@ fn credentials_that_are_not_called_one_are_redacted_and_their_describers_are_not
     assert_eq!(shown["access_key_id"], json!("AKIA-not-a-secret"));
     assert_eq!(shown["key_type"], json!("ed25519"));
 }
+
+/// A startup parameter's diagnostic applies the redactor's own key/value rule. A string-valued
+/// `auth` (`username:password`) is a credential by its value, not its name, so the name-only
+/// check let it into the "expected …, got …" error a mistyped `auth` produces.
+#[test]
+fn a_string_auth_in_a_startup_parameter_error_is_redacted() {
+    use netget::llm::actions::ParameterDefinition;
+    use netget::protocol::StartupParams;
+
+    let schema = vec![ParameterDefinition {
+        name: "auth".to_string(),
+        type_hint: "object".to_string(),
+        description: String::new(),
+        required: false,
+        example: json!(null),
+        default: None,
+    }];
+    let error = StartupParams::new_validated(json!({"auth": "alice:s3cret"}), schema)
+        .err()
+        .expect("a string where an object is declared is refused")
+        .to_string();
+    assert!(!error.contains("s3cret"), "{error}");
+    assert!(
+        error.contains("auth") && error.contains(REDACTED),
+        "the error still names the parameter: {error}"
+    );
+}
+
+/// The SNMP `community` and STOMP `passcode` ride on every event of their protocol, so they
+/// are masked where they are shown but do not make the event private: tracing and the
+/// access-log detail stay on for SNMP and STOMP.
+#[test]
+fn community_and_passcode_are_masked_when_shown_without_making_the_event_private() {
+    use netget::utils::redact::{contains_credentials, is_shown_redacted};
+    let snmp = json!({"community": "public", "oid": "1.3.6.1.2.1.1.1.0"});
+    let stomp = json!({"command": "CONNECT", "login": "guest", "passcode": "guest"});
+    assert!(
+        !contains_credentials(&snmp),
+        "an SNMP event must not be private"
+    );
+    assert!(
+        !contains_credentials(&stomp),
+        "a STOMP CONNECT must not be private"
+    );
+    assert!(is_shown_redacted("community", &json!("public")));
+    assert!(is_shown_redacted("passcode", &json!("guest")));
+    assert_eq!(redact_sensitive(&snmp)["community"], json!(REDACTED));
+    assert_eq!(redact_sensitive(&stomp)["passcode"], json!(REDACTED));
+    assert!(
+        contains_credentials(&json!({"password": "x"})),
+        "a real credential still makes the event private"
+    );
+}

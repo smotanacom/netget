@@ -33,14 +33,20 @@ pub const SENSITIVE_KEY_PARTS: &[&str] = &[
     "authtoken",
     "authorization",
     "cookie",
-    // Credentials that are not called one: STOMP's `passcode`, the SNMP `community` string
-    // (the whole of v1/v2c authentication), and the HTTP proxy client's `proxy_auth`
-    // (`user:password`). Each was printed verbatim in the `open_client` summary and the
-    // executor's DEBUG line until October 2026.
-    "passcode",
-    "community",
+    // A credential that is not called one: the HTTP proxy client's `proxy_auth`
+    // (`user:password`).
     "proxy_auth",
 ];
+
+/// Substrings of a key name whose value is masked wherever it is displayed, without making
+/// the request that carries it private.
+///
+/// STOMP's `passcode` and the SNMP `community` string are credentials, but every SNMP event
+/// and every STOMP CONNECT carries one, so treating them as [`SENSITIVE_KEY_PARTS`] would turn
+/// off tracing and the access-log detail for the whole of both protocols. They are hidden
+/// from the `open_client` summary, the executor's DEBUG line and startup-parameter errors
+/// ([`redact_sensitive`], [`is_shown_redacted`]) and nothing else.
+pub const DISPLAY_ONLY_KEY_PARTS: &[&str] = &["passcode", "community"];
 
 /// What a redacted value is shown as.
 pub const REDACTED: &str = "<redacted>";
@@ -74,6 +80,19 @@ pub fn is_sensitive_entry(key: &str, value: &Value) -> bool {
     }
     let key = key.to_ascii_lowercase();
     key == "auth" && value.is_string()
+}
+
+/// Whether a key/value pair is shown as [`REDACTED`]: every [`is_sensitive_entry`], plus the
+/// [`DISPLAY_ONLY_KEY_PARTS`].
+pub fn is_shown_redacted(key: &str, value: &Value) -> bool {
+    if value.is_null() {
+        return false;
+    }
+    if is_sensitive_entry(key, value) {
+        return true;
+    }
+    let key = key.to_ascii_lowercase();
+    DISPLAY_ONLY_KEY_PARTS.iter().any(|part| key.contains(part))
 }
 
 /// Whether this request offers an action that can carry credentials. Such model
@@ -163,7 +182,7 @@ fn redact_at(value: &Value, depth: usize) -> Value {
         Value::Object(map) => Value::Object(
             map.iter()
                 .map(|(k, v)| {
-                    let shown = if is_sensitive_entry(k, v) {
+                    let shown = if is_shown_redacted(k, v) {
                         Value::String(REDACTED.to_string())
                     } else {
                         redact_at(v, depth + 1)
