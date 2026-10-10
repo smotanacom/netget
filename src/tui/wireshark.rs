@@ -24,6 +24,7 @@
 //! capture can be running when the first packet arrives — the whole point of
 //! showing it at creation time.
 
+use crate::utils::sanitize::has_controls;
 use std::fmt::Write as _;
 
 /// What the protocol rides on, which decides both filters.
@@ -981,17 +982,20 @@ pub fn shell_word(value: &str) -> String {
         return value.to_string();
     }
     if cfg!(windows) {
-        if value
-            .chars()
-            .any(|c| matches!(c, '%' | '^' | '&' | '|' | '<' | '>' | '"') || c.is_control())
+        if has_controls(value)
+            || value
+                .chars()
+                .any(|c| matches!(c, '%' | '^' | '&' | '|' | '<' | '>' | '"'))
         {
             return "<value-not-representable-for-cmd.exe>".to_string();
         }
         return format!("\"{value}\"");
     }
     // Control characters cannot be made safe inside a terminal paste; a newline would end
-    // the command and run what follows.
-    if value.chars().any(char::is_control) {
+    // the command and run what follows. This refuses the value rather than rewriting it
+    // (`sanitize::has_controls` is the validator form), so the operator sees that the
+    // instance's parameter is unusable instead of a quietly different command.
+    if has_controls(value) {
         return "<value-contains-control-characters>".to_string();
     }
     format!("'{}'", value.replace('\'', "'\\''"))
