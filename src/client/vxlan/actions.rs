@@ -149,7 +149,12 @@ pub static ECHO_REPLY_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             p("identifier", "number", "The echo identifier", true),
             p("sequence", "number", "The echo sequence number", true),
             p("data", "string", "The echoed payload", true),
-            p("encoding", "string", "utf8 or hex, as data is written", true),
+            p(
+                "encoding",
+                "string",
+                "utf8 or hex, as data is written",
+                true,
+            ),
             p(
                 "rtt_ms",
                 "number",
@@ -169,7 +174,12 @@ pub static UDP_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             p("src_port", "number", "The sender's port", true),
             p("dst_port", "number", "The port it was sent to", true),
             p("data", "string", "The datagram's payload", true),
-            p("encoding", "string", "utf8 or hex, as data is written", true),
+            p(
+                "encoding",
+                "string",
+                "utf8 or hex, as data is written",
+                true,
+            ),
         ],
     )
 });

@@ -154,7 +154,12 @@ pub static ECHO_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             "The echo payload (text, or hex per encoding)",
             true,
         ),
-        p("encoding", "string", "utf8 or hex, as data is written", true),
+        p(
+            "encoding",
+            "string",
+            "utf8 or hex, as data is written",
+            true,
+        ),
     ]);
     EventType::new(
         "vxlan_icmp_echo_request",
@@ -178,7 +183,12 @@ pub static UDP_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             "The payload (text, or hex per encoding)",
             true,
         ),
-        p("encoding", "string", "utf8 or hex, as data is written", true),
+        p(
+            "encoding",
+            "string",
+            "utf8 or hex, as data is written",
+            true,
+        ),
     ]);
     EventType::new(
         "vxlan_udp_datagram",
