@@ -87,6 +87,9 @@ const DOCUMENTED_SILENT: &[&str] = &[
     "igmp",
     // RFC 7011 UDP collection has no acknowledgement or negative response.
     "ipfix",
+    // A group read answered by nobody is silence on a real bus; an invented value would be a
+    // device that does not exist.
+    "knx",
     // sFlow v5 UDP collection has no application reply or negative acknowledgement.
     "sflow",
     // RFC 3954 UDP flow collection has no acknowledgement or refusal message.

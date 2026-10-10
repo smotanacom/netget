@@ -618,6 +618,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::capnp_rpc::actions::CapnpRpcClientProtocol::new(),
         ));
+        #[cfg(feature = "knx")]
+        self.register(Arc::new(
+            crate::client::knx::actions::KnxClientProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1157,6 +1161,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("MessagePack-RPC", "msgpack-rpc"),
     ("Zipkin", "zipkin"),
     ("Cap'n Proto RPC", "capnp-rpc"),
+    ("KNX/IP", "knx"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),

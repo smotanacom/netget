@@ -1338,6 +1338,8 @@ pub mod epp;
 pub mod inetd;
 #[cfg(feature = "jmap")]
 pub mod jmap;
+#[cfg(feature = "knx")]
+pub mod knx;
 #[cfg(feature = "lmtp")]
 pub mod lmtp;
 #[cfg(feature = "lpd")]
