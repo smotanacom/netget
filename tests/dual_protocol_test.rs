@@ -198,6 +198,7 @@ fn normalized_duals_map() {
     assert_eq!(client_protocol_for_server("Modbus"), Some("Modbus"));
     assert_eq!(client_protocol_for_server("CoAP"), Some("CoAP"));
     assert_eq!(client_protocol_for_server("Memcached"), Some("Memcached"));
+    assert_eq!(client_protocol_for_server("RTP"), Some("RTP"));
 }
 
 /// Server-only protocols must return None — a false positive here would make
@@ -214,7 +215,6 @@ fn server_only_protocols_have_no_dual() {
         "OpenVPN",
         "RTSP",
         "HLS",
-        "RTP",
         // Profile servers deliberately not paired with the generic base clients:
         "USB-Keyboard",
         "BLUETOOTH_BLE_KEYBOARD",
