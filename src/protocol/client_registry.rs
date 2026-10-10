@@ -678,6 +678,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::activitypub::actions::ActivityPubClientProtocol::new(),
         ));
+        #[cfg(feature = "stratum")]
+        self.register(Arc::new(
+            crate::client::stratum::actions::StratumClientProtocol::new(),
+        ));
         #[cfg(feature = "wsdiscovery")]
         self.register(Arc::new(
             crate::client::wsdiscovery::actions::WsDiscoveryClientProtocol::new(),
@@ -1240,6 +1244,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("SunRPC", "sunrpc"),
     ("Guacamole", "guacamole"),
     ("ActivityPub", "activitypub"),
+    ("Stratum", "stratum"),
     ("WS-Discovery", "wsdiscovery"),
     ("X11", "x11"),
     ("HTTP", "http"),

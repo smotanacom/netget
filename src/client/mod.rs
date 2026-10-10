@@ -824,6 +824,8 @@ pub mod rsync;
 pub mod smpp;
 #[cfg(feature = "sunrpc")]
 pub mod sunrpc;
+#[cfg(feature = "stratum")]
+pub mod stratum;
 #[cfg(feature = "vxlan")]
 pub mod vxlan;
 #[cfg(feature = "webtransport")]

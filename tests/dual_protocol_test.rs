@@ -139,6 +139,7 @@ fn golden_duals_map() {
         "SunRPC",
         "Guacamole",
         "ActivityPub",
+        "Stratum",
         "WS-Discovery",
         "Nostr",
         "Vault",
