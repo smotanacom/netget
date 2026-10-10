@@ -345,6 +345,9 @@ pub fn wire_for(protocol: &str) -> Wire {
         "lpd" => tcp("lpd"),
         // Wireshark's `9p` dissector decodes 9P2000 (and .u/.L) on TCP; checked with `tshark -d`.
         "9p" => tcp("9p"),
+        // Wireshark's `msgpack` dissector decodes the values; the RPC envelope is the array
+        // [type, msgid, method, params] it shows.
+        "msgpack-rpc" => tcp("msgpack"),
         "clickhouse" => with_note(PLAIN_TCP, "Wireshark has no ClickHouse native-protocol dissector: packets start with a VarUInt type (client 0 hello, 1 query, 2 data, 4 ping; server 0 hello, 1 data, 2 exception, 5 end of stream) followed by length-prefixed strings and column blocks."),
         // Wireshark's `smpp` dissector decodes SMPP 3.4 PDUs, receipts and TLVs.
         "smpp" => tcp("smpp"),

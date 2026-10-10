@@ -430,6 +430,10 @@ impl ServerRegistry {
         self.register(Arc::new(
             crate::server::clickhouse::actions::ClickhouseProtocol::new(),
         ));
+        #[cfg(feature = "msgpack-rpc")]
+        self.register(Arc::new(
+            crate::server::msgpack_rpc::actions::MsgpackRpcProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1652,6 +1656,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("ZeroMQ", "zeromq"),
     ("SMPP", "smpp"),
     ("ClickHouse", "clickhouse"),
+    ("MessagePack-RPC", "msgpack-rpc"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),

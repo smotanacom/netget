@@ -121,6 +121,7 @@ fn golden_duals_map() {
         "ZeroMQ",
         "SMPP",
         "ClickHouse",
+        "MessagePack-RPC",
         "Nostr",
         "Vault",
         "Bolt",

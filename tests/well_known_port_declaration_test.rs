@@ -43,6 +43,10 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
         "raw UDP carries whatever the operator says it does; there is no protocol to register",
     ),
     (
+        "msgpack_rpc",
+        "MessagePack-RPC registers no port: each application picks its own (Neovim listens wherever --listen says)",
+    ),
+    (
         "zeromq",
         "ZeroMQ registers no port: every endpoint is chosen by its application (the guide's examples use 5555)",
     ),

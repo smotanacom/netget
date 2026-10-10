@@ -606,6 +606,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::clickhouse::actions::ClickhouseClientProtocol::new(),
         ));
+        #[cfg(feature = "msgpack-rpc")]
+        self.register(Arc::new(
+            crate::client::msgpack_rpc::actions::MsgpackRpcClientProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1142,6 +1146,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("ZeroMQ", "zeromq"),
     ("SMPP", "smpp"),
     ("ClickHouse", "clickhouse"),
+    ("MessagePack-RPC", "msgpack-rpc"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),
