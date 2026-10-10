@@ -141,6 +141,7 @@ fn golden_duals_map() {
         "ActivityPub",
         "Stratum",
         "Apache Pulsar",
+        "TR-069 (CWMP)",
         "WS-Discovery",
         "Nostr",
         "Vault",

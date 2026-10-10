@@ -686,6 +686,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::pulsar::actions::PulsarClientProtocol::new(),
         ));
+        #[cfg(feature = "tr069")]
+        self.register(Arc::new(
+            crate::client::tr069::actions::Tr069ClientProtocol::new(),
+        ));
         #[cfg(feature = "wsdiscovery")]
         self.register(Arc::new(
             crate::client::wsdiscovery::actions::WsDiscoveryClientProtocol::new(),
@@ -1250,6 +1254,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("ActivityPub", "activitypub"),
     ("Stratum", "stratum"),
     ("Apache Pulsar", "pulsar"),
+    ("TR-069 (CWMP)", "tr069"),
     ("WS-Discovery", "wsdiscovery"),
     ("X11", "x11"),
     ("HTTP", "http"),

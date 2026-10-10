@@ -828,6 +828,8 @@ pub mod smpp;
 pub mod sunrpc;
 #[cfg(feature = "stratum")]
 pub mod stratum;
+#[cfg(feature = "tr069")]
+pub mod tr069;
 #[cfg(feature = "vxlan")]
 pub mod vxlan;
 #[cfg(feature = "webtransport")]
