@@ -128,6 +128,7 @@ fn golden_duals_map() {
         "Consul",
         "Milter",
         "Anthropic",
+        "RadSec",
         "Nostr",
         "Vault",
         "Bolt",

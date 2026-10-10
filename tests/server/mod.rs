@@ -509,6 +509,8 @@ pub mod minecraft;
 pub mod msgpack_rpc;
 #[cfg(feature = "ninep")]
 pub mod ninep;
+#[cfg(feature = "radsec")]
+pub mod radsec;
 #[cfg(feature = "rcon")]
 pub mod rcon;
 #[cfg(feature = "restconf")]

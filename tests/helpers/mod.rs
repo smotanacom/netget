@@ -176,3 +176,5 @@ pub mod ics;
     feature = "nntp"
 ))]
 pub mod p2p;
+#[cfg(feature = "radsec")]
+pub mod radsec_pki;

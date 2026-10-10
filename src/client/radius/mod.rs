@@ -97,6 +97,54 @@ struct InFlight {
     deadline: Instant,
 }
 
+/// Where packets go: a UDP socket (RADIUS) or a framed stream (RadSec, RFC 6614, which carries
+/// the same packets over TLS). On a stream a request is never retransmitted — the transport is
+/// reliable — but it waits the same total time before it is reported unanswered.
+pub enum Link {
+    Udp(UdpSocket),
+    Stream {
+        writer: Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
+        /// Whole packets, read by a separate registered task (see [`read_frames`]).
+        frames: mpsc::Receiver<std::io::Result<Vec<u8>>>,
+        peer: SocketAddr,
+    },
+}
+
+impl Link {
+    fn is_udp(&self) -> bool {
+        matches!(self, Link::Udp(_))
+    }
+
+    async fn send(&mut self, packet: &[u8], target: SocketAddr) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        match self {
+            Link::Udp(socket) => socket.send_to(packet, target).await.map(|_| ()),
+            Link::Stream { writer, .. } => {
+                writer.write_all(packet).await?;
+                writer.flush().await
+            }
+        }
+    }
+
+    async fn recv(&mut self, buf: &mut [u8]) -> std::io::Result<(Vec<u8>, SocketAddr)> {
+        match self {
+            Link::Udp(socket) => {
+                let (n, from) = socket.recv_from(buf).await?;
+                Ok((buf[..n].to_vec(), from))
+            }
+            Link::Stream { frames, peer, .. } => match frames.recv().await {
+                Some(frame) => frame.map(|f| (f, *peer)),
+                None => Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "the connection closed",
+                )),
+            },
+        }
+    }
+}
+
+pub use crate::server::radius::packet::read_frames;
+
 pub struct RadiusClient;
 
 impl RadiusClient {
@@ -134,6 +182,33 @@ impl RadiusClient {
         })
         .await?;
         let local_addr = socket.local_addr()?;
+        Self::run(
+            Link::Udp(socket),
+            auth,
+            acct,
+            settings,
+            llm_client,
+            app_state,
+            status_tx,
+            client_id,
+        )
+        .await;
+        Ok(local_addr)
+    }
+
+    /// Start the client's three tasks over `link`. `auth` and `acct` are where each kind of
+    /// request goes; on a stream both are its peer.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run(
+        link: Link,
+        auth: SocketAddr,
+        acct: SocketAddr,
+        settings: Settings,
+        llm_client: OllamaClient,
+        app_state: Arc<AppState>,
+        status_tx: mpsc::UnboundedSender<String>,
+        client_id: ClientId,
+    ) {
         info!("RADIUS client {client_id} ready: auth {auth}, accounting {acct}");
         app_state
             .update_client_status(client_id, ClientStatus::Connected)
@@ -183,7 +258,7 @@ impl RadiusClient {
                 client_id,
                 run_transport(
                     Transport {
-                        socket,
+                        link,
                         settings,
                         auth,
                         acct,
@@ -200,7 +275,6 @@ impl RadiusClient {
                 ),
             )
             .await;
-        Ok(local_addr)
     }
 }
 
@@ -259,7 +333,7 @@ fn reply_message(packet: &RadiusPacket) -> Option<String> {
 }
 
 struct Transport {
-    socket: UdpSocket,
+    link: Link,
     settings: Settings,
     auth: SocketAddr,
     acct: SocketAddr,
@@ -347,8 +421,8 @@ impl Transport {
                 (CODE_STATUS_SERVER, target, packet, ra)
             }
         };
-        self.socket
-            .send_to(&packet, target)
+        self.link
+            .send(&packet, target)
             .await
             .map_err(|e| format!("send failed: {e}"))?;
         debug!(
@@ -388,8 +462,12 @@ impl Transport {
                 p.retransmissions += 1;
                 p.deadline = now + self.settings.timeout;
                 // RFC 2865 §2.5: a retransmission is the identical packet, same identifier and
-                // authenticator.
-                let _ = self.socket.send_to(&p.packet, p.target).await;
+                // authenticator. On a stream nothing is resent (RFC 6614 §2.5): the request
+                // just waits the same total time.
+                if self.link.is_udp() {
+                    let (packet, target) = (p.packet.clone(), p.target);
+                    let _ = self.link.send(&packet, target).await;
+                }
                 continue;
             }
             let p = self.pending.remove(&id).expect("present above");
@@ -526,13 +604,12 @@ async fn run_transport(
     let status = loop {
         let deadline = t.pending.values().map(|p| p.deadline).min();
         tokio::select! {
-            received = t.socket.recv_from(&mut buf) => match received {
-                Ok((n, from)) => {
-                    let datagram = buf[..n].to_vec();
+            received = t.link.recv(&mut buf) => match received {
+                Ok((datagram, from)) => {
                     t.handle_datagram(&datagram, from);
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused
-                    || e.kind() == std::io::ErrorKind::ConnectionReset => {
+                Err(e) if t.link.is_udp() && (e.kind() == std::io::ErrorKind::ConnectionRefused
+                    || e.kind() == std::io::ErrorKind::ConnectionReset) => {
                     debug!("RADIUS client {client_id}: {e}");
                 }
                 Err(e) => {
