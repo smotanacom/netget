@@ -141,6 +141,7 @@ portable-base = [
     "milter",
     "anthropic",
     "radsec",
+    "x11",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -384,6 +385,7 @@ consul = ["urlencoding"] # Consul agent HTTP API server and client
 milter = [] # Mail filter (milter) protocol server and MTA-side client
 anthropic = [] # Anthropic Messages API server and client
 radsec = ["radius", "tls"] # RADIUS over TLS (RFC 6614) server and client
+x11 = [] # X11 client (X Window System core protocol): windows, properties and events against an X server
 jmap = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"] # JMAP (RFC 8620/8621) server and client
 webtransport = ["dep:rustls", "dep:wtransport", "dep:wtransport-proto", "dep:sha2"] # WebTransport over HTTP/3 (draft-02) server and client
 graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
@@ -707,6 +709,7 @@ dist-windows = [
     "milter",
     "anthropic",
     "radsec",
+    "x11",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -928,6 +931,7 @@ all-protocols = [
     "milter",
     "anthropic",
     "radsec",
+    "x11",
     "sflow",
     "prometheus-remote-write",
     "ssh",
