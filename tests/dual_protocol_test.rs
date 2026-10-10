@@ -135,6 +135,7 @@ fn golden_duals_map() {
         "rsync",
         "PFCP",
         "Matrix",
+        "SunRPC",
         "WS-Discovery",
         "Nostr",
         "Vault",

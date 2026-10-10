@@ -451,6 +451,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         // `nbss`; `smb2` has no `tcp.port` entry of its own, so it cannot be the decode-as.
         "smb" => with_display(tcp("nbss"), "smb2 || smb"),
         "nfs" => with_display(tcp("rpc"), "nfs"),
+        // The portmapper is ONC RPC on TCP and UDP; rpc decodes it and portmap names its calls.
+        "sunrpc" => with_display(either("rpc"), "portmap"),
         "modbus" => tcp("mbtcp"),
         // IPP is an HTTP payload; Wireshark reaches it through the http
         // dissector, which picks ipp by media type.
