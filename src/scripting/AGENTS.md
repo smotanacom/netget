@@ -31,14 +31,27 @@ it costs no model call, is reproducible, and returns in milliseconds.
 > oversight — but it is a boundary that must be stated, not assumed. See
 > [Future work](#future-work) for sandboxing options if the threat model changes.
 >
-> **One thing a script does not get: this process's credentials.** Every interpreter
-> spawn goes through `process_io::ProcessGroup::configure`, which withholds
-> `NETGET_API_KEY`, `OPENAI_API_KEY`, `NETGET_MCP_TOKEN`, the AWS secret and session
-> token, and any variable whose name contains `SECRET`, `PASSWORD`, `API_KEY`,
-> `*_TOKEN`, `PRIVATE_KEY` or `CREDENTIAL` (`STRIPPED_ENV`, `SECRET_NAME_PARTS`).
+> **What a script's environment does not carry: this process's credentials.** Every
+> interpreter spawn goes through `process_io::ProcessGroup::configure`, which removes from
+> the child's environment, comparing names case-insensitively:
+>
+> - the exact names in `STRIPPED_ENV`: `NETGET_API_KEY`, `OPENAI_API_KEY`,
+>   `ANTHROPIC_API_KEY`, `NETGET_MCP_TOKEN`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
+>   `GITHUB_TOKEN`, `GH_TOKEN`, `NPM_TOKEN`;
+> - any name containing one of `SECRET_NAME_PARTS`: `SECRET`, `PASSWORD`, `PASSWD`,
+>   `API_KEY`, `APIKEY`, `ACCESS_TOKEN`, `AUTH_TOKEN`, `PRIVATE_KEY`, `CREDENTIAL`;
+> - any name ending with one of `SECRET_NAME_SUFFIXES`: `_TOKEN`, `_SECRET`, `_PASSWORD`,
+>   `_API_KEY`, `_ACCESS_KEY` (so `HF_TOKEN` and `MINIO_ACCESS_KEY` go too).
+>
 > Nothing a handler does needs the model backend's key, and a handler's stderr is
 > logged. `PATH`, `HOME`, `LANG`, `PYTHONPATH` and the rest pass through.
 > `tests/scripting_env_secrets_test.rs` runs a Python handler that tries to read them.
+>
+> **This is defence in depth, not a boundary.** A script runs as the same user as NetGet:
+> it can read `~/.aws/credentials`, `~/.netrc` or any other file the operator can, and on
+> Linux the parent's own environment through `/proc/<ppid>/environ`. Withholding the
+> variables keeps a secret out of the place a careless handler would print it from; it
+> does not keep a deliberate one from finding it.
 
 ## Files
 

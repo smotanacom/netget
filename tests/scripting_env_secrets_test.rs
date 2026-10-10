@@ -10,7 +10,7 @@
 //! Needs `python3`, which the scripting suite already requires.
 
 use netget::scripting::executor::execute_script;
-use netget::scripting::process_io::{env_is_stripped, STRIPPED_ENV};
+use netget::scripting::process_io::{env_is_stripped, SECRET_NAME_SUFFIXES, STRIPPED_ENV};
 use netget::scripting::types::{
     ScriptConfig, ScriptInput, ScriptLanguage, ScriptSource, ServerContext,
 };
@@ -31,6 +31,23 @@ fn credential_shaped_names_are_withheld_and_ordinary_ones_are_not() {
     ] {
         assert!(env_is_stripped(name), "{name}");
     }
+    // A name ending in one of the credential suffixes, which no substring entry covers.
+    for name in [
+        "HF_TOKEN",
+        "hf_token",
+        "CI_JOB_TOKEN",
+        "SLACK_BOT_TOKEN",
+        "MINIO_ACCESS_KEY",
+        "Stripe_Secret",
+    ] {
+        assert!(
+            SECRET_NAME_SUFFIXES
+                .iter()
+                .any(|suffix| name.to_ascii_uppercase().ends_with(suffix)),
+            "{name} is a suffix case"
+        );
+        assert!(env_is_stripped(name), "{name}");
+    }
     for name in [
         "PATH",
         "HOME",
@@ -40,6 +57,8 @@ fn credential_shaped_names_are_withheld_and_ordinary_ones_are_not() {
         "TERM",
         "USER",
         "NETGET_CLIENT_LLM_CALL_LIMIT",
+        "TOKENIZERS_PARALLELISM",
+        "AWS_ACCESS_KEY_ID",
     ] {
         assert!(!env_is_stripped(name), "{name} must pass through");
     }
@@ -52,6 +71,7 @@ fn a_python_handler_cannot_read_the_api_key_but_sees_an_ordinary_variable() {
     std::env::set_var("NETGET_API_KEY", "sk-should-never-reach-a-script");
     std::env::set_var("NETGET_ENV_TEST_PLAIN", "visible");
     std::env::set_var("NETGET_ENV_TEST_DB_PASSWORD", "hidden");
+    std::env::set_var("NETGET_ENV_TEST_HF_TOKEN", "hf_should-never-reach-a-script");
 
     let code = r#"
 import json, os, sys
@@ -63,6 +83,7 @@ print(json.dumps([{
         "openai": os.environ.get("OPENAI_API_KEY"),
         "plain": os.environ.get("NETGET_ENV_TEST_PLAIN"),
         "shaped": os.environ.get("NETGET_ENV_TEST_DB_PASSWORD"),
+        "token": os.environ.get("NETGET_ENV_TEST_HF_TOKEN"),
         "path": os.environ.get("PATH"),
     })
 }]))
@@ -101,6 +122,10 @@ print(json.dumps([{
     assert!(
         seen["shaped"].is_null(),
         "a *_PASSWORD variable reached the script: {seen}"
+    );
+    assert!(
+        seen["token"].is_null(),
+        "a *_TOKEN variable reached the script: {seen}"
     );
     assert_eq!(
         seen["plain"], "visible",
