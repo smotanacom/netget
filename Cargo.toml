@@ -152,6 +152,7 @@ portable-base = [
     "guacamole",
     "activitypub",
     "stratum",
+    "pulsar",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -408,6 +409,7 @@ sunrpc = [] # ONC RPC portmapper/rpcbind (PMAP v2, RPCBIND v3-v4) server and cli
 guacamole = ["dep:font8x8"] # Apache Guacamole protocol server (in guacd's place) and client of guacd, hand-rolled
 activitypub = ["dep:rsa", "dep:sha2", "urlencoding"] # ActivityPub instance and actor (WebFinger, HTTP Signatures rsa-sha256, signed delivery), hyper + reqwest
 stratum = ["dep:sha2"]  # Stratum V1 mining pool and miner (LLM-controlled; shares verified in Rust)
+pulsar = ["dep:prost"]  # Apache Pulsar binary protocol broker and client (LLM-controlled)
 wsdiscovery = ["quick-xml"] # WS-Discovery (SOAP-over-UDP 3702) target service and discovery client, 2005/04 and 2009/01
 x11 = [] # X11 client (X Window System core protocol): windows, properties and events against an X server
 jmap = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"] # JMAP (RFC 8620/8621) server and client
@@ -744,6 +746,7 @@ dist-windows = [
     "guacamole",
     "activitypub",
     "stratum",
+    "pulsar",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -978,6 +981,7 @@ all-protocols = [
     "guacamole",
     "activitypub",
     "stratum",
+    "pulsar",
     "wsdiscovery",
     "x11",
     "sflow",

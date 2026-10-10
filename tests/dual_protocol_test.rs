@@ -140,6 +140,7 @@ fn golden_duals_map() {
         "Guacamole",
         "ActivityPub",
         "Stratum",
+        "Apache Pulsar",
         "WS-Discovery",
         "Nostr",
         "Vault",
