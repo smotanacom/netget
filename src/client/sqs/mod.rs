@@ -106,6 +106,14 @@ impl SqsClient {
             .transpose()?
             .flatten();
 
+        // A custom endpoint and no credentials would sign with the operator's ambient AWS
+        // identity against a host the model may have chosen; see `aws_support`.
+        crate::client::aws_support::refuse_ambient_credentials(
+            "SQS",
+            endpoint_url.as_deref(),
+            access_key_id.is_some() && secret_access_key.is_some(),
+        )?;
+
         info!(
             "SQS client {} connecting to queue: {}",
             client_id, queue_url
