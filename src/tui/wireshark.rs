@@ -478,6 +478,7 @@ pub fn wire_for(protocol: &str) -> Wire {
         "coap" => udp("coap"),
         "rip" => udp("rip"),
         "vxlan" => udp("vxlan"),
+        "pfcp" => udp("pfcp"),
         "geneve" => udp("geneve"),
         "bfd" => udp("bfd"),
         "sip" => either("sip"),
