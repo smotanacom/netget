@@ -481,6 +481,8 @@ pub mod lwm2m;
 
 #[cfg(feature = "a2s")]
 pub mod a2s;
+#[cfg(feature = "capnp-rpc")]
+pub mod capnp_rpc;
 #[cfg(feature = "clickhouse")]
 pub mod clickhouse;
 #[cfg(feature = "epp")]

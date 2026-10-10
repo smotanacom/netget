@@ -438,6 +438,10 @@ impl ServerRegistry {
         self.register(Arc::new(
             crate::server::zipkin::actions::ZipkinProtocol::new(),
         ));
+        #[cfg(feature = "capnp-rpc")]
+        self.register(Arc::new(
+            crate::server::capnp_rpc::actions::CapnpRpcProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1662,6 +1666,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("ClickHouse", "clickhouse"),
     ("MessagePack-RPC", "msgpack-rpc"),
     ("Zipkin", "zipkin"),
+    ("Cap'n Proto RPC", "capnp-rpc"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),
