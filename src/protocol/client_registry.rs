@@ -638,6 +638,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::radsec::actions::RadsecClientProtocol::new(),
         ));
+        #[cfg(feature = "dbus")]
+        self.register(Arc::new(
+            crate::client::dbus::actions::DbusClientProtocol::new(),
+        ));
         #[cfg(feature = "x11")]
         self.register(Arc::new(
             crate::client::x11::actions::X11ClientProtocol::new(),
@@ -1186,6 +1190,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("Milter", "milter"),
     ("Anthropic", "anthropic"),
     ("RadSec", "radsec"),
+    ("D-Bus", "dbus"),
     ("X11", "x11"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),

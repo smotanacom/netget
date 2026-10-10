@@ -770,6 +770,8 @@ pub mod capnp_rpc;
 pub mod clickhouse;
 #[cfg(feature = "consul")]
 pub mod consul;
+#[cfg(feature = "dbus")]
+pub mod dbus;
 #[cfg(feature = "epp")]
 pub mod epp;
 #[cfg(feature = "inetd")]
