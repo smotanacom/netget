@@ -355,6 +355,29 @@ impl StartupParams {
         }
     }
 
+    /// Get an optional number parameter (integer or fraction)
+    ///
+    /// # Errors
+    /// - If the parameter was not declared in `get_startup_parameters()`
+    /// - If the parameter exists but is not a number
+    pub fn get_optional_f64(&self, key: &str) -> StartupParamResult<Option<f64>> {
+        self.validate_key(key)?;
+        match self.params.get(key) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(v) => match v.as_f64() {
+                Some(n) => Ok(Some(n)),
+                None => Err(self.invalid(
+                    key,
+                    format!(
+                        "Optional number parameter '{}' exists but is not a number. Value: {}",
+                        key,
+                        diagnostic_value(key, v)
+                    ),
+                )),
+            },
+        }
+    }
+
     /// Get a required unsigned integer parameter
     ///
     /// # Errors

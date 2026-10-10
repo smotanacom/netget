@@ -1376,6 +1376,8 @@ pub mod restconf;
 pub mod rsync;
 #[cfg(feature = "smpp")]
 pub mod smpp;
+#[cfg(feature = "stratum")]
+pub mod stratum;
 #[cfg(feature = "vxlan")]
 pub mod vxlan;
 #[cfg(feature = "webtransport")]
