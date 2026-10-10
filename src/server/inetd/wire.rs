@@ -124,9 +124,8 @@ pub fn describe_time(bytes: [u8; 4]) -> Value {
 pub fn encode(bytes: &[u8]) -> (String, &'static str) {
     match std::str::from_utf8(bytes) {
         Ok(text)
-            if !text
-                .chars()
-                .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t')) =>
+            // Text when its only control characters are line breaks and tabs.
+            if !crate::utils::sanitize::has_controls(&text.replace(['\n', '\r', '\t'], "")) =>
         {
             (text.to_string(), "utf8")
         }
@@ -145,8 +144,8 @@ pub fn decode(data: &str, encoding: Option<&str>) -> Result<Vec<u8>> {
 
 /// Handler text for a reply line: no control characters, at most `limit` characters.
 pub fn line(text: &str, limit: usize) -> String {
-    text.chars()
-        .filter(|c| !c.is_control())
+    crate::utils::sanitize::strip_controls(text)
+        .chars()
         .take(limit)
         .collect()
 }

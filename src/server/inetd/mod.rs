@@ -302,8 +302,11 @@ fn single_reply(service: Service, answer: &Value) -> Result<Vec<u8>> {
             let quote: String = answer["quote"]
                 .as_str()
                 .unwrap_or_default()
+                .lines()
+                .map(crate::utils::sanitize::strip_controls)
+                .collect::<Vec<_>>()
+                .join("\n")
                 .chars()
-                .filter(|c| *c == '\n' || !c.is_control())
                 .take(wire::MAX_QUOTE_CHARS)
                 .collect();
             format!("{}\r\n", quote.replace('\n', "\r\n")).into_bytes()
