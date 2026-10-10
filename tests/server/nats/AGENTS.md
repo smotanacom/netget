@@ -128,3 +128,14 @@ happened here.
 Multiple concurrent connections, queue-group behaviour, `UNSUB` with a max,
 `send_ping`, `send_nats_info` mid-connection, and anything requiring a second client — none of which the server
 implements beyond what is described in `src/server/nats/AGENTS.md`.
+
+## JetStream
+
+`jetstream_test.rs` starts the server with `jetstream: true` and a script handler that keeps
+streams, messages and consumers in a JSON file (NetGet stores none). nats.go v1.54's
+`jetstream` package (`jetstream_peer/`) and nats-py 2.16 (`jetstream_peer.py`) each create a
+stream, publish three messages and have a fourth refused, create a durable pull consumer, fetch
+with async and sync acks, fetch the rest, read infos and names, and delete; both fail rather
+than skip when absent (`install_jetstream_peers.py`). A raw-frame test pins the envelopes
+(types, filled defaults, a stream capturing its own name), error codes, the delivery's ack
+subject before the 408 that ends a short batch, and 503 errors when no handler answers.

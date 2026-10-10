@@ -4,3 +4,5 @@ mod connection_bounds_test;
 mod e2e_test;
 #[cfg(all(test, feature = "nats"))]
 mod inbound_limit_test;
+#[cfg(all(test, feature = "nats"))]
+mod jetstream_test;

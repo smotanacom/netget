@@ -139,7 +139,15 @@ the meantime. This is the deterministic way to be listening from the first byte.
 - **No reconnect and no cluster failover.** `connect_urls` from `INFO` is handed to the model
   and otherwise ignored; a mid-session `INFO` is logged, not raised as a second
   `nats_connected`.
-- **No JetStream** — no streams, consumers, acks or `$JS.API` handling.
+- **JetStream** (`jetstream.rs`), when the server's `INFO` advertises it: the client
+  subscribes once to its own inbox (`<inbox>.>`, sid `js`) and addresses each request's reply
+  under it by what was asked, so replies become typed events with no request table —
+  `nats_js_api` → `nats_js_response {operation, stream, consumer, response, error}`,
+  `nats_js_publish` → `nats_js_publish_ack {stream, seq, error}`, `nats_js_fetch` → one
+  `nats_js_message {…, stream_seq, consumer_seq, ack_subject}` per delivery and
+  `nats_js_fetch_done {status}` when a batch ends short, `nats_js_ack` on the ack subject. A
+  status line (`NATS/1.0 404 No Messages`) is exposed as `Status`/`Description` headers, as
+  nats.go does. Evidence: `tests/client/nats/jetstream_test.rs` against `nats-server -js`.
 - **No client-side subscription table.** `sid`s are the model's to choose and track; nothing
   here validates that a `MSG`'s sid was ever subscribed to, and `UNSUB … <max>` is sent as the
   protocol defines it and honoured by the broker, not counted here.
@@ -181,7 +189,7 @@ isolation). Read them as internal consistency checks.
 `async-nats` is a client, so it could never have served as the broker; using it as the
 *requesting peer* on the far side of a real server is the legitimate role for it.
 
-**What Beta still does not claim**: TLS, authentication, JetStream, reconnect and cluster
+**What Beta still does not claim**: TLS, authentication, reconnect and cluster
 failover are all unimplemented, not merely untested. `UNSUB … <max>` counting is exercised only
 by `nats-server` (NetGet's own server records the threshold without counting), and header
 (`HPUB`/`HMSG`) round-tripping through a real broker is untested — the hand-written broker

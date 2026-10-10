@@ -100,8 +100,14 @@ rule, the mock would answer HTTP 500, and no `PONG` would appear.
   server records the threshold without counting, so `send_nats_request`'s auto-unsubscribe is
   proven to be *sent*, not to be *honoured*.
 - **Wildcard delivery** (`orders.*` vs `orders.>`) against a real routing table.
-- TLS, authentication, JetStream, reconnect and cluster failover — unimplemented, so there is
+- TLS, authentication, reconnect and cluster failover — unimplemented, so there is
   nothing to test.
+
+`jetstream_test.rs`: the client's handlers create a stream on connect, publish three messages
+and create a durable pull consumer, fetch, and ack each delivery, against `nats-server -js`
+(failing when the binary is absent); the assertions are the server's own STREAM.INFO and
+CONSUMER.INFO read over a raw connection (three stored, all acked), then an injected call and
+the server's refusal.
 
 ## Mock rules
 

@@ -299,11 +299,19 @@ pub static NATS_CLIENT_PERMISSION_ERROR_EVENT: LazyLock<EventType> = LazyLock::n
     .with_alternative_example(json!({"type": "disconnect"}))
 });
 
-pub struct NatsClientProtocol;
+pub struct NatsClientProtocol {
+    /// The inbox JetStream replies come back under (see `jetstream.rs`).
+    js_inbox: String,
+}
 
 impl NatsClientProtocol {
     pub fn new() -> Self {
-        Self
+        Self::with_inbox("_INBOX.ngjs0".to_string())
+    }
+
+    /// A protocol whose JetStream requests reply under `js_inbox`.
+    pub fn with_inbox(js_inbox: String) -> Self {
+        Self { js_inbox }
     }
 }
 
@@ -870,6 +878,9 @@ impl Protocol for NatsClientProtocol {
             wait_for_more_action(),
             disconnect_action(),
         ]
+        .into_iter()
+        .chain(super::jetstream::actions())
+        .collect()
     }
 
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
@@ -887,6 +898,9 @@ impl Protocol for NatsClientProtocol {
             NATS_CLIENT_ERROR_RECEIVED_EVENT.clone(),
             NATS_CLIENT_PERMISSION_ERROR_EVENT.clone(),
         ]
+        .into_iter()
+        .chain(super::jetstream::event_types())
+        .collect()
     }
 
     fn stack_name(&self) -> &'static str {
@@ -949,12 +963,14 @@ impl Protocol for NatsClientProtocol {
                  by the reader task, never by the model, because a keepalive behind a parked \
                  manual handler gets the connection declared stale. No TLS, no authentication \
                  (a broker with auth_required answers -ERR 'Authorization Violation'), no \
-                 JetStream, no automatic reconnect and no cluster failover - a connect_urls \
+                 automatic reconnect and no cluster failover - a connect_urls \
                  list in INFO is reported to the model and otherwise ignored. No client-side \
                  subscription table: sids are the model's to choose and track, and UNSUB with \
                  max_msgs is sent as the protocol defines it and counted by the broker, not \
                  here - that counting is exercised only by the real nats-server, since NetGet's \
-                 own server records the threshold without counting.",
+                 own server records the threshold without counting. JetStream, when INFO \
+                 advertises it: nats_js_api/publish/fetch/ack actions and typed reply events, \
+                 driven against nats-server -js (tests/client/nats/jetstream_test.rs).",
             )
             .build()
     }
@@ -1093,6 +1109,9 @@ impl Client for NatsClientProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'type' field in action")?;
 
+        if let Some(result) = super::jetstream::execute(&self.js_inbox, &action) {
+            return result;
+        }
         match action_type {
             "send_nats_publish" => execute_send_nats_publish(&action),
             "send_nats_subscribe" => execute_send_nats_subscribe(&action),
