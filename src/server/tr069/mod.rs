@@ -236,7 +236,7 @@ fn rpc(a: &Value) -> Option<(String, &'static str)> {
         }
         actions::SPV => (
             wire::set_parameter_values(
-                &wire::triples(&a["parameters"], a.get("types").filter(|t| !t.is_null())).ok()?,
+                &wire::triples(&a["values"], a.get("types").filter(|t| !t.is_null())).ok()?,
                 &s("parameter_key"),
             ),
             "SetParameterValues",

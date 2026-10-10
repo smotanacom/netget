@@ -24,7 +24,7 @@ if t=='tr069_inform':
     a=[{'type':'tr069_reject','message':'unknown device'}]
   else:
     a=[{'type':'tr069_get_parameter_values','names':[R+'DeviceInfo.SoftwareVersion',R+'ManagementServer.PeriodicInformInterval']},
-       {'type':'tr069_set_parameter_values','parameters':{R+'ManagementServer.PeriodicInformInterval':3600},'parameter_key':'netget-1'},
+       {'type':'tr069_set_parameter_values','values':{R+'ManagementServer.PeriodicInformInterval':3600},'parameter_key':'netget-1'},
        {'type':'tr069_get_parameter_values','names':[R+'ManagementServer.PeriodicInformInterval']},
        {'type':'tr069_get_parameter_names','path':R+'DeviceInfo.','next_level':True},
        {'type':'tr069_add_object','object':R+'LANDevice.1.WLANConfiguration.'},

@@ -18,7 +18,7 @@ CWMP sessions are device-initiated and cookie-bound (`netget_cwmp`):
    method, ok, result | fault, pending}` and may queue more; then step 2 again.
 
 RPCs the model can queue: `tr069_get_parameter_values {names}`, `tr069_set_parameter_values
-{parameters, types?, parameter_key?}` (JSON values give default xsd types: string, boolean,
+{values, types?, parameter_key?}` (JSON values give default xsd types: string, boolean,
 unsignedInt, int), `tr069_get_parameter_names {path, next_level?}`, `tr069_add_object
 {object}`, `tr069_delete_object {object}`, `tr069_reboot {command_key?}`,
 `tr069_factory_reset`. They go in queue order; RPCs queued while answering a response join

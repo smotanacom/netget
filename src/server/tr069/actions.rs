@@ -71,11 +71,11 @@ pub fn rpc_actions() -> Vec<ActionDefinition> {
             json!({"type": GPV, "names": ["Device.DeviceInfo.SoftwareVersion"]})),
         action(SPV, "Set parameter values on the device (SetParameterValues).",
             vec![
-                p("parameters", "object", "Name to value, e.g. {\"Device.ManagementServer.PeriodicInformInterval\": 300}", true),
+                p("values", "object", "Name to value, e.g. {\"Device.ManagementServer.PeriodicInformInterval\": 300}", true),
                 p("types", "object", "Name to xsd type where the default (from the JSON value) is wrong, e.g. {\"X\": \"xsd:dateTime\"}", false),
                 p("parameter_key", "string", "Opaque key the device stores as ParameterKey", false),
             ],
-            json!({"type": SPV, "parameters": {"Device.ManagementServer.PeriodicInformInterval": 300}})),
+            json!({"type": SPV, "values": {"Device.ManagementServer.PeriodicInformInterval": 300}})),
         action(GPN, "Discover the data model below a path (GetParameterNames).",
             vec![
                 p("path", "string", "A partial path ending in a dot (or a full name), e.g. Device.DeviceInfo.", true),
@@ -147,10 +147,10 @@ pub fn check(v: &Value) -> Result<()> {
         }
         SPV => {
             ensure!(
-                v["parameters"].as_object().is_some_and(|o| !o.is_empty()),
-                "parameters must name at least one parameter"
+                v["values"].as_object().is_some_and(|o| !o.is_empty()),
+                "values must name at least one parameter"
             );
-            super::wire::triples(&v["parameters"], v.get("types").filter(|t| !t.is_null()))?;
+            super::wire::triples(&v["values"], v.get("types").filter(|t| !t.is_null()))?;
         }
         GPN => ensure!(
             v["path"].as_str().is_some_and(path_ok),
