@@ -264,7 +264,7 @@ impl ProxyServer {
         // certificate is written; the private key never leaves memory.
         if let (Some(cache), Some(params)) = (cert_cache.as_ref(), startup_params.as_ref()) {
             if let Some(path) = params.get_optional_string("ca_export_path")? {
-                std::fs::write(&path, cache.ca_cert_pem())
+                write_ca_export(std::path::Path::new(&path), &cache.ca_cert_pem())
                     .with_context(|| format!("Failed to write CA certificate to {}", path))?;
                 Log::new(Some(&status_tx)).info(format!(
                     "MITM CA certificate written to {} - clients must trust this file \
@@ -1618,6 +1618,51 @@ pub(crate) fn strip_absolute_form(target: &str) -> &str {
 /// Merge `query_params` into a request target, replacing same-named parameters
 /// and appending the rest. Returns the target unchanged when there is nothing to
 /// merge.
+/// Write the CA certificate to `ca_export_path` without destroying anything else.
+///
+/// `ca_export_path` is a startup parameter, so the model can set it through `open_server`,
+/// and `std::fs::write` followed symlinks and truncated whatever was there — one
+/// `"ca_export_path": "~/.ssh/authorized_keys"` away from emptying a file the operator
+/// cares about. The path is now opened with `O_NOFOLLOW` (a symlink is refused), and an
+/// existing file is overwritten only when it is empty or is itself a PEM certificate, which
+/// is what a previous export left there; anything else is refused by name, so a restart with
+/// the same path keeps working and a wrong path destroys nothing.
+pub fn write_ca_export(path: &std::path::Path, pem: &str) -> Result<()> {
+    use std::io::{Read, Write};
+
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        anyhow::ensure!(
+            !meta.file_type().is_symlink(),
+            "{} is a symlink; ca_export_path must be a regular file path",
+            path.display()
+        );
+        anyhow::ensure!(
+            meta.is_file(),
+            "{} exists and is not a regular file",
+            path.display()
+        );
+        let mut head = [0u8; 32];
+        let n = std::fs::File::open(path)?.read(&mut head)?;
+        let looks_like_pem = n == 0 || head[..n].starts_with(b"-----BEGIN CERTIFICATE-----");
+        anyhow::ensure!(
+            looks_like_pem,
+            "{} already exists and is not a PEM certificate; refusing to overwrite it \
+             (choose a new path, or remove the file yourself)",
+            path.display()
+        );
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(pem.as_bytes())?;
+    Ok(())
+}
+
 pub(crate) fn apply_query_params(
     target: &str,
     query_params: Option<&HashMap<String, String>>,

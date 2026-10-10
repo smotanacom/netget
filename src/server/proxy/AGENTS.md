@@ -51,7 +51,11 @@ No intercepted plaintext is written to disk; request/response bodies reach the
 
 **The only disk write** is the optional `ca_export_path` startup parameter, which
 writes the CA *certificate* (the public half, safe to distribute). The private key
-is never written by any code path and is not reachable through any action.
+is never written by any code path and is not reachable through any action. The
+parameter is model-settable through `open_server`, so `write_ca_export` refuses a
+symlink (`O_NOFOLLOW`) and refuses to overwrite any existing file that is not empty
+or a PEM certificate — a previous export is replaced, `~/.bashrc` is not
+(`tests/server/proxy/mitm_dial_order_test.rs`).
 
 **What trust the user must grant.** Interception only works against clients that
 have been configured to trust that CA — system trust store, `curl --cacert`,
@@ -192,6 +196,15 @@ also drops the upstream's own framing headers — re-emitting them beside the co
 4. LLM returns `HttpsConnectionAction`: Allow or Block
 5. If allowed → Send `200 Connection Established`, create bidirectional tunnel
 6. If blocked → Send `403 Forbidden` with reason
+
+**HTTPS CONNECT Flow** (MITM): `200 Connection Established` → client TLS handshake on a
+minted leaf → read the first request → consult the model → **only then** dial the
+upstream and complete its TLS handshake (`tls_mitm::connect_upstream`). Until September
+2026 the dial came before the decision, so any proxy client could make NetGet open a TCP
+connection to an arbitrary host:port and send a ClientHello with the peer's SNI — a
+reachability oracle for internal addresses — and a blocked request had already cost its
+destination a handshake. `mitm_dial_order_test.rs` counts accepts on a silent upstream
+and requires zero after a block.
 
 **Access Logging**:
 

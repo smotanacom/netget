@@ -100,42 +100,6 @@ pub async fn perform_mitm(
         dest_host
     ));
 
-    // Step 5: Connect to upstream server
-    let dest_addr = format!("{}:{}", dest_host, dest_port);
-    let upstream_tcp = TcpStream::connect(&dest_addr)
-        .await
-        .context(format!("Failed to connect to upstream {}", dest_addr))?;
-
-    debug!("Connected to upstream server {}", dest_addr);
-
-    // Step 6: Create TLS client config for upstream connection
-    let root_store =
-        rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-
-    let client_config = ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-
-    let tls_connector = TlsConnector::from(Arc::new(client_config));
-
-    // Step 7: Perform TLS handshake with upstream server
-    let server_name =
-        ServerName::try_from(dest_host.to_string()).context("Invalid server name for TLS")?;
-
-    let mut upstream_tls_stream = tls_connector
-        .connect(server_name, upstream_tcp)
-        .await
-        .context("TLS handshake with upstream server failed")?;
-
-    info!(
-        "TLS handshake with upstream server completed for {}",
-        dest_host
-    );
-    let _ = status_tx.send(format!(
-        "[INFO] Upstream TLS handshake complete for {}",
-        dest_host
-    ));
-
     // Step 8: Proxy HTTP traffic through LLM
     // Now we have two TLS streams: client_tls_stream (client) and upstream_tls_stream (upstream)
     // We read HTTP requests from client, optionally modify via LLM, forward to upstream
@@ -268,7 +232,35 @@ pub async fn perform_mitm(
             }
         });
 
+        // The upstream is dialled only once the model has let the request through. Until
+        // September 2026 the dial (and a TLS ClientHello carrying the peer's SNI) happened
+        // before any decision, so any proxy client could make NetGet open a TCP connection
+        // to an arbitrary host:port — a reachability oracle for internal addresses — and a
+        // blocked request had already cost the destination a handshake.
+        if let RequestAction::Block { status, body } = action {
+            // Return error response to client. `body` is either the model's own reason or
+            // one of the two `WireFailure` categories - never an error string. A 503
+            // carries `Retry-After` (see `failure_response`) so a client backs off rather
+            // than recording a permanent fault, which is the whole point of keeping
+            // Overloaded distinct from Unavailable.
+            let response = failure_response(status, &body);
+
+            client_tls_stream
+                .write_all(&response)
+                .await
+                .context("Failed to send blocked response to client")?;
+
+            info!(
+                "Blocked MITM request with status {} (upstream {}:{} never dialled)",
+                status, dest_host, dest_port
+            );
+            return Ok(());
+        }
+
+        let mut upstream_tls_stream = connect_upstream(dest_host, dest_port, &status_tx).await?;
+
         match action {
+            RequestAction::Block { .. } => unreachable!("answered above"),
             RequestAction::Pass => {
                 // Forward request to upstream as-is
                 upstream_tls_stream
@@ -277,22 +269,6 @@ pub async fn perform_mitm(
                     .context("Failed to forward request to upstream")?;
 
                 trace!("Forwarded request to upstream server");
-            }
-            RequestAction::Block { status, body } => {
-                // Return error response to client. `body` is either the model's own reason or
-                // one of the two `WireFailure` categories - never an error string. A 503
-                // carries `Retry-After` (see `failure_response`) so a client backs off rather
-                // than recording a permanent fault, which is the whole point of keeping
-                // Overloaded distinct from Unavailable.
-                let response = failure_response(status, &body);
-
-                client_tls_stream
-                    .write_all(&response)
-                    .await
-                    .context("Failed to send blocked response to client")?;
-
-                info!("Blocked MITM request with status {}", status);
-                return Ok(());
             }
             ref modify_action @ RequestAction::Modify { .. } => {
                 // Reuse the same modification routine as the plaintext HTTP path so
@@ -810,6 +786,51 @@ pub fn rebuild_modified_response(
     let mut bytes = out.into_bytes();
     bytes.extend_from_slice(body);
     bytes
+}
+
+/// Dial the destination and complete the upstream TLS handshake.
+///
+/// Called only after the model has let the client's first request through: see the
+/// comment at the call site. The upstream certificate is verified against the webpki
+/// roots; there is no bypass.
+async fn connect_upstream(
+    dest_host: &str,
+    dest_port: u16,
+    status_tx: &mpsc::UnboundedSender<String>,
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    let dest_addr = format!("{}:{}", dest_host, dest_port);
+    let upstream_tcp = TcpStream::connect(&dest_addr)
+        .await
+        .context(format!("Failed to connect to upstream {}", dest_addr))?;
+
+    debug!("Connected to upstream server {}", dest_addr);
+
+    let root_store =
+        rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+    let client_config = ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+
+    let tls_connector = TlsConnector::from(Arc::new(client_config));
+
+    let server_name =
+        ServerName::try_from(dest_host.to_string()).context("Invalid server name for TLS")?;
+
+    let upstream_tls_stream = tls_connector
+        .connect(server_name, upstream_tcp)
+        .await
+        .context("TLS handshake with upstream server failed")?;
+
+    info!(
+        "TLS handshake with upstream server completed for {}",
+        dest_host
+    );
+    let _ = status_tx.send(format!(
+        "[INFO] Upstream TLS handshake complete for {}",
+        dest_host
+    ));
+    Ok(upstream_tls_stream)
 }
 
 /// Extract HTTP status code from response line
