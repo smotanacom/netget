@@ -938,3 +938,67 @@ fn peer_escape_sequences_are_not_painted_as_terminal_cells() {
         );
     }
 }
+
+/// The intercept overlay and the request detail modal pretty-print a peer's payload, and
+/// `serde_json` escapes only U+0000..U+001F inside a string: DEL and the C1 range — U+009B is
+/// an 8-bit CSI, U+009D an 8-bit OSC — come out raw. Neither modal may paint one as a cell,
+/// and the intercept's description is the peer's text too.
+#[test]
+fn intercept_payload_controls_are_not_painted_as_terminal_cells() {
+    const HOSTILE: &str = "hi\u{9b}31m\u{7f}\u{9d}52;c;QUJD\u{9c}there\u{1b}[2J";
+    let payload = serde_json::json!({"message": HOSTILE, "connection_id": "conn-7"});
+
+    let modal = |name: &str| match name {
+        "intercept" => netget::tui::modal::Modal::Intercept(Box::new(
+            netget::tui::modal::intercept::InterceptModel {
+                id: 4,
+                owner: UiKey::Server(ServerId::new(1)),
+                protocol: "TELNET".into(),
+                event_type: "telnet_line_received".into(),
+                description: format!("line {HOSTILE}"),
+                event_data: Some(payload.clone()),
+                vocabulary: Vec::new(),
+                error: None,
+                focused: 0,
+            },
+        )),
+        _ => netget::tui::modal::Modal::RequestDetail {
+            entry: Box::new(AccessLogEntry {
+                id: 98,
+                unix_ms: 1_700_000_098_000,
+                server_id: Some(1),
+                client_id: None,
+                protocol: "TELNET".into(),
+                connection_id: Some(7),
+                event_type: "telnet_line_received".into(),
+                request: payload.clone(),
+                response: vec![serde_json::json!({"type": "send_telnet_line", "text": HOSTILE})],
+            }),
+            scroll: 0,
+        },
+    };
+
+    for name in ["intercept", "request detail"] {
+        for (w, h) in [(160, 48), (80, 24)] {
+            let mut app = app();
+            app.absorb_snapshot(populated());
+            app.modals.push(modal(name));
+            let cells = cells(&mut app, w, h);
+            let bad: Vec<&String> = cells
+                .iter()
+                .filter(|c| c.chars().any(char::is_control))
+                .collect();
+            assert!(
+                bad.is_empty(),
+                "control characters reached the {name} frame at {w}x{h}: {bad:?}"
+            );
+            if (w, h) == (160, 48) {
+                let painted: String = cells.concat();
+                assert!(
+                    painted.contains("message"),
+                    "the {name} modal must still show the payload at {w}x{h}"
+                );
+            }
+        }
+    }
+}

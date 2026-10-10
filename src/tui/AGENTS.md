@@ -153,10 +153,22 @@ had its answer typed into the chat box as keystrokes. Three choke points now str
 with `utils::sanitize`: `ActivityFeed::push` (every stream entry: logs, replies, reasoning,
 command output, error strings), `cards::payload_summary` (the one row a request gets) and
 `logging::emit::Log::emit` (the status channel and `netget.log`, which `tail -f` paints
-too); `cli::non_interactive::emit_status_line` does the same for headless stdout.
+too); `cli::non_interactive::emit_status_line` does the same for headless stdout. The
+sanitizer removes a whole escape sequence (CSI, OSC and the other control strings, in 7-bit
+and 8-bit form) rather than only its ESC, so neither a peer's sequence nor NetGet's own dim
+styling from `llm::format_indented_dimmed_lines` is left behind as a literal `[2m`.
+
+Pretty-printed JSON is the other way peer text reaches a pane: `serde_json` escapes
+U+0000–U+001F inside a string but writes DEL and C1 (U+009B is an 8-bit CSI) raw. The request
+detail modal (`modal::request_detail::detail_lines`), the intercept overlay's payload and the
+band detail's `startup_params` and routing pass it through `sanitize::json_text`, which writes
+each of those as its `\uXXXX` escape; the intercept's description and the band detail's
+instruction lines go through `sanitize::line_field`.
 `tests/dashboard_frame_test.rs::peer_escape_sequences_are_not_painted_as_terminal_cells`
 renders a hostile payload through all three TUI paths and requires no control character in
-any cell; `tests/terminal_escape_injection_test.rs` covers the channel and the row. Still
+any cell, and `intercept_payload_controls_are_not_painted_as_terminal_cells` does the same for
+the intercept overlay; `tests/terminal_escape_injection_test.rs` covers the channel, the row,
+the request detail lines and whole-sequence removal. Still
 unfiltered: a protocol's own `tracing::info!("{}", peer_text)`, which the headless fmt layer
 writes to stderr with ANSI on — route peer text through `Log` rather than `tracing` directly.
 
