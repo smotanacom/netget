@@ -265,7 +265,11 @@ async fn responses_through_the_pcap_oracle_and_bounds() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!((n, buf[1]), (8, 11), "a header-only Version Not Supported Response");
+    assert_eq!(
+        (n, buf[1]),
+        (8, 11),
+        "a header-only Version Not Supported Response"
+    );
 }
 
 #[test]
