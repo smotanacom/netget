@@ -203,7 +203,12 @@ status_tx.send("[CLIENT] HTTP request sent");                          // → TU
 ### URL Handling
 
 - Base URL stored in `protocol_data`
-- Relative paths: `/api/users` → `{base_url}/api/users`
+- Relative paths: `/api/users` → `{base_url}/api/users`; `api/users` → `{base_url}/api/users`
+  (a `/` is inserted unless the path starts with `/`, `?` or `#`, or the base ends with `/`),
+  so `@attacker.example/x`, `.attacker.example/` and `:9999/` stay in the path instead of
+  becoming the host or port. Every resolved URL, relative or absolute, is parsed with the
+  `url` crate and its scheme, host and port compared with the base's; userinfo the base did
+  not carry is refused, and the request is sent to that parse's serialization.
 - Absolute URLs: accepted only on the base URL's origin (`http_fetch::resolve_same_origin`).
   The startup `default_headers` ride on every request, so until September 2026 a model
   answering a prompt-injected "fetch http://attacker/" sent the operator's API key there,

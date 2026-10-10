@@ -374,11 +374,9 @@ impl WebdavClient {
                         .flatten()
                         .unwrap_or_default();
 
-                    let dest_url = if destination.starts_with("http") {
-                        destination.to_string()
-                    } else {
-                        format!("{}{}", base_url, destination)
-                    };
+                    // On the client's own origin or refused, like the request URL itself.
+                    let dest_url =
+                        crate::client::http_fetch::resolve_same_origin(&base_url, destination)?;
                     headers.push(("Destination".to_string(), dest_url));
                 }
 

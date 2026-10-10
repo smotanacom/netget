@@ -33,7 +33,8 @@ WebDAV is **connectionless** like HTTP - each operation is a separate HTTP reque
    every request, an absolute `path` is accepted only on the base URL's origin
    (`http_fetch::resolve_same_origin`) and redirects are followed on that origin only; a
    model talked into "fetch http://attacker/" used to hand the share password over in one
-   request. `tests/client/http/same_origin_test.rs` covers this client too.
+   request. The COPY/MOVE `destination` goes through the same check before it becomes the
+   `Destination` header. `tests/client/http/same_origin_test.rs` covers this client too.
 2. **On-Demand Requests**: LLM triggers WebDAV methods via actions
 3. **Response Processing**: LLM receives XML responses and decides next action
 
