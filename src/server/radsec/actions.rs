@@ -123,7 +123,6 @@ impl Protocol for RadsecProtocol {
     }
     fn get_startup_examples(&self) -> StartupExamples {
         let base = json!({"type":"open_server","base_stack":"radsec","port":2083,
-            "startup_params":{"certificate_file":"/etc/netget/radsec-server.pem","private_key_file":"/etc/netget/radsec-server.key","ca_file":"/etc/netget/radsec-ca.pem"},
             "instruction":"Accept alice with password wonderland; reject everyone else"});
         let mut scripted = base.clone();
         scripted["event_handlers"] = json!([{"event_pattern":"radius_access_request","handler":{"type":"script","language":"python",
