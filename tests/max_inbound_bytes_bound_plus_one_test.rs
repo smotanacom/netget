@@ -224,6 +224,14 @@ const NOT_PROBED: &[(&str, &str)] = &[
          over_cap_upload_closes_without_waiting_for_declared_eof separately proves an unfinished \
          over-cap upload closes without an unlimited drain.",
     ),
+    #[cfg(feature = "capnp-rpc")]
+    (
+        "Cap'n Proto RPC",
+        "will not start without `schema` and `interface` startup parameters, and there is no \
+         default interface to invent here. tests/server/capnp_rpc/wire_test.rs::\
+         bounds_close_the_connection refuses a segment table announcing MAX_MESSAGE_BYTES + 1 \
+         (and more than 64 segments) before allocating anything, with no reply.",
+    ),
 ];
 // The first version also listed the USB family and `nfc` here. Every one of those entries was
 // dead, because `stack_name()` already settles them ("USB>HID>Keyboard" is not a TCP stream) and

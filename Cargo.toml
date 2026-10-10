@@ -135,6 +135,7 @@ portable-base = [
     "clickhouse",
     "msgpack-rpc",
     "zipkin",
+    "capnp-rpc",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -372,6 +373,7 @@ smpp = [] # SMPP 3.4 SMSC server and ESME client
 clickhouse = ["dep:lz4_flex", "dep:naive-cityhash"] # ClickHouse native TCP server and client
 msgpack-rpc = [] # MessagePack-RPC server and client (Neovim's RPC)
 zipkin = ["dep:flate2"] # Zipkin collector/read API and span reporter
+capnp-rpc = ["dep:tempfile"] # Cap'n Proto RPC server and client, schema-typed
 jmap = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"] # JMAP (RFC 8620/8621) server and client
 webtransport = ["dep:rustls", "dep:wtransport", "dep:wtransport-proto", "dep:sha2"] # WebTransport over HTTP/3 (draft-02) server and client
 graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
@@ -689,6 +691,7 @@ dist-windows = [
     "clickhouse",
     "msgpack-rpc",
     "zipkin",
+    "capnp-rpc",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -904,6 +907,7 @@ all-protocols = [
     "clickhouse",
     "msgpack-rpc",
     "zipkin",
+    "capnp-rpc",
     "sflow",
     "prometheus-remote-write",
     "ssh",

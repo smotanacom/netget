@@ -47,6 +47,10 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
         "MessagePack-RPC registers no port: each application picks its own (Neovim listens wherever --listen says)",
     ),
     (
+        "capnp_rpc",
+        "Cap'n Proto RPC registers no port: each application's schema and deployment choose one",
+    ),
+    (
         "zeromq",
         "ZeroMQ registers no port: every endpoint is chosen by its application (the guide's examples use 5555)",
     ),
