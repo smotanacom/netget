@@ -154,9 +154,15 @@ async fn netget_publisher_and_player_with_injected_data() {
     let dir = tempfile::tempdir().unwrap();
     let flv = dir.path().join("tiny.flv");
     std::fs::write(&flv, tiny_flv(4)).unwrap();
-    let publisher = client_in(&state, addr.to_string(), json!({"app": "live"}))
-        .await
-        .unwrap();
+    // rtmp_publish reads only under the client's media_root (b50ef697), so the clip's
+    // directory is named as it.
+    let publisher = client_in(
+        &state,
+        addr.to_string(),
+        json!({"app": "live", "media_root": dir.path()}),
+    )
+    .await
+    .unwrap();
     let player = client_in(&state, addr.to_string(), json!({"app": "live"}))
         .await
         .unwrap();
