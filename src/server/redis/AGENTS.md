@@ -203,9 +203,37 @@ Injected replies are unsolicited from the client's point of view: `redis-cli` si
 its prompt will parse the frame as the reply to its *next* command. That is inherent to
 injecting into a strictly request/response protocol, not a NetGet bug.
 
+## RESP3 (`resp3.rs`)
+
+A connection starts in RESP2. `HELLO [2|3]` is answered in Rust, not by the model: it is
+protocol negotiation, and the reply (`server`, `version` 7.4.0, `proto`, `id`, `mode`,
+`role`, `modules`) is a map on RESP3 and a flat array on RESP2. `HELLO 4` and up is
+`-NOPROTO unsupported protocol version`; a malformed option is `-ERR Syntax error in HELLO
+option …`. `HELLO … AUTH user pass` carries credentials, which only the handler can judge, so
+that one goes to the model as an ordinary `redis_command` and the switch waits on its answer:
+an error reply (`-WRONGPASS …`) is sent as is and the connection stays where it was;
+anything else accepts, and the model's reply is replaced by the HELLO map. A failed model
+call fails closed the same way. `SETNAME` is accepted and ignored.
+
+The version is per connection (`RedisProtocol::protocol_version`, shared by the read loop
+and the peer-injection task) and every `redis_command` event carries it as `protocol`.
+
+Seven RESP3 verbs: `redis_map` (an object, or `[[k, v], …]` when order matters),
+`redis_set`, `redis_double` (a number, `inf`, `-inf` or `nan`), `redis_boolean`,
+`redis_big_number` (decimal digits), `redis_verbatim_string` (`text`, `format` txt/mkd) and
+`redis_push`. On RESP3 they are native, as are `redis_array`'s elements (a nested array is an
+array, an object a map, a fraction a double, a boolean a boolean, null a null; 32 levels at
+most) and every null (`_`). On RESP2 they downgrade the way Redis does: map → flat array,
+set → array, double and big number → bulk string, boolean → integer 1/0, verbatim → bulk
+string of its text, with `redis_array`'s RESP2 element rules unchanged. A push is refused on
+RESP2 (the action fails and nothing is written for it), since RESP2 has no out-of-band frame.
+
+Requests are RESP2 arrays in both versions, so the decoder and its depth guard are unchanged.
+
 ## Not implemented
 
-- **RESP3** — no `HELLO 3`, push messages, doubles, maps or sets.
+- **RESP3 attributes** (`|`), streamed strings and aggregates, and client-side caching
+  (`CLIENT TRACKING`); a push is only ever sent when the model asks for one.
 - **Inline commands** (`PING\r\n` typed into `nc`) — only RESP arrays decode;
   anything else closes the connection. `redis-cli` and `redis-rs` always send
   RESP arrays, so this only affects hand-typed sessions.
@@ -218,7 +246,7 @@ injecting into a strictly request/response protocol, not a NetGet bug.
 
 ## Testing
 
-Seven files, declared in `tests/server/redis/mod.rs`:
+Eight files, declared in `tests/server/redis/mod.rs`:
 
 - `e2e_test.rs` — six `redis-rs` tests, one per RESP2 reply type.
 - `real_client_test.rs` — the real `redis-cli` binary, seven commands on one
@@ -231,6 +259,9 @@ Seven files, declared in `tests/server/redis/mod.rs`:
 - `llm_failure_test.rs` — the RESP error a client sees when the backend fails.
 - `peer_inject_test.rs` — dashboard injection through `send_to_peer`.
 - `connection_bounds_test.rs` — the read deadlines (see "Connection bounds").
+- `resp3_test.rs` — redis-cli `-3` and redis-py 5 (`protocol=3`, credentials in
+  `HELLO`) read every RESP3 type, a push, and the RESP2 downgrades; a wrong password in
+  `HELLO` is refused and `HELLO 4` is `NOPROTO`. Zero LLM calls (a python handler).
 - `resp_depth_test.rs` — a 100 000-level nesting bomb is refused and the
   server still answers a fresh connection; 32 levels answered, 33 refused;
   impossible `*N`/`$N` refused at the header. Zero LLM calls. Without the

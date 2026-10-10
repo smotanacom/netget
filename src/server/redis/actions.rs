@@ -10,6 +10,7 @@ use crate::server::connection::ConnectionId;
 use crate::state::app_state::AppState;
 use anyhow::{Context, Result};
 use serde_json::json;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, LazyLock};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -21,6 +22,9 @@ pub struct RedisProtocol {
     #[allow(dead_code)]
     app_state: Arc<AppState>,
     status_tx: mpsc::UnboundedSender<String>,
+    /// The RESP version this connection speaks: 2 until a `HELLO 3`. Shared by the read loop
+    /// and the peer-injection task, which both encode through this instance.
+    protover: AtomicU8,
 }
 
 impl RedisProtocol {
@@ -33,7 +37,17 @@ impl RedisProtocol {
             connection_id,
             app_state,
             status_tx,
+            protover: AtomicU8::new(2),
         }
+    }
+
+    /// The RESP version replies are encoded for (2 or 3).
+    pub fn protocol_version(&self) -> u8 {
+        self.protover.load(Ordering::Relaxed)
+    }
+
+    pub fn set_protocol_version(&self, version: u8) {
+        self.protover.store(version, Ordering::Relaxed);
     }
 }
 
@@ -94,6 +108,9 @@ impl Protocol for RedisProtocol {
             redis_null_action(),
             close_this_connection_action(),
         ]
+        .into_iter()
+        .chain(resp3_actions())
+        .collect()
     }
     fn protocol_name(&self) -> &'static str {
         "Redis"
@@ -117,7 +134,7 @@ impl Protocol for RedisProtocol {
             // has not been done here.
             .state(DevelopmentState::Beta)
             .well_known_port(6379)
-            .implementation("redis-protocol v6.0 (RESP2 parsing), manual RESP2 encoding")
+            .implementation("redis-protocol v6.0 (RESP2 request parsing), manual RESP2/RESP3 encoding per connection after HELLO")
             .llm_control("All Redis commands (GET, SET, INCR, etc.)")
             .e2e_testing(
                 "Two independent clients. redis-rs (tests/server/redis/e2e_test.rs, \
@@ -129,11 +146,14 @@ impl Protocol for RedisProtocol {
                  string quoted, (integer) n, a two-element multi-bulk, (nil) distinguished from \
                  an empty bulk string, and (error) …) and a reply landing against the wrong \
                  command fails as a mismatched line. \
-                 NOT proven: RESP3 (no HELLO 3 is implemented), inline commands, pipelining \
+                 RESP3 (resp3_test.rs): HELLO 3 answered in Rust, every RESP3 type read by \
+                 redis-cli -3 and by redis-py 5's own RESP3 parser (with credentials sent in \
+                 HELLO and a push ahead of a reply), and the RESP2 downgrades by both. \
+                 NOT proven: inline commands, pipelining \
                  (neither client sends two commands in one write), AUTH/SELECT/MULTI/pub-sub, \
                  and TLS.",
             )
-            .notes("RESP2 only (no RESP3), no AUTH/SELECT/MULTI/pub-sub, no inline commands")
+            .notes("RESP2, and RESP3 after HELLO 3 (no attributes, no streamed types, no client-side caching); HELLO with AUTH is judged by the handler; no SELECT/MULTI/pub-sub semantics, no inline commands")
             .max_inbound_bytes(crate::server::redis::MAX_PENDING_FRAME_BYTES)
             .build()
     }
@@ -282,6 +302,13 @@ impl Server for RedisProtocol {
             "redis_integer" => self.execute_redis_integer(action),
             "redis_error" => self.execute_redis_error(action),
             "redis_null" => self.execute_redis_null(action),
+            "redis_map"
+            | "redis_set"
+            | "redis_double"
+            | "redis_boolean"
+            | "redis_big_number"
+            | "redis_verbatim_string"
+            | "redis_push" => self.execute_resp3(action_type, &action),
             "close_this_connection" => Ok(ActionResult::CloseConnection),
             // Not offered to the model (`close_this_connection` is its verb), but the
             // dashboard's "disconnect this peer" injects `close_connection` through the peer
@@ -335,7 +362,7 @@ impl RedisProtocol {
 
         Ok(ActionResult::Output(match result {
             Some(bytes) => encode_bulk_string(&bytes),
-            None => encode_null(),
+            None => super::resp3::null(self.protocol_version()),
         }))
     }
 
@@ -350,7 +377,10 @@ impl RedisProtocol {
             .status_tx
             .send(format!("[DEBUG] Redis → Array: {} elements", values.len()));
 
-        Ok(ActionResult::Output(encode_array(values)))
+        Ok(ActionResult::Output(super::resp3::array(
+            values,
+            self.protocol_version(),
+        )?))
     }
 
     fn execute_redis_integer(&self, action: serde_json::Value) -> Result<ActionResult> {
@@ -393,7 +423,67 @@ impl RedisProtocol {
         debug!("Redis null response");
         let _ = self.status_tx.send("[DEBUG] Redis → Null".to_string());
 
-        Ok(ActionResult::Output(encode_null()))
+        Ok(ActionResult::Output(super::resp3::null(
+            self.protocol_version(),
+        )))
+    }
+
+    /// The RESP3 reply types, encoded for this connection's version (downgraded on RESP2).
+    fn execute_resp3(&self, kind: &str, action: &serde_json::Value) -> Result<ActionResult> {
+        use super::resp3;
+        let proto = self.protocol_version();
+        let items = || -> Result<&Vec<serde_json::Value>> {
+            action
+                .get("values")
+                .and_then(|v| v.as_array())
+                .context("Missing 'values' array")
+        };
+        let bytes = match kind {
+            "redis_map" => resp3::map(
+                &resp3::entries(action.get("entries").context("Missing 'entries'")?)?,
+                proto,
+            )?,
+            "redis_set" => resp3::set(items()?, proto)?,
+            "redis_double" => {
+                resp3::double(action.get("value").context("Missing 'value'")?, proto)?
+            }
+            "redis_boolean" => resp3::boolean(
+                action
+                    .get("value")
+                    .and_then(|v| v.as_bool())
+                    .context("Missing boolean 'value'")?,
+                proto,
+            ),
+            "redis_big_number" => resp3::big_number(
+                action
+                    .get("value")
+                    .and_then(|v| v.as_str())
+                    .context("Missing 'value' (a string of digits)")?,
+                proto,
+            )?,
+            "redis_verbatim_string" => resp3::verbatim(
+                action
+                    .get("format")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("txt"),
+                action
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .context("Missing 'text'")?,
+                proto,
+            )?,
+            _ => resp3::push(items()?, proto)?,
+        };
+        debug!(
+            "Redis {} reply (RESP{}): {} bytes",
+            kind,
+            proto,
+            bytes.len()
+        );
+        let _ = self
+            .status_tx
+            .send(format!("[DEBUG] Redis → {kind} (RESP{proto})"));
+        Ok(ActionResult::Output(bytes))
     }
 }
 
@@ -679,12 +769,20 @@ pub static REDIS_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "Redis command received from client",
         json!({"type": "placeholder", "event_id": "redis_command"}),
     )
-    .with_parameters(vec![Parameter {
-        name: "command".to_string(),
-        type_hint: "string".to_string(),
-        description: "The Redis command string sent by the client".to_string(),
-        required: true,
-    }])
+    .with_parameters(vec![
+        Parameter {
+            name: "command".to_string(),
+            type_hint: "string".to_string(),
+            description: "The Redis command string sent by the client".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "protocol".to_string(),
+            type_hint: "number".to_string(),
+            description: "The RESP version this connection speaks: 2, or 3 after the client sent HELLO 3. RESP3-only replies (map, set, double, boolean, big number, verbatim) are downgraded on RESP2; a push needs RESP3".to_string(),
+            required: true,
+        },
+    ])
     .with_actions(vec![
         REDIS_SIMPLE_STRING_ACTION.clone(),
         REDIS_BULK_STRING_ACTION.clone(),
@@ -693,7 +791,10 @@ pub static REDIS_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         REDIS_ERROR_ACTION.clone(),
         REDIS_NULL_ACTION.clone(),
         REDIS_CLOSE_CONNECTION_ACTION.clone(),
-    ])
+    ]
+    .into_iter()
+    .chain(resp3_actions())
+    .collect())
     .with_log_template(
         LogTemplate::new()
             .with_info("Redis: {command}")
@@ -705,4 +806,92 @@ pub static REDIS_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 /// Get Redis event types
 pub fn get_redis_event_types() -> Vec<EventType> {
     vec![REDIS_COMMAND_EVENT.clone()]
+}
+
+fn resp3_action(
+    name: &str,
+    description: &str,
+    parameters: Vec<Parameter>,
+    example: serde_json::Value,
+    info: &str,
+) -> ActionDefinition {
+    ActionDefinition {
+        name: name.to_string(),
+        description: description.to_string(),
+        parameters,
+        example,
+        log_template: Some(
+            LogTemplate::new()
+                .with_info(info)
+                .with_debug(format!("Redis {name}")),
+        ),
+    }
+}
+
+fn param(name: &str, type_hint: &str, description: &str, required: bool) -> Parameter {
+    Parameter {
+        name: name.to_string(),
+        type_hint: type_hint.to_string(),
+        description: description.to_string(),
+        required,
+    }
+}
+
+/// The RESP3 reply verbs. Each is encoded for the connection's protocol: native on a
+/// connection that sent `HELLO 3`, downgraded the way Redis downgrades on RESP2.
+pub fn resp3_actions() -> Vec<ActionDefinition> {
+    vec![
+        resp3_action(
+            "redis_map",
+            "Send a map (HGETALL, CONFIG GET, XINFO…): a RESP3 map, or on RESP2 the flat key/value array Redis sends there",
+            vec![param("entries", "object", "The map as a JSON object, or [[key, value], …] when order matters. Values follow redis_array's rules (on RESP3 a nested object is a map, an array an array, a fraction a double, true/false booleans, null a null)", true)],
+            json!({"type": "redis_map", "entries": {"name": "Ada", "visits": 3}}),
+            "-> Redis map",
+        ),
+        resp3_action(
+            "redis_set",
+            "Send a set (SMEMBERS, SINTER…): a RESP3 set, or an array on RESP2",
+            vec![param("values", "array", "The members, encoded as redis_array encodes its elements", true)],
+            json!({"type": "redis_set", "values": ["red", "green"]}),
+            "-> Redis set {values_len} members",
+        ),
+        resp3_action(
+            "redis_double",
+            "Send a floating-point number (ZSCORE, INCRBYFLOAT…): a RESP3 double, or a bulk string on RESP2",
+            vec![param("value", "number", "The number, or the string inf, -inf or nan", true)],
+            json!({"type": "redis_double", "value": 2.5}),
+            "-> Redis double {value}",
+        ),
+        resp3_action(
+            "redis_boolean",
+            "Send true or false: a RESP3 boolean, or the integer 1/0 on RESP2",
+            vec![param("value", "boolean", "The boolean to send: true or false (1 or 0 on RESP2)", true)],
+            json!({"type": "redis_boolean", "value": true}),
+            "-> Redis boolean {value}",
+        ),
+        resp3_action(
+            "redis_big_number",
+            "Send an integer too large for 64 bits: a RESP3 big number, or a bulk string on RESP2",
+            vec![param("value", "string", "The decimal digits, optionally with a leading minus sign", true)],
+            json!({"type": "redis_big_number", "value": "3492890328409238509324850943850943825024385"}),
+            "-> Redis big number",
+        ),
+        resp3_action(
+            "redis_verbatim_string",
+            "Send text a client should show as is (INFO, LATENCY DOCTOR): a RESP3 verbatim string, or a bulk string on RESP2",
+            vec![
+                param("text", "string", "The text, newlines allowed", true),
+                param("format", "string", "Three letters naming the text's format: txt (default) or mkd", false),
+            ],
+            json!({"type": "redis_verbatim_string", "text": "# Server\nredis_version:7.4.0", "format": "txt"}),
+            "-> Redis verbatim string",
+        ),
+        resp3_action(
+            "redis_push",
+            "Send an out-of-band push (pub/sub message, client-side-caching invalidation). RESP3 only: refused on a RESP2 connection",
+            vec![param("values", "array", "The push's elements, the first naming its kind, e.g. [\"message\", \"news\", \"hello\"]", true)],
+            json!({"type": "redis_push", "values": ["message", "news", "hello"]}),
+            "-> Redis push {values_len} elements",
+        ),
+    ]
 }
