@@ -7342,11 +7342,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: protocol-pairs-${{ github.job }}
-      - name: Install Net-SNMP's tools and trap receiver
+      - name: Install Net-SNMP's tools, its trap receiver and tshark (the pcap oracle)
         run: |
           sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends snmp snmptrapd
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends snmp snmptrapd tshark
           snmpget -V
+          tshark --version | head -1
       - name: Compile snmp as a standalone Cargo feature
         run: cargo check --locked --no-default-features --features snmp --all-targets
       - name: Both roles with mandatory independent peers, bounds and fail-closed paths
