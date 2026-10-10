@@ -21,6 +21,9 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use std::sync::LazyLock;
 
+/// Whether JetStream is served when `jetstream` is not given at startup.
+pub const DEFAULT_JETSTREAM: bool = false;
+
 /// Largest `PUB` payload accepted when `max_payload` is not given at startup.
 ///
 /// 1 MiB is the NATS server's own default, and clients read it out of `INFO` to decide
@@ -45,7 +48,8 @@ pub const NATS_PROTO_VERSION: u8 = 1;
 ///
 /// Clients gate optional features on this, so it has to parse as a NATS server version.
 /// It is a compatibility claim about the *client protocol*, not about feature parity:
-/// there is no JetStream, no clustering and no authentication here. See
+/// JetStream is served only with `jetstream: true`, and there is no clustering and no
+/// authentication. See
 /// `src/server/nats/CLAUDE.md`.
 pub const ADVERTISED_VERSION: &str = "2.10.0";
 
@@ -91,6 +95,18 @@ impl Protocol for NatsProtocol {
                 example: json!(1_048_576),
                 default: Some(serde_json::json!(DEFAULT_MAX_PAYLOAD)),
             },
+            ParameterDefinition {
+                name: "jetstream".to_string(),
+                type_hint: "boolean".to_string(),
+                description: "Serve JetStream (default false): INFO advertises it, and $JS.API \
+                              requests, publishes to streams' subjects, pulls and acks become \
+                              nats_js_* events. NetGet stores no messages - the handler owns \
+                              streams and their contents."
+                    .to_string(),
+                required: false,
+                example: json!(true),
+                default: Some(serde_json::json!(DEFAULT_JETSTREAM)),
+            },
         ]
     }
 
@@ -110,6 +126,9 @@ impl Protocol for NatsProtocol {
             send_ping_action(),
             close_connection_action(),
         ]
+        .into_iter()
+        .chain(super::jetstream::actions())
+        .collect()
     }
 
     fn protocol_name(&self) -> &'static str {
@@ -117,7 +136,9 @@ impl Protocol for NatsProtocol {
     }
 
     fn get_event_types(&self) -> Vec<EventType> {
-        get_nats_event_types()
+        let mut events = get_nats_event_types();
+        events.extend(super::jetstream::event_types());
+        events
     }
 
     fn stack_name(&self) -> &'static str {
@@ -166,7 +187,7 @@ impl Protocol for NatsProtocol {
             .notes(
                 "Implements the client protocol only: INFO/CONNECT/PUB/HPUB/SUB/UNSUB/PING/PONG \
                  inbound, MSG/HMSG/INFO/+OK/-ERR/PING outbound. There is no message store, no \
-                 automatic subject routing, no queue-group load balancing, no JetStream, no \
+                 automatic subject routing, no queue-group load balancing, no \
                  authentication, no TLS and no clustering - the model decides what every \
                  subscriber receives, which is the point. The per-connection subscription table \
                  is a hint offered to the model in nats_publish.matching_subscriptions, never \
@@ -174,7 +195,12 @@ impl Protocol for NatsProtocol {
                  <sid> <max>' does not count deliveries. Cross-connection delivery is not \
                  possible from an event: an action writes to the connection that raised it. \
                  INFO advertises version 2.10.0 so clients enable the header protocol; that is \
-                 a client-protocol claim, not feature parity.",
+                 a client-protocol claim, not feature parity. With jetstream: true, $JS.API \
+                 requests, publishes to streams' subjects, pulls and acks are nats_js_* events: \
+                 Rust owns the envelopes, ack subjects and end-of-batch statuses, the handler \
+                 owns the streams' contents (nothing is stored); nats.go's jetstream package \
+                 and nats-py complete create/publish/consume/ack/info/delete against it \
+                 (tests/server/nats/jetstream_test.rs).",
             )
             .build()
     }
@@ -265,13 +291,14 @@ impl Server for NatsProtocol {
             // Both parameters are optional, and both errors are propagated rather than
             // unwrapped: this JSON comes from the model or an MCP client, and a panic here
             // kills the request task before it can answer.
-            let (server_name, max_payload) = match &ctx.startup_params {
+            let (server_name, max_payload, jetstream) = match &ctx.startup_params {
                 Some(params) => {
                     let name = params.get_optional_string("server_name")?;
                     let payload = params.get_optional_u64("max_payload")?;
-                    (name, payload)
+                    let jetstream = params.get_optional_bool("jetstream")?;
+                    (name, payload, jetstream)
                 }
-                None => (None, None),
+                None => (None, None, None),
             };
 
             let max_payload = max_payload.unwrap_or(DEFAULT_MAX_PAYLOAD);
@@ -292,6 +319,9 @@ impl Server for NatsProtocol {
                 ctx.server_id,
                 server_name.unwrap_or_else(|| "netget-nats".to_string()),
                 max_payload,
+                jetstream
+                    .unwrap_or(DEFAULT_JETSTREAM)
+                    .then(|| std::sync::Arc::new(super::jetstream::Shared::default())),
             )
             .await
         })
@@ -303,6 +333,9 @@ impl Server for NatsProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'type' field in action")?;
 
+        if let Some(result) = super::jetstream::execute(&action) {
+            return result;
+        }
         match action_type {
             "send_nats_message" => execute_send_nats_message(&action),
             "send_nats_info" => execute_send_nats_info(&action),
@@ -324,7 +357,7 @@ impl Server for NatsProtocol {
 ///
 /// Rejecting is the only safe answer: silently stripping would deliver a message on a
 /// subject nobody asked for, which is worse than a failed action the operator can see.
-fn check_token(value: &str, field: &str) -> Result<()> {
+pub(crate) fn check_token(value: &str, field: &str) -> Result<()> {
     if value.is_empty() {
         return Err(anyhow::anyhow!("'{field}' must not be empty"));
     }
@@ -341,7 +374,7 @@ fn check_token(value: &str, field: &str) -> Result<()> {
 ///
 /// No sniffing: `"48656c6c6f"` is both valid text and valid hex, and only the sender knows
 /// which it means. This mirrors `send_tcp_data`.
-fn decode_payload(action: &serde_json::Value) -> Result<Vec<u8>> {
+pub(crate) fn decode_payload(action: &serde_json::Value) -> Result<Vec<u8>> {
     let payload = action.get("payload").and_then(|v| v.as_str()).unwrap_or("");
     let encoding = action
         .get("encoding")
@@ -381,7 +414,9 @@ fn decode_payload(action: &serde_json::Value) -> Result<Vec<u8>> {
 ///
 /// Header values are free text in the protocol but must not contain CR or LF, which would
 /// end the header block early; a name has the same problem plus `:`.
-fn encode_headers(headers: &serde_json::Map<String, serde_json::Value>) -> Result<Vec<u8>> {
+pub(crate) fn encode_headers(
+    headers: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<u8>> {
     let mut out = String::from("NATS/1.0\r\n");
     for (name, value) in headers {
         let value = value
@@ -498,7 +533,11 @@ fn execute_send_nats_info(action: &serde_json::Value) -> Result<ActionResult> {
         .and_then(|v| v.as_u64())
         .unwrap_or(DEFAULT_MAX_PAYLOAD);
 
-    let info = build_info_json(server_name, max_payload, "0.0.0.0", 0, 0, "");
+    let jetstream = action
+        .get("jetstream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let info = build_info_json(server_name, max_payload, "0.0.0.0", 0, 0, "", jetstream);
     Ok(ActionResult::Output(
         format!("INFO {}\r\n", info).into_bytes(),
     ))
@@ -515,6 +554,7 @@ pub fn build_info_json(
     port: u16,
     client_id: u64,
     client_ip: &str,
+    jetstream: bool,
 ) -> String {
     // `server_id` is opaque to clients; deriving it from the name keeps it stable for the
     // life of the server and free of anything host-identifying.
@@ -533,7 +573,7 @@ pub fn build_info_json(
         "client_ip": client_ip,
         "auth_required": false,
         "tls_required": false,
-        "jetstream": false,
+        "jetstream": jetstream,
         "connect_urls": [],
     })
     .to_string()
