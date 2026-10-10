@@ -812,6 +812,8 @@ pub mod restconf;
 pub mod rsync;
 #[cfg(feature = "smpp")]
 pub mod smpp;
+#[cfg(feature = "tr069")]
+pub mod tr069;
 #[cfg(feature = "vxlan")]
 pub mod vxlan;
 #[cfg(feature = "webtransport")]
