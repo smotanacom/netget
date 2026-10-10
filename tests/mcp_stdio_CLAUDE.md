@@ -54,5 +54,7 @@ The non-agent tests only read the protocol registry / app state.
 ## Not covered here
 
 - `start_server` end-to-end (it invokes the LLM) — covered by the protocol E2E suites.
-- HTTP transport (`--mcp-http`) wiring — smoke-testable by binding a port and
-  issuing an `initialize` over HTTP; not yet automated.
+- HTTP transport (`--mcp-http`) wiring — `tests/mcp_http_transport_test.rs` spawns the
+  real binary on an ephemeral port and drives `initialize` over HTTP, including the
+  admission policy (rebound `Host`, foreign `Origin`, missing bearer token, oversized
+  body); `tests/mcp_http_guard_test.rs` pins the policy itself without a socket.

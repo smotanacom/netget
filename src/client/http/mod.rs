@@ -113,6 +113,7 @@ impl HttpClient {
         let built = tokio::task::spawn_blocking(move || {
             let mut builder = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
+                .redirect(crate::client::http_fetch::same_origin_redirects())
                 .use_rustls_tls();
             // Only when the host *is* an address. A hostname is left alone: resolving
             // `localhost` or a real name is the resolver's job, and /etc/hosts or
@@ -582,11 +583,10 @@ impl HttpClient {
             .unwrap_or((None, None));
         let base_url = base_url.context("No base URL found")?;
 
-        let url = if path.starts_with("http://") || path.starts_with("https://") {
-            path.clone()
-        } else {
-            format!("{}{}", base_url, path)
-        };
+        // Same origin as `remote_addr` or refused: see `resolve_same_origin`. The startup
+        // `default_headers` go on every request, so a request to another host would carry
+        // the operator's API key there.
+        let url = crate::client::http_fetch::resolve_same_origin(&base_url, &path)?;
 
         info!(
             "HTTP client {} making request: {} {}",

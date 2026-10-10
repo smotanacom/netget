@@ -73,7 +73,7 @@ async fn client_works_against_libsrt() {
     let publisher = client_in(
         &state,
         format!("127.0.0.1:{port}"),
-        json!({"stream_id": "#!::r=live/netget,m=publish"}),
+        json!({"stream_id": "#!::r=live/netget,m=publish", "media_root": dir.path()}),
     )
     .await
     .unwrap();

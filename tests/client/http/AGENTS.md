@@ -1,6 +1,6 @@
 # HTTP Client E2E Tests
 
-Five files, declared in `tests/client/http/mod.rs`. Nothing is `#[ignore]`d.
+Six files, declared in `tests/client/http/mod.rs`. Nothing is `#[ignore]`d.
 
 | File | Peer | Tests | LLM calls |
 |---|---|---|---|
@@ -9,6 +9,7 @@ Five files, declared in `tests/client/http/mod.rs`. Nothing is `#[ignore]`d.
 | `command_channel_test.rs` | NetGet's own HTTP server, in-process | 1 | 0 |
 | `transport_test.rs` | NetGet's own HTTP and TCP servers, in-process | 5 | 0 |
 | `fetch_client_test.rs` | a recording HTTP/1.1 peer in the test | 5 | 0 |
+| `same_origin_test.rs` | two counting HTTP/1.1 stubs in the test | 8 (one needs `webdav`) | 0 |
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features http,tcp --test client -- http:: --test-threads=100
@@ -85,6 +86,17 @@ must be `Disconnected` and leave the client with no command handle.
 The peer is a NetGet HTTP server of our own with a `*` static handler, so the assertion that
 the injected `GET /dashboard-marker` came back `200` is a real round trip, and the server's
 access log is checked for the path.
+
+## `same_origin_test.rs` — one origin per client
+
+`http_fetch::resolve_same_origin` as a function, then the `http` and `webdav` clients on the
+wire. The function tests pin that an absolute URL is accepted only on the base's origin; that a
+relative path cannot rewrite the authority (`@attacker.example/x`, `.attacker.example/`,
+`:9999/` and a backslash form each stay a path on the bound origin, read back through the
+`url` parser); that `/ok`, `ok`, `?q=1`, `api/x` and a base with a path still resolve as
+expected; and that userinfo in a same-origin URL is refused. The wire tests open a client on
+one counting stub and require a second stub to count zero accepts after an absolute URL on it
+and a userinfo-shaped relative path naming it, with the home stub contacted by the latter.
 
 ## `transport_test.rs` — the browser transport, natively
 

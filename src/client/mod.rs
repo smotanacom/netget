@@ -6,11 +6,15 @@
 
 // Shared plumbing: budget-checked LLM entry point used by every client protocol.
 // See the module docs for why clients need a hard call ceiling.
+/// Credential policy the AWS-SDK clients share.
+pub mod aws_support;
 pub mod command_support;
 /// The HTTP round trip the HTTP-family clients share: reqwest natively, hyper's HTTP/1.1
 /// client over the virtual loopback in the browser build.
 pub mod http_fetch;
 pub mod llm_budget;
+/// The directory a media client may read local files from (`srt`, `rtmp`).
+pub mod media_root;
 pub mod response_reader;
 pub mod wire_values;
 
@@ -762,6 +766,8 @@ pub mod bolt;
 
 #[cfg(feature = "a2s")]
 pub mod a2s;
+#[cfg(feature = "activitypub")]
+pub mod activitypub;
 #[cfg(feature = "anthropic")]
 pub mod anthropic;
 #[cfg(feature = "bfd")]
@@ -776,12 +782,16 @@ pub mod consul;
 pub mod dbus;
 #[cfg(feature = "epp")]
 pub mod epp;
+#[cfg(feature = "guacamole")]
+pub mod guacamole;
 #[cfg(feature = "inetd")]
 pub mod inetd;
 #[cfg(feature = "jmap")]
 pub mod jmap;
 #[cfg(feature = "knx")]
 pub mod knx;
+#[cfg(feature = "libp2p")]
+pub mod libp2p;
 #[cfg(feature = "lmtp")]
 pub mod lmtp;
 #[cfg(feature = "lpd")]
@@ -814,6 +824,8 @@ pub mod rsync;
 pub mod smpp;
 #[cfg(feature = "stratum")]
 pub mod stratum;
+#[cfg(feature = "sunrpc")]
+pub mod sunrpc;
 #[cfg(feature = "vxlan")]
 pub mod vxlan;
 #[cfg(feature = "webtransport")]

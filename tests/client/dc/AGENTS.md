@@ -131,6 +131,29 @@ This directory contains end-to-end tests for the DC (Direct Connect) client impl
 cargo test --features dc test_dc_client_connect_real_llm -- --ignored --use-ollama
 ```
 
+### `session_test.rs` — fake hub, in-process mock model
+
+A loopback `TcpListener` plays the hub and writes NMDC frames itself; the client is created
+with `ClientForm` and its model is `MockOllamaServer`. Assertions are made on the bytes the
+hub reads, with bounded waits (no fixed sleeps).
+
+- `an_action_answered_at_lock_goes_out_and_the_handshake_completes` — the model answers
+  `dc_client_connected` with `send_dc_chat`; the hub must read that chat, `$Key`,
+  `$ValidateNick alice|` and `$MyINFO`. 1 LLM call.
+- `a_failing_action_does_not_drop_the_rest_and_model_text_is_escaped` — after `$Hello`, the hub
+  sends two malformed `$To:` frames (inverted range, range inside `é`) and a chat; the model's
+  batch mixes a rejected action (no `message`), a refused private-message target (`bad|nick`)
+  and text containing `|`, `$` and `&#124;`. The hub must read every good action, escaped, and
+  no injected command. 3 LLM calls.
+- `disconnect_ends_the_session_while_the_hub_holds_the_connection_open` — `[disconnect,
+  send_dc_chat]`: the hub reads `$Quit|` then EOF, never the chat, and the client's command
+  handle disappears while the hub keeps its socket open. 3 LLM calls.
+- `a_nickname_with_a_delimiter_is_refused_before_connecting` — `ClientForm::create` fails with
+  "invalid NMDC nickname" and the hub sees no connection. 0 LLM calls.
+- `malformed_private_messages_are_errors_not_panics`,
+  `reconnect_delay_doubles_and_saturates_at_the_cap`,
+  `nmdc_text_escaping_and_nickname_validation` — the public helpers directly.
+
 ## LLM Call Budget
 
 **Target**: < 10 LLM calls total for entire suite

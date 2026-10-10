@@ -84,6 +84,14 @@ ids, SASL mechanism names - is XML-escaped. Interpolating it raw meant a body co
 `<` or an apostrophe produced a malformed stanza, and a real client's parser drops the entire
 stream on the first well-formedness error rather than skipping one stanza.
 
+`xml_escape` also **drops** every character XML 1.0's `Char` production (§2.2) excludes: the C0
+controls other than tab, LF and CR, and `U+FFFE`/`U+FFFF`. No escape exists for them — `&#1;`
+is forbidden too — so one in a model-composed body would end a strict client's stream (rxml
+under tokio-xmpp, expat under most others). Tab, LF and CR are kept. Pinned by
+`tests/server/xmpp/xml_escape_test.rs`, which also parses a `send_message` stanza carrying such
+characters with `xmpp-parsers`. `send_raw_xml` and `send_iq_result`'s `payload` are not passed
+through it, so they can still carry such a character.
+
 `send_raw_xml`'s `xml` and `send_iq_result`'s `payload` are deliberately **not** escaped: they
 exist so the model can emit markup. `send_iq_error`'s `condition` and `send_auth_failure`'s
 `reason` become element *names*, so they are validated against `[A-Za-z0-9-]+` and rejected

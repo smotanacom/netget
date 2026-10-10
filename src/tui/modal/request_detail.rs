@@ -2,6 +2,7 @@
 //! payload, and the actions that answered it.
 
 use crate::state::app_state::AccessLogEntry;
+use crate::utils::sanitize;
 
 /// Render the entry as display lines (header, request JSON, response JSON).
 pub fn detail_lines(entry: &AccessLogEntry) -> Vec<String> {
@@ -25,9 +26,13 @@ pub fn detail_lines(entry: &AccessLogEntry) -> Vec<String> {
     lines.push(format!("when      unix_ms {}", entry.unix_ms));
     lines.push(String::new());
 
+    // Both halves quote the peer. `serde_json` escapes C0 inside a string but writes DEL and C1
+    // (U+009B is an 8-bit CSI) raw, and the modal is a `Paragraph` that hands them to the
+    // terminal, so each goes through `json_text`.
     lines.push("── request ──".to_string());
-    let request =
-        serde_json::to_string_pretty(&entry.request).unwrap_or_else(|_| entry.request.to_string());
+    let request = sanitize::json_text(
+        &serde_json::to_string_pretty(&entry.request).unwrap_or_else(|_| entry.request.to_string()),
+    );
     lines.extend(request.lines().map(|l| l.to_string()));
     lines.push(String::new());
 
@@ -38,8 +43,9 @@ pub fn detail_lines(entry: &AccessLogEntry) -> Vec<String> {
     if entry.response.is_empty() {
         lines.push("(no actions)".to_string());
     } else {
-        let response =
-            serde_json::to_string_pretty(&entry.response).unwrap_or_else(|_| "[]".to_string());
+        let response = sanitize::json_text(
+            &serde_json::to_string_pretty(&entry.response).unwrap_or_else(|_| "[]".to_string()),
+        );
         lines.extend(response.lines().map(|l| l.to_string()));
     }
     lines

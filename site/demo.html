@@ -80,8 +80,17 @@
         <a href="https://github.com/smotanacom/netget/blob/master/LICENSE">AGPL-3.0</a>
     </footer>
     <script src="js/main.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+    <!-- Subresource integrity: the hash of the pinned, immutable file as jsdelivr serves it
+         (sha384 of https://cdn.jsdelivr.net/npm/<package>@<version>/lib/<file>). A CDN
+         compromise or an interception on the way then fails the load instead of running
+         someone else's script on netget.net. Bumping a version means recomputing:
+           curl -sSL <url> | openssl dgst -sha384 -binary | base64 -w0 -->
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"
+            integrity="sha384-M169f14mRZOXm3hD/v2Ti0ThIT/RnAQagXA9nlE15yHAtrW19gdePJh/HaTzUOe/"
+            crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"
+            integrity="sha384-iF+jqbuti4XlB64clWgFWYEscb+UnSRv3VgVikGYZu+otNFnSHr7y7NcKfBnGizn"
+            crossorigin="anonymous"></script>
     <script type="module" src="js/demo.js"></script>
 </body>
 </html>

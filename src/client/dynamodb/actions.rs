@@ -422,12 +422,18 @@ impl Protocol for DynamoDbClientProtocol {
         use crate::llm::actions::StartupExamples;
         use serde_json::json;
 
+        // A custom endpoint is refused without explicit credentials (`client::aws_support`),
+        // so every example names a dummy pair, which is what DynamoDB Local accepts.
         StartupExamples::new(
             // LLM mode: LLM controls DynamoDB operations
             json!({
                 "type": "open_client",
                 "remote_addr": "localhost:8000",
                 "base_stack": "dynamodb",
+                "startup_params": {
+                    "access_key_id": "local",
+                    "secret_access_key": "local"
+                },
                 "instruction": "Scan the Users table and report all items with age greater than 21"
             }),
             // Script mode: Code-based deterministic responses
@@ -435,6 +441,10 @@ impl Protocol for DynamoDbClientProtocol {
                 "type": "open_client",
                 "remote_addr": "localhost:8000",
                 "base_stack": "dynamodb",
+                "startup_params": {
+                    "access_key_id": "local",
+                    "secret_access_key": "local"
+                },
                 "event_handlers": [{
                     "event_pattern": "dynamodb_response_received",
                     "handler": {
@@ -449,6 +459,10 @@ impl Protocol for DynamoDbClientProtocol {
                 "type": "open_client",
                 "remote_addr": "localhost:8000",
                 "base_stack": "dynamodb",
+                "startup_params": {
+                    "access_key_id": "local",
+                    "secret_access_key": "local"
+                },
                 "event_handlers": [
                     {
                         "event_pattern": "dynamodb_connected",

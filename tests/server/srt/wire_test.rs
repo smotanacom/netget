@@ -51,10 +51,12 @@ async fn relay_refusals_and_injected_text() {
     )
     .await
     .unwrap();
+    // The clip is written under this directory, which is the publisher's media_root.
+    let dir = tempfile::tempdir().unwrap();
     let publisher = client_in(
         &state,
         addr.to_string(),
-        json!({"stream_id": "#!::r=live/show,m=publish"}),
+        json!({"stream_id": "#!::r=live/show,m=publish", "media_root": dir.path()}),
     )
     .await
     .unwrap();
@@ -69,7 +71,6 @@ async fn relay_refusals_and_injected_text() {
         "a second publisher is refused"
     );
 
-    let dir = tempfile::tempdir().unwrap();
     let ts = dir.path().join("tiny.ts");
     let data = tiny_ts(600);
     std::fs::write(&ts, &data).unwrap();

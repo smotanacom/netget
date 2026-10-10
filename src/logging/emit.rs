@@ -129,7 +129,10 @@ impl<'a> Log<'a> {
         if !self.payloads && matches!(level, Level::Debug | Level::Trace) {
             return;
         }
-        let text = msg.to_string();
+        // Peer-derived text arrives here from every protocol. `netget.log` is read with
+        // `tail -f` and the TUI paints the `[LEVEL]` copy, so a control character in it is
+        // an escape sequence on a real terminal; `multiline` keeps newline and tab only.
+        let text = crate::utils::sanitize::multiline(&msg.to_string());
 
         // File log — always, at the level that matches the TUI prefix.
         match level {

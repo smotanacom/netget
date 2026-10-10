@@ -2,7 +2,7 @@
 
 **LLM-Controlled Network Protocol Server & Client**
 
-NetGet is a Rust CLI application exposing 267 network protocols as Cargo features, with server and client roles controlled by an LLM (via Ollama). Instead of hardcoding protocol logic, NetGet provides the network stack while the LLM constructs raw protocol datagrams or high-level responses based on natural language instructions.
+NetGet is a Rust CLI application exposing 271 network protocols as Cargo features, with server and client roles controlled by an LLM (via Ollama). Instead of hardcoding protocol logic, NetGet provides the network stack while the LLM constructs raw protocol datagrams or high-level responses based on natural language instructions.
 
 ```bash
 # Start a MySQL server that reads schema from files
@@ -36,7 +36,7 @@ without any code changes.
 
 ## Key Features
 
-### 🌐 50+ Network Protocols
+### 🌐 271 Network Protocols
 
 Both server and client modes for:
 
@@ -359,7 +359,16 @@ Claude Desktop config (`claude_desktop_config.json`):
 
 # Serve MCP over HTTP/SSE (bind address from --listen-addr, default 127.0.0.1)
 netget --mcp-http 8080          # endpoint: http://127.0.0.1:8080/mcp
+
+# Any non-loopback bind requires a bearer token
+NETGET_MCP_TOKEN=$(openssl rand -hex 32) netget --mcp-http 8080 --listen-addr 0.0.0.0
 ```
+
+With a token set — `NETGET_MCP_TOKEN`, or `--mcp-token <TOKEN>` — every request must carry
+`Authorization: Bearer <TOKEN>`. Binding `--listen-addr` to anything but a loopback address
+is refused without one; without a token the endpoint admits loopback `Host`/`Origin` only.
+Prefer the environment variable: a `--mcp-token` argument is visible to every local user in
+the process table.
 
 ### Exposed tools
 
@@ -641,4 +650,4 @@ MIT
 - Built with [Tokio](https://tokio.rs/) for async runtime
 - Terminal UI powered by [Crossterm](https://github.com/crossterm-rs/crossterm)
 - LLM integration via [Ollama](https://ollama.ai/)
-- 267 protocol features, built on best-in-class Rust crates
+- 271 protocol features, built on best-in-class Rust crates
