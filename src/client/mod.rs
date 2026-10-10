@@ -804,6 +804,8 @@ pub mod restconf;
 pub mod smpp;
 #[cfg(feature = "webtransport")]
 pub mod webtransport;
+#[cfg(feature = "x11")]
+pub mod x11;
 #[cfg(feature = "zenoh")]
 pub mod zenoh;
 #[cfg(feature = "zeromq")]
