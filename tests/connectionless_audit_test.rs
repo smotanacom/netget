@@ -61,6 +61,11 @@ const CONNECTIONLESS_EXCEPTIONS: &[&str] = &[
     // a minute). Each packet is interpreted against the last; a quiet spell is the Detection
     // Time's to judge, never a 10-second sweep's.
     "BFD",
+    // A KNXnet/IP tunnel is a connection: CONNECT_REQUEST assigns a channel, every tunnelling
+    // request carries a sequence number checked against the last, and the specification's
+    // heartbeat (CONNECTIONSTATE_REQUEST) keeps it alive; a tunnel silent for 120 s is dropped
+    // by the server itself. A 10-second sweep would cut a tunnel that is behaving correctly.
+    "KNX/IP",
     // GELF also serves live TCP sessions, which must survive a slow handler. Its UDP
     // path creates only a temporary entry for one decoded message and explicitly
     // removes it after dispatch on success or error. Chunk reassembly is bounded and
