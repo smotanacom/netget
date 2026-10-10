@@ -235,7 +235,6 @@ tail -f /var/log/ejabberd/ejabberd.log
 ## Test Improvements (Future)
 
 1. **Automated Verification:** Run two clients and verify message delivery
-2. **Public Test Server:** Use `test.xmpp.jp` or similar for CI/CD
 3. **Docker Compose:** Automated server setup with pre-configured accounts
 4. **IQ Stanza Tests:** Add tests for service discovery (XEP-0030)
 5. **MUC Tests:** Add multi-user chat tests when implemented
@@ -248,8 +247,10 @@ tail -f /var/log/ejabberd/ejabberd.log
 **Options for CI:**
 
 1. **Docker Prosody:** Run server in container, connect in tests
-2. **Public Test Server:** Use `test.xmpp.jp` (requires internet)
-3. **Mock Server:** Implement simple XMPP mock for testing
+2. **Mock Server:** Implement simple XMPP mock for testing
+
+Tests bind 127.0.0.1 only and never contact external endpoints, so a public XMPP server is not
+an option.
 
 **Recommendation:** Use Docker Prosody for CI with pre-configured accounts.
 
@@ -264,13 +265,14 @@ tail -f /var/log/ejabberd/ejabberd.log
 
 ## `command_channel_test.rs` — the dashboard's `[ send ]`
 
-The one test here that runs without a server, and it is deliberately narrow. It creates a client
-for `netget@127.0.0.1@secret` — loopback, nothing listening — which is exactly the state in which
-`[ send ]` must still be reachable rather than absent, and asserts: the command handle exists
-before anything is sent (registration precedes the `xmpp_connected` LLM call, which now runs in
-its own task); `wait_for_more` returns `Executed` saying nothing went on the wire; an unknown
-action is `Rejected`; the injection is recorded in the client's access log; `disconnect` returns
-`Disconnected` and drops the handle.
+Runs without an XMPP server. The client is pointed at a loopback listener that accepts and never
+answers, so its session stays pending — `ClientForm::create` does not return until the session
+is online or has failed, so the test runs it in its own task and finds the client id through
+`get_all_clients`. It asserts: the command handle exists while the session is pending
+(registration precedes `Online` and the `xmpp_connected` LLM call); `wait_for_more` returns
+`Executed` saying nothing went on the wire; an unknown action is `Rejected`; the injection is
+recorded in the client's access log; `disconnect` returns `Disconnected` and drops the handle;
+and the pending `create` then fails saying the client was closed.
 
 **LLM calls: 0** (the client's LLM URL is `http://127.0.0.1:1`).
 
@@ -278,3 +280,21 @@ What it cannot cover: a stanza actually reaching a peer. `Client::send_stanza` r
 the stanza has been written to the transport, and no XMPP server this suite can start completes
 tokio-xmpp's STARTTLS/SASL negotiation — so `send_message` remains covered only by the
 `#[ignore]`d test above, against a real prosody/ejabberd.
+
+## `target_test.rs` — where the client connects, and when it is `Connected`
+
+No XMPP server, no LLM calls, loopback only.
+
+| Test | Asserts |
+|---|---|
+| `connects_to_remote_addr_and_never_to_the_jid_domain` | A client whose JID is on `example.invalid` (RFC 6761: no resolver answers for it) and whose `remote_addr` is a loopback listener connects to that listener, and the stream header it sends names `example.invalid` as `to`. A client that looked its server up from the JID could not have arrived there. `create` then fails with an error naming the address |
+| `connected_is_not_reported_before_the_session_is_online` | Against a listener that accepts and stays silent, the client's status is polled for as long as `create` is pending: it is `Connecting`, never `Connected`; `create` fails after `session_timeout_secs` (3) saying so, and the client is removed |
+| `a_missing_password_is_refused_before_any_connection` | `jid` without `password` fails at startup naming the parameter, and the listener sees no connection |
+| `the_target_comes_from_remote_addr_alone` | `resolve_target`: socket addresses pass through, a bare IP gets 5222, an empty or blank `remote_addr` is refused, an account (`alice@example.invalid@hunter2`) is refused without echoing the password, a bad port is refused |
+
+## `startup_params_test.rs` — the account comes from the startup parameters
+
+`remote_addr` is a bare loopback address, so the account can only come from `jid`/`password`.
+The listener reads the stream header and finds the startup JID's domain as its `to`, and the
+client recorded that JID on itself. A second test gives `password` as a number and expects the
+startup error to name it. No LLM calls.

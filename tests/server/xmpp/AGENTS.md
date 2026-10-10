@@ -59,6 +59,15 @@ It also scans the whole raw byte stream for the tokens that leaked in the origin
 `LLM`, `ollama`, `11434`, a backend URL, a filesystem path, `✗`, `retries`. That scan is the
 point of the test; the stanza assertions only prove the frame is one a real client can parse.
 
+## `xml_escape_test.rs` — characters XML forbids
+
+No server, no LLM calls. `xml_escape` must drop every C0 control other than tab, LF and CR, and
+`U+FFFE`/`U+FFFF`, while keeping the edges of the permitted ranges and still escaping markup.
+The second test runs the protocol's own `send_message` with a body full of terminal escapes,
+`U+0001` and `U+FFFF` (and a `U+0000` in `from`), then parses the stanza with `xmpp-parsers`
+(rxml underneath) and asserts the body and `from` that come out — so a forbidden character that
+slipped through fails the parse exactly as it would end a real client's stream.
+
 ## Not covered
 
 SASL authentication, IQ stanzas (roster, bind), stream restart after auth, STARTTLS, multiple

@@ -22,9 +22,19 @@ pub const DEFAULT_XMPP_DOMAIN: &str = "localhost";
 /// apostrophe emitted a malformed stanza, and a real client's XML parser drops the whole
 /// stream on the first well-formedness error rather than skipping the stanza.
 ///
+/// Characters XML 1.0 does not allow at all are **dropped**. Its `Char` production (§2.2)
+/// admits tab, LF, CR and `U+0020` upwards, less the surrogate block and `U+FFFE`/`U+FFFF`.
+/// The rest - the C0 controls `U+0000`-`U+0008`, `U+000B`, `U+000C`, `U+000E`-`U+001F`, and
+/// the two noncharacters - make a document ill-formed however they are written, because a
+/// character reference to them (`&#1;`) is forbidden too. A strict parser (rxml, under every
+/// tokio-xmpp client, or expat) answers by ending the whole stream, so one stray `U+001B`
+/// in a model-composed body would cost the peer its session. The character carries nothing
+/// a chat client could show, so removing it loses nothing; tab, LF and CR are kept.
+/// Surrogates need no check: a Rust `char` cannot hold one.
+///
 /// `send_raw_xml` and `send_iq_result`'s `payload` are deliberately *not* escaped: they exist
 /// precisely so the model can emit markup, and both say so in their descriptions.
-pub(crate) fn xml_escape(text: &str) -> String {
+pub fn xml_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         match c {
@@ -33,10 +43,24 @@ pub(crate) fn xml_escape(text: &str) -> String {
             '>' => out.push_str("&gt;"),
             '\'' => out.push_str("&apos;"),
             '"' => out.push_str("&quot;"),
-            _ => out.push(c),
+            c if is_xml_char(c) => out.push(c),
+            _ => {}
         }
     }
     out
+}
+
+/// Whether XML 1.0's `Char` production (§2.2) admits `c`.
+fn is_xml_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{9}'
+            | '\u{A}'
+            | '\u{D}'
+            | '\u{20}'..='\u{D7FF}'
+            | '\u{E000}'..='\u{FFFD}'
+            | '\u{10000}'..='\u{10FFFF}'
+    )
 }
 
 /// XMPP protocol action handler
