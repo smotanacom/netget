@@ -53,9 +53,13 @@ No intercepted plaintext is written to disk; request/response bodies reach the
 writes the CA *certificate* (the public half, safe to distribute). The private key
 is never written by any code path and is not reachable through any action. The
 parameter is model-settable through `open_server`, so `write_ca_export` refuses a
-symlink (`O_NOFOLLOW`) and refuses to overwrite any existing file that is not empty
-or a PEM certificate — a previous export is replaced, `~/.bashrc` is not
-(`tests/server/proxy/mitm_dial_order_test.rs`).
+symlink (`O_NOFOLLOW`), creates a new file with `create_new` (nothing is truncated),
+and writes the PEM alone. An existing file is replaced only when it holds exactly one PEM
+certificate, and nothing else, whose subject is `CA_COMMON_NAME` ("NetGet MITM Proxy CA") —
+an earlier NetGet export, which is what a restart finds, since the CA is regenerated per
+start. The check and the rewrite go through one `O_NOFOLLOW` handle. Every
+other existing file is refused and left untouched — `~/.bashrc`, an empty file, and any
+other PEM certificate or CA bundle alike (`tests/server/proxy/mitm_dial_order_test.rs`).
 
 **What trust the user must grant.** Interception only works against clients that
 have been configured to trust that CA — system trust store, `curl --cacert`,
@@ -182,11 +186,18 @@ at the executor, where a refusal is an error the repair loop can see, and again 
 bytes are written, where a value that still arrives is dropped with a warning. A name must
 be an RFC 9110 token, a value may contain no CR/LF/control (HTAB excepted), and a path or
 query part no whitespace. The model reads the peer's own request, so without this a
-prompt-injected `"x\r\nContent-Length: 0\r\n\r\nGET /admin HTTP/1.1"` header became a
-second request upstream. `Content-Length` and `Transfer-Encoding` cannot be *added* (they
-may be removed): the proxy frames the body it writes, and `tls_mitm::rebuild_modified_response`
-also drops the upstream's own framing headers — re-emitting them beside the computed
-`Content-Length` was a response desync. `tests/server/proxy/header_injection_test.rs`.
+prompt-injected `"x\r\nContent-Length: 0\r\n\r\nGET /admin HTTP/1.1"` header would become
+a second request upstream. `Content-Length` and `Transfer-Encoding` cannot be *added* (they
+may be removed): the proxy frames the body it writes, and that framing is the only framing
+on the message. `tls_mitm::rebuild_modified_response` drops the upstream's own framing
+headers, since re-emitting them beside the computed `Content-Length` is a response desync.
+`ProxyServer::apply_request_modifications` removes the client's `Transfer-Encoding`
+whenever it writes a `Content-Length` (both together are the CL.TE request-smuggling
+desync); a `chunked` request body is decoded to its payload first (chunk extensions and
+trailers discarded) and always forwarded with a `Content-Length`. A chunked body that is
+malformed, incomplete or followed by extra bytes, or a transfer coding other than plain
+`chunked`, is refused: the client gets a fixed `400` and the upstream is never contacted.
+`tests/server/proxy/header_injection_test.rs`.
 
 **HTTPS CONNECT Flow** (Pass-Through):
 
@@ -199,12 +210,13 @@ also drops the upstream's own framing headers — re-emitting them beside the co
 
 **HTTPS CONNECT Flow** (MITM): `200 Connection Established` → client TLS handshake on a
 minted leaf → read the first request → consult the model → **only then** dial the
-upstream and complete its TLS handshake (`tls_mitm::connect_upstream`). Until September
-2026 the dial came before the decision, so any proxy client could make NetGet open a TCP
-connection to an arbitrary host:port and send a ClientHello with the peer's SNI — a
-reachability oracle for internal addresses — and a blocked request had already cost its
-destination a handshake. `mitm_dial_order_test.rs` counts accepts on a silent upstream
-and requires zero after a block.
+upstream and complete its TLS handshake (`tls_mitm::connect_upstream`). Dialling before
+the decision would let any proxy client make NetGet open a TCP connection to an arbitrary
+host:port and send a ClientHello with the peer's SNI — a reachability oracle for internal
+addresses — and would cost a blocked request's destination a handshake. A modified request
+is also rebuilt before the dial, so one the proxy refuses never reaches the upstream.
+`mitm_dial_order_test.rs` counts accepts on a silent upstream and requires zero after a
+block.
 
 **Access Logging**:
 
@@ -421,7 +433,9 @@ test-location policy is satisfied here.
 
 4. **Chunked Transfer Encoding**
     - Basic support for reading responses
-    - Complex chunked request bodies may not be fully parsed
+    - A chunked request body is decoded only when the model modifies the request, and
+      only the body bytes that arrived with the request head are seen; a body still in
+      flight is refused as incomplete rather than forwarded
 
 5. **No Authentication**
     - Proxy doesn't require authentication (anyone can use it)

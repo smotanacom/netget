@@ -1027,17 +1027,24 @@ impl ProxyServer {
                 ref modify_action @ RequestAction::Modify { .. } => {
                     Log::new(Some(&status_tx)).debug("LLM requested modifications, applying");
 
-                    // Apply modifications
-                    let modified_request =
-                        Self::apply_request_modifications(request_data, modify_action)
-                            .unwrap_or_else(|e| {
-                                // Non-fatal: falls back to forwarding the request unmodified.
-                                Log::new(Some(&status_tx)).warn(format!(
-                                    "Proxy modification error: {} - forwarding unmodified",
-                                    e
-                                ));
-                                request_data.to_vec()
-                            });
+                    // Apply modifications. A request the proxy cannot rebuild (a malformed or
+                    // incomplete chunked body, an undecodable transfer coding) is refused:
+                    // forwarding it unmodified would ignore the model's decision, and its
+                    // framing is exactly what the proxy could not read.
+                    let modified = Self::apply_request_modifications(request_data, modify_action);
+                    let modified_request = match modified {
+                        Ok(modified) => modified,
+                        Err(e) => {
+                            Log::new(Some(&status_tx)).warn(format!(
+                                "Proxy answering {} {} with 400: {:#}",
+                                method, uri, e
+                            ));
+                            client_stream
+                                .write_all(&modification_refused_response())
+                                .await?;
+                            return Ok(());
+                        }
+                    };
 
                     // Forward modified request
                     Self::forward_http_request(
@@ -1408,8 +1415,17 @@ impl ProxyServer {
         result
     }
 
-    /// Apply modifications to HTTP request
-    pub(crate) fn apply_request_modifications(
+    /// Apply a model's `handle_request_modify` decision to a raw HTTP/1.1 request.
+    ///
+    /// Anything other than `RequestAction::Modify` returns the request unchanged. A
+    /// modified request is framed by the proxy: whenever the rebuild writes its own
+    /// `Content-Length` it removes `Transfer-Encoding`, so the upstream never receives both
+    /// (the CL.TE request-smuggling desync). A `Transfer-Encoding: chunked` body is decoded
+    /// to its payload before `new_body` / `body_replacements` apply and is always forwarded
+    /// with a `Content-Length`. A chunked body that is malformed or incomplete, or a
+    /// transfer coding other than plain `chunked`, is an `Err`: the caller refuses the
+    /// request rather than forwarding framing the proxy could not read.
+    pub fn apply_request_modifications(
         request_data: &[u8],
         modifications: &RequestAction,
     ) -> Result<Vec<u8>> {
@@ -1470,15 +1486,42 @@ impl ProxyServer {
                 }
             }
 
+            // How the client framed the body. Read from every header line rather than from
+            // the map below, which keeps one value per name. Only plain `chunked` is
+            // decodable; any other coding (`gzip, chunked`, a doubled `chunked`, an empty
+            // value) is refused, because dropping the header would misdescribe the bytes.
+            let transfer_codings: Vec<String> = header_lines[1..]
+                .iter()
+                .filter_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.trim()
+                        .eq_ignore_ascii_case("transfer-encoding")
+                        .then(|| value.trim().to_ascii_lowercase())
+                })
+                .collect();
+            let chunked = !transfer_codings.is_empty();
+            if chunked {
+                let codings: Vec<&str> = transfer_codings
+                    .iter()
+                    .flat_map(|v| v.split(','))
+                    .map(str::trim)
+                    .filter(|c| !c.is_empty())
+                    .collect();
+                anyhow::ensure!(
+                    codings == ["chunked"],
+                    "refusing to modify a request with Transfer-Encoding {:?}: only plain \
+                     chunked framing can be rebuilt",
+                    transfer_codings.join(", ")
+                );
+            }
+
             // Build headers map.
             //
             // HTTP field names are case-insensitive (RFC 9110 §5.1) and hyper/reqwest put them
-            // on the wire lowercased, while a model writes `User-Agent` / `Content-Type`. Keying
-            // this map on the raw name therefore made `remove_headers: ["User-Agent"]` a no-op
-            // and made `headers: {"Host": ...}` *append* a second Host header instead of
-            // replacing the existing `host`. Key on the lowercased name and keep the original
-            // spelling only for output. The MITM response path (`tls_mitm.rs`) already did this;
-            // the plain-HTTP request path did not.
+            // on the wire lowercased, while a model writes `User-Agent` / `Content-Type`. The
+            // map is keyed on the lowercased name, with the original spelling kept only for
+            // output, so `remove_headers: ["User-Agent"]` removes `user-agent` and
+            // `headers: {"Host": ...}` replaces the existing `host` rather than adding a second.
             let mut headers_map: HashMap<String, (String, String)> = HashMap::new();
             for line in &header_lines[1..] {
                 if let Some(colon_pos) = line.find(':') {
@@ -1515,11 +1558,22 @@ impl ProxyServer {
                 }
             }
 
-            // Get body as bytes, then convert to string for modification
-            let original_body = if body_start < request_data.len() {
+            // Get body as bytes, then convert to string for modification. A chunked body is
+            // decoded to its payload first, so the modifications see the real content and the
+            // Content-Length written below counts it.
+            let raw_body = if body_start < request_data.len() {
                 &request_data[body_start..]
             } else {
                 &[]
+            };
+            let decoded_body;
+            let original_body: &[u8] = if chunked {
+                decoded_body = decode_chunked_body(raw_body).context(
+                    "refusing to modify a chunked request whose body is malformed or incomplete",
+                )?;
+                &decoded_body
+            } else {
+                raw_body
             };
 
             let mut body = String::from_utf8_lossy(original_body).to_string();
@@ -1545,17 +1599,15 @@ impl ProxyServer {
                 }
             }
 
-            // Update Content-Length to match new body size
-            if !body.is_empty() {
+            // The proxy frames the body it writes: a Content-Length counting `body`, and no
+            // Transfer-Encoding beside it. A body that was chunked, non-empty, or explicitly
+            // modified (possibly to empty) gets one; an untouched empty body keeps the head
+            // as it was.
+            if chunked || !body.is_empty() || new_body.is_some() || body_replacements.is_some() {
+                headers_map.remove("transfer-encoding");
                 headers_map.insert(
                     "content-length".to_string(),
                     ("Content-Length".to_string(), body.len().to_string()),
-                );
-            } else if new_body.is_some() || body_replacements.is_some() {
-                // Body was explicitly modified to empty
-                headers_map.insert(
-                    "content-length".to_string(),
-                    ("Content-Length".to_string(), "0".to_string()),
                 );
             }
 
@@ -1592,7 +1644,7 @@ impl ProxyServer {
         params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         params
             .distinguished_name
-            .push(rcgen::DnType::CommonName, "NetGet MITM Proxy CA");
+            .push(rcgen::DnType::CommonName, CA_COMMON_NAME);
 
         let key_pair = KeyPair::generate()?;
         let cert = params.self_signed(&key_pair)?;
@@ -1615,54 +1667,224 @@ pub(crate) fn strip_absolute_form(target: &str) -> &str {
     }
 }
 
-/// Merge `query_params` into a request target, replacing same-named parameters
-/// and appending the rest. Returns the target unchanged when there is nothing to
-/// merge.
+/// The answer to a request whose modification could not be applied
+/// (`ProxyServer::apply_request_modifications` returned `Err`). The reason goes to the log;
+/// the peer gets only this fixed text.
+pub(crate) fn modification_refused_response() -> Vec<u8> {
+    let body = "Request framing could not be rebuilt by the proxy\n";
+    format!(
+        "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+    .into_bytes()
+}
+
+/// Decode an HTTP/1.1 `chunked` message body (RFC 9112 §7.1) into its payload.
+///
+/// `data` must be the whole chunked body: every chunk, the terminating zero-size chunk, any
+/// trailer fields and the final CRLF, with nothing after it. Chunk extensions and trailer
+/// fields are discarded. Everything else is an error — a size that is not hex, a chunk
+/// shorter than its declared size, a missing or bare CR/LF, a body that ends early, bytes
+/// after the final CRLF — because a proxy that guesses at framing disagrees with the
+/// upstream about where the request ends.
+pub(crate) fn decode_chunked_body(data: &[u8]) -> Result<Vec<u8>> {
+    /// The line starting at `pos` (without its CRLF) and the offset just past the CRLF.
+    fn crlf_line(data: &[u8], pos: usize) -> Result<(&[u8], usize)> {
+        let rest = &data[pos..];
+        let end = rest
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .ok_or_else(|| anyhow::anyhow!("chunked body ends without a CRLF at byte {pos}"))?;
+        let line = &rest[..end];
+        anyhow::ensure!(
+            !line.contains(&b'\r') && !line.contains(&b'\n'),
+            "bare CR or LF in chunked framing at byte {pos}"
+        );
+        Ok((line, pos + end + 2))
+    }
+
+    let mut payload = Vec::new();
+    let mut pos = 0;
+    loop {
+        let (size_line, next) = crlf_line(data, pos)?;
+        let size_field = match size_line.iter().position(|&b| b == b';') {
+            // BWS is allowed only before a chunk extension.
+            Some(i) => {
+                let mut field = &size_line[..i];
+                while let Some((&last, rest)) = field.split_last() {
+                    if last != b' ' && last != b'\t' {
+                        break;
+                    }
+                    field = rest;
+                }
+                field
+            }
+            None => size_line,
+        };
+        anyhow::ensure!(
+            !size_field.is_empty()
+                && size_field.len() <= 16
+                && size_field.iter().all(u8::is_ascii_hexdigit),
+            "invalid chunk size line {:?} at byte {pos}",
+            String::from_utf8_lossy(size_line)
+        );
+        let size = u64::from_str_radix(std::str::from_utf8(size_field)?, 16)?;
+        pos = next;
+        if size == 0 {
+            break;
+        }
+        let end = usize::try_from(size)
+            .ok()
+            .and_then(|size| pos.checked_add(size))
+            .filter(|&end| end <= data.len())
+            .ok_or_else(|| anyhow::anyhow!("chunked body ends inside a {size}-byte chunk"))?;
+        payload.extend_from_slice(&data[pos..end]);
+        anyhow::ensure!(
+            data[end..].starts_with(b"\r\n"),
+            "chunk data at byte {end} is not followed by CRLF"
+        );
+        pos = end + 2;
+    }
+
+    // Trailer section: field lines up to the empty line that ends the body.
+    loop {
+        let (trailer, next) = crlf_line(data, pos)?;
+        pos = next;
+        if trailer.is_empty() {
+            break;
+        }
+    }
+    anyhow::ensure!(
+        pos == data.len(),
+        "{} bytes follow the end of the chunked body",
+        data.len() - pos
+    );
+    Ok(payload)
+}
+
+/// The common name of the CA NetGet generates. A file at `ca_export_path` whose single
+/// certificate carries it is an earlier NetGet export.
+pub const CA_COMMON_NAME: &str = "NetGet MITM Proxy CA";
+
+/// Largest file inspected as a possible earlier export. One certificate is a few KiB.
+const CA_EXPORT_MAX_BYTES: u64 = 64 * 1024;
+
+/// Whether `text` is exactly one PEM certificate (nothing but whitespace around it) whose DER
+/// contains [`CA_COMMON_NAME`].
+fn is_earlier_ca_export(text: &str) -> bool {
+    use base64::Engine as _;
+    const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
+    const END: &str = "-----END CERTIFICATE-----";
+    let Some(body) = text
+        .trim()
+        .strip_prefix(BEGIN)
+        .and_then(|rest| rest.strip_suffix(END))
+    else {
+        return false;
+    };
+    if body.contains("-----") {
+        return false;
+    }
+    let b64: String = body.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .is_ok_and(|der| {
+            der.windows(CA_COMMON_NAME.len())
+                .any(|w| w == CA_COMMON_NAME.as_bytes())
+        })
+}
+
 /// Write the CA certificate to `ca_export_path` without destroying anything else.
 ///
 /// `ca_export_path` is a startup parameter, so the model can set it through `open_server`,
-/// and `std::fs::write` followed symlinks and truncated whatever was there — one
-/// `"ca_export_path": "~/.ssh/authorized_keys"` away from emptying a file the operator
-/// cares about. The path is now opened with `O_NOFOLLOW` (a symlink is refused), and an
-/// existing file is overwritten only when it is empty or is itself a PEM certificate, which
-/// is what a previous export left there; anything else is refused by name, so a restart with
-/// the same path keeps working and a wrong path destroys nothing.
+/// and a wrong path must cost nothing:
+///
+/// - A path that does not exist is created with `create_new`, so a file that appears there
+///   in the meantime is never truncated.
+/// - A symlink is refused, never followed: on Unix every open carries `O_NOFOLLOW` (and
+///   `create_new` does not follow one either); elsewhere `symlink_metadata` refuses it first.
+/// - An existing file is replaced only when it is an earlier NetGet export: a regular file
+///   holding exactly one PEM certificate, and nothing else, whose subject is
+///   [`CA_COMMON_NAME`] — what a restart finds, since the CA is regenerated per start. The
+///   check and the rewrite go through the same handle, so there is no window between them.
+///   Any other file — a PEM certificate or CA bundle included — is refused by name and left
+///   untouched.
 pub fn write_ca_export(path: &std::path::Path, pem: &str) -> Result<()> {
-    use std::io::{Read, Write};
+    use std::io::{ErrorKind, Read, Seek, Write};
 
-    if let Ok(meta) = std::fs::symlink_metadata(path) {
-        anyhow::ensure!(
-            !meta.file_type().is_symlink(),
+    let refuse_symlink = || {
+        anyhow::anyhow!(
             "{} is a symlink; ca_export_path must be a regular file path",
             path.display()
-        );
-        anyhow::ensure!(
-            meta.is_file(),
-            "{} exists and is not a regular file",
-            path.display()
-        );
-        let mut head = [0u8; 32];
-        let n = std::fs::File::open(path)?.read(&mut head)?;
-        let looks_like_pem = n == 0 || head[..n].starts_with(b"-----BEGIN CERTIFICATE-----");
-        anyhow::ensure!(
-            looks_like_pem,
-            "{} already exists and is not a PEM certificate; refusing to overwrite it \
-             (choose a new path, or remove the file yourself)",
-            path.display()
-        );
+        )
+    };
+
+    #[cfg(not(unix))]
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(refuse_symlink());
     }
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+
+    let mut create = std::fs::OpenOptions::new();
+    create.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        create.custom_flags(libc::O_NOFOLLOW);
     }
-    let mut file = options.open(path)?;
+    match create.open(path) {
+        Ok(mut file) => {
+            file.write_all(pem.as_bytes())?;
+            return Ok(());
+        }
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+        Err(e) => {
+            return Err(anyhow::Error::new(e).context(format!("cannot create {}", path.display())))
+        }
+    }
+
+    // The path exists. Open it for reading and writing without truncating: `O_NOFOLLOW`
+    // fails with ELOOP on a symlink, and `O_NONBLOCK` keeps a FIFO from stalling the open
+    // (a regular file ignores it).
+    let mut open = std::fs::OpenOptions::new();
+    open.read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        open.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let mut file = match open.open(path) {
+        Ok(file) => file,
+        #[cfg(unix)]
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => return Err(refuse_symlink()),
+        Err(e) => {
+            return Err(anyhow::Error::new(e).context(format!("cannot open {}", path.display())))
+        }
+    };
+    anyhow::ensure!(
+        file.metadata()?.is_file(),
+        "{} exists and is not a regular file",
+        path.display()
+    );
+    let mut existing = Vec::new();
+    Read::take(&mut file, CA_EXPORT_MAX_BYTES + 1).read_to_end(&mut existing)?;
+    let earlier_export = existing.len() as u64 <= CA_EXPORT_MAX_BYTES
+        && std::str::from_utf8(&existing).is_ok_and(is_earlier_ca_export);
+    anyhow::ensure!(
+        earlier_export,
+        "{} already exists and is not an earlier NetGet CA export; refusing to overwrite it \
+         (choose a new path, or remove the file yourself)",
+        path.display()
+    );
+    file.set_len(0)?;
+    file.rewind()?;
     file.write_all(pem.as_bytes())?;
     Ok(())
 }
 
+/// Merge `query_params` into a request target, replacing same-named parameters
+/// and appending the rest. Returns the target unchanged when there is nothing to
+/// merge.
 pub(crate) fn apply_query_params(
     target: &str,
     query_params: Option<&HashMap<String, String>>,

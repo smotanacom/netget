@@ -1,16 +1,18 @@
-//! Two ways the MITM proxy touched the outside world before anyone had decided it should.
+//! The MITM proxy touches the outside world only once something has decided it should.
 //!
-//! **The upstream was dialled before the model's decision.** `perform_mitm` connected to
-//! `dest_host:dest_port` and sent a TLS ClientHello carrying the peer's SNI right after the
-//! client handshake, and only then read the request and asked the model. Any proxy client
-//! could therefore make NetGet open a TCP connection to an arbitrary host:port — a
-//! reachability oracle for internal addresses, with the answer in handshake timing — and a
-//! request the model went on to block had already cost its destination a handshake. The
-//! upstream is now dialled only once the model has let the request through.
+//! **The upstream is dialled after the model's decision.** Dialling `dest_host:dest_port`
+//! (and sending a TLS ClientHello carrying the peer's SNI) right after the client handshake
+//! would let any proxy client make NetGet open a TCP connection to an arbitrary host:port —
+//! a reachability oracle for internal addresses, with the answer in handshake timing — and
+//! a request the model went on to block would already have cost its destination a
+//! handshake. `perform_mitm` reads the request and asks the model first.
 //!
-//! **`ca_export_path` was `std::fs::write`.** It is a startup parameter, so the model can set
-//! it through `open_server`, and the write followed symlinks and truncated whatever was
-//! there. It now refuses a symlink and a file that is not a previous export.
+//! **`ca_export_path` destroys nothing.** It is a startup parameter, so the model can set it
+//! through `open_server`. `write_ca_export` refuses a symlink, creates a new file without
+//! truncating anything, and replaces an existing file only when it is an earlier NetGet
+//! export (one PEM certificate whose subject is `CA_COMMON_NAME`), which is what a restart
+//! pointed at the same path finds; any other file — another PEM certificate or CA
+//! bundle included — is refused and left untouched.
 //!
 //! The model here is a closed port, so every request decision fails closed to a block
 //! (`decision=llm_error`), which is exactly the decision after which no dial may happen.
@@ -149,7 +151,7 @@ fn ca_export_refuses_to_overwrite_a_file_that_is_not_a_previous_export() {
     let path = dir.join("authorized_keys");
     std::fs::write(&path, "ssh-ed25519 AAAA operator@host\n").unwrap();
     let err = write_ca_export(&path, PEM).expect_err("must refuse a foreign file");
-    assert!(err.to_string().contains("not a PEM certificate"), "{err}");
+    assert!(err.to_string().contains("refusing to overwrite"), "{err}");
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
         "ssh-ed25519 AAAA operator@host\n",
@@ -169,20 +171,80 @@ fn ca_export_refuses_a_symlink() {
     let err = write_ca_export(&link, PEM).expect_err("must refuse a symlink");
     assert!(err.to_string().contains("symlink"), "{err}");
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
+
+    // A dangling symlink is refused too, and its target is not created.
+    let missing = dir.join("missing.pem");
+    let dangling = dir.join("dangling.pem");
+    std::os::unix::fs::symlink(&missing, &dangling).unwrap();
+    let err = write_ca_export(&dangling, PEM).expect_err("must refuse a dangling symlink");
+    assert!(err.to_string().contains("symlink"), "{err}");
+    assert!(
+        !missing.exists(),
+        "the symlink's target must not be created"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A real NetGet CA certificate, as `generate_ca_certificate` builds it.
+fn netget_ca_pem() -> String {
+    let mut params = rcgen::CertificateParams::default();
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.distinguished_name.push(
+        rcgen::DnType::CommonName,
+        netget::server::proxy::CA_COMMON_NAME,
+    );
+    let key = rcgen::KeyPair::generate().unwrap();
+    params.self_signed(&key).unwrap().pem()
+}
+
+#[test]
+fn ca_export_writes_a_new_file_and_replaces_its_own_earlier_export() {
+    let dir = scratch_dir("ok");
+    let path = dir.join("ca.pem");
+    let first = netget_ca_pem();
+    write_ca_export(&path, &first).expect("a new file");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), first);
+    // The CA is regenerated on every start, so a restart exports a different certificate to
+    // the same path and must replace the earlier export.
+    let next = netget_ca_pem();
+    assert_ne!(first, next);
+    write_ca_export(&path, &next).expect("a restart replaces the earlier export");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), next);
+    // A file holding NetGet's certificate and anything else is not an export NetGet wrote.
+    let bundle = format!("{next}{first}");
+    std::fs::write(&path, &bundle).unwrap();
+    let err = write_ca_export(&path, &first).expect_err("a bundle is not an export");
+    assert!(err.to_string().contains("refusing to overwrite"), "{err}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), bundle);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn ca_export_writes_a_new_file_and_overwrites_its_own_previous_export() {
-    let dir = scratch_dir("ok");
-    let path = dir.join("ca.pem");
-    write_ca_export(&path, PEM).expect("a new file");
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), PEM);
-    let newer = PEM.replace("MIIB", "MIIC");
-    write_ca_export(&path, &newer).expect("a restart overwrites the previous export");
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
-    std::fs::write(&path, "").unwrap();
-    write_ca_export(&path, PEM).expect("an empty file is fine too");
+fn ca_export_leaves_an_existing_unrelated_certificate_untouched() {
+    let dir = scratch_dir("unrelated-cert");
+    // Another certificate, a CA bundle that starts with the certificate being exported, and
+    // an empty file: none of them is an earlier NetGet export, so none may be replaced.
+    let other_cert = PEM.replace("MIIB", "MIIC");
+    let bundle = format!("{PEM}{other_cert}");
+    for (name, contents) in [
+        ("other.pem", other_cert.as_str()),
+        ("bundle.pem", bundle.as_str()),
+        ("empty.pem", ""),
+    ] {
+        let path = dir.join(name);
+        std::fs::write(&path, contents).unwrap();
+        let err = write_ca_export(&path, PEM)
+            .expect_err("an existing file that is not this export must be refused");
+        assert!(
+            err.to_string().contains("refusing to overwrite"),
+            "{name}: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            contents,
+            "{name} must be untouched"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

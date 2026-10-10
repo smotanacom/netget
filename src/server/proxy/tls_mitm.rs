@@ -101,7 +101,7 @@ pub async fn perform_mitm(
     ));
 
     // Step 8: Proxy HTTP traffic through LLM
-    // Now we have two TLS streams: client_tls_stream (client) and upstream_tls_stream (upstream)
+    // client_tls_stream is established; the upstream is dialled only after the model decides.
     // We read HTTP requests from client, optionally modify via LLM, forward to upstream
     // We read HTTP responses from upstream, optionally modify via LLM, send to client
 
@@ -232,11 +232,10 @@ pub async fn perform_mitm(
             }
         });
 
-        // The upstream is dialled only once the model has let the request through. Until
-        // September 2026 the dial (and a TLS ClientHello carrying the peer's SNI) happened
-        // before any decision, so any proxy client could make NetGet open a TCP connection
-        // to an arbitrary host:port — a reachability oracle for internal addresses — and a
-        // blocked request had already cost the destination a handshake.
+        // The upstream is dialled only once the model has let the request through. Dialling
+        // first (a TCP connection and a TLS ClientHello carrying the peer's SNI) would let any
+        // proxy client make NetGet connect to an arbitrary host:port — a reachability oracle
+        // for internal addresses — and would cost a blocked request's destination a handshake.
         if let RequestAction::Block { status, body } = action {
             // Return error response to client. `body` is either the model's own reason or
             // one of the two `WireFailure` categories - never an error string. A 503
@@ -257,40 +256,43 @@ pub async fn perform_mitm(
             return Ok(());
         }
 
-        let mut upstream_tls_stream = connect_upstream(dest_host, dest_port, &status_tx).await?;
-
-        match action {
+        // Build the outbound request before dialling, so a modification that cannot be
+        // applied is refused without the upstream ever being contacted.
+        let outbound: std::borrow::Cow<'_, [u8]> = match action {
             RequestAction::Block { .. } => unreachable!("answered above"),
-            RequestAction::Pass => {
-                // Forward request to upstream as-is
-                upstream_tls_stream
-                    .write_all(request_data)
-                    .await
-                    .context("Failed to forward request to upstream")?;
-
-                trace!("Forwarded request to upstream server");
-            }
+            RequestAction::Pass => std::borrow::Cow::Borrowed(request_data),
             ref modify_action @ RequestAction::Modify { .. } => {
                 // Reuse the same modification routine as the plaintext HTTP path so
-                // headers/path/query_params/body behave identically over TLS.
-                let modified = crate::server::proxy::ProxyServer::apply_request_modifications(
+                // headers/path/query_params/body behave identically over TLS. A request it
+                // cannot rebuild (a malformed or incomplete chunked body, an undecodable
+                // transfer coding) is refused rather than forwarded unmodified.
+                match crate::server::proxy::ProxyServer::apply_request_modifications(
                     request_data,
                     modify_action,
-                )
-                .unwrap_or_else(|e| {
-                    error!("Failed to apply MITM request modifications: {}", e);
-                    let _ = status_tx.send(format!("✗ MITM modification error: {}", e));
-                    request_data.to_vec()
-                });
-
-                upstream_tls_stream
-                    .write_all(&modified)
-                    .await
-                    .context("Failed to forward modified request to upstream")?;
-
-                trace!("Forwarded modified request to upstream server");
+                ) {
+                    Ok(modified) => std::borrow::Cow::Owned(modified),
+                    Err(e) => {
+                        error!("Refusing MITM request: cannot apply modification: {:#}", e);
+                        let _ = status_tx.send(format!(
+                            "[WARN] MITM refusing {} {} with 400: cannot apply modification: {:#}",
+                            request_info.method, request_info.url, e
+                        ));
+                        client_tls_stream
+                            .write_all(&crate::server::proxy::modification_refused_response())
+                            .await
+                            .context("Failed to send refusal to client")?;
+                        return Ok(());
+                    }
+                }
             }
-        }
+        };
+
+        let mut upstream_tls_stream = connect_upstream(dest_host, dest_port, &status_tx).await?;
+        upstream_tls_stream
+            .write_all(&outbound)
+            .await
+            .context("Failed to forward request to upstream")?;
+        trace!("Forwarded request to upstream server");
 
         // Read response from upstream
         let mut response_buffer = vec![0u8; 16384]; // Larger buffer for responses
@@ -738,7 +740,7 @@ pub fn rebuild_modified_response(
         .map(|h| h.keys().map(|k| k.to_lowercase()).collect())
         .unwrap_or_default();
 
-    // The previous rebuild wrote "OK" for every status; a 404 "OK" is at best confusing.
+    // The reason phrase matches the status, so a 404 is not sent as "404 OK".
     let reason = http::StatusCode::from_u16(status)
         .ok()
         .and_then(|s| s.canonical_reason())

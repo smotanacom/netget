@@ -2,21 +2,26 @@
 //!
 //! `handle_request_modify` and `handle_response_modify` take `headers` from the model, and
 //! the model reads the peer's own request, so a prompt-injected value such as
-//! `"x\r\nContent-Length: 0\r\n\r\nGET /admin HTTP/1.1\r\nHost: internal"` used to be
-//! written into the forwarded message verbatim: one header became a second request to the
-//! upstream (inside the TLS session in MITM mode), or a second response to the client.
-//! `new_path` and `query_params` sit on the space-delimited, CRLF-terminated request line,
-//! so whitespace there ends the line the same way.
+//! `"x\r\nContent-Length: 0\r\n\r\nGET /admin HTTP/1.1\r\nHost: internal"`, written into the
+//! forwarded message verbatim, would turn one header into a second request to the upstream
+//! (inside the TLS session in MITM mode), or a second response to the client. `new_path` and
+//! `query_params` sit on the space-delimited, CRLF-terminated request line, so whitespace
+//! there ends the line the same way.
 //!
-//! The MITM response rebuild had a second desync of its own: it re-emitted the upstream's
-//! `Content-Length` / `Transfer-Encoding` and then appended its own `Content-Length` over an
-//! unchunked body — two lengths, or `chunked` with no chunks.
+//! Both rebuilds frame the body themselves, and that framing must be the only framing. The
+//! MITM response rebuild drops the upstream's `Content-Length` / `Transfer-Encoding` before
+//! writing its own `Content-Length` over an unchunked body. The request rebuild
+//! (`ProxyServer::apply_request_modifications`) decodes a `chunked` body to its payload and
+//! forwards it with one `Content-Length` and no `Transfer-Encoding` — both headers together
+//! are the CL.TE request-smuggling desync — and refuses a chunked body it cannot decode.
 
 #![cfg(all(test, feature = "proxy"))]
 
 use netget::llm::actions::protocol_trait::{ActionResult, Server};
 use netget::server::proxy::actions::ProxyProtocol;
+use netget::server::proxy::filter::RequestAction;
 use netget::server::proxy::tls_mitm::rebuild_modified_response;
+use netget::server::proxy::ProxyServer;
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -190,4 +195,134 @@ fn the_mitm_response_rebuild_honours_remove_headers() {
     );
     assert!(lines.contains(&"Server: x".to_string()));
     assert!(lines.contains(&"Content-Length: 0".to_string()));
+}
+
+/// A `handle_request_modify` decision with only the given fields set.
+fn modify(add_headers: Option<HashMap<String, String>>, new_body: Option<&str>) -> RequestAction {
+    RequestAction::Modify {
+        headers: add_headers,
+        remove_headers: None,
+        new_path: None,
+        query_params: None,
+        new_body: new_body.map(str::to_owned),
+        body_replacements: None,
+    }
+}
+
+/// Split a rebuilt request into its header lines (request line excluded) and its body.
+fn head_and_body(request: &[u8]) -> (Vec<String>, Vec<u8>) {
+    let at = request
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("a head/body separator");
+    let head = String::from_utf8_lossy(&request[..at]);
+    let lines = head.lines().skip(1).map(str::to_owned).collect();
+    (lines, request[at + 4..].to_vec())
+}
+
+fn values_of<'a>(lines: &'a [String], name: &str) -> Vec<&'a str> {
+    lines
+        .iter()
+        .filter_map(|l| l.split_once(':'))
+        .filter(|(n, _)| n.trim().eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.trim())
+        .collect()
+}
+
+/// A chunked upload: two chunks (one with an extension), then a trailer field.
+const CHUNKED_POST: &str = "POST /upload HTTP/1.1\r\nHost: example.com\r\n\
+    Content-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n\
+    5\r\nhello\r\n7;ext=1\r\n, world\r\n0\r\nX-Trailer: t\r\n\r\n";
+
+/// The same upload carrying the client's own `Content-Length` beside `Transfer-Encoding`,
+/// the shape a CL.TE smuggling attempt takes.
+const CHUNKED_POST_WITH_LENGTH: &str = "POST /upload HTTP/1.1\r\nHost: example.com\r\n\
+    Content-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n\
+    5\r\nhello\r\n7;ext=1\r\n, world\r\n0\r\n\r\n";
+
+#[test]
+fn a_chunked_request_modified_in_its_headers_is_forwarded_with_one_content_length_and_no_transfer_encoding(
+) {
+    for request in [CHUNKED_POST, CHUNKED_POST_WITH_LENGTH] {
+        let out = ProxyServer::apply_request_modifications(
+            request.as_bytes(),
+            &modify(Some(headers(&[("X-Proxy", "NetGet")])), None),
+        )
+        .expect("a well-formed chunked request can be modified");
+        let (lines, body) = head_and_body(&out);
+        assert_eq!(
+            values_of(&lines, "content-length"),
+            vec!["12"],
+            "exactly one Content-Length, counting the de-chunked payload: {lines:?}"
+        );
+        assert!(
+            values_of(&lines, "transfer-encoding").is_empty(),
+            "Transfer-Encoding must not sit beside the proxy's Content-Length: {lines:?}"
+        );
+        assert_eq!(
+            body, b"hello, world",
+            "the body is the payload, not chunk framing"
+        );
+        assert_eq!(values_of(&lines, "x-proxy"), vec!["NetGet"]);
+        assert!(out.starts_with(b"POST /upload HTTP/1.1\r\n"));
+    }
+}
+
+#[test]
+fn a_chunked_request_given_a_new_body_is_forwarded_with_only_that_body_and_its_length() {
+    let out = ProxyServer::apply_request_modifications(
+        CHUNKED_POST.as_bytes(),
+        &modify(None, Some("replaced")),
+    )
+    .expect("a well-formed chunked request can be modified");
+    let (lines, body) = head_and_body(&out);
+    assert_eq!(values_of(&lines, "content-length"), vec!["8"], "{lines:?}");
+    assert!(
+        values_of(&lines, "transfer-encoding").is_empty(),
+        "{lines:?}"
+    );
+    assert_eq!(body, b"replaced");
+    assert_eq!(values_of(&lines, "content-type"), vec!["text/plain"]);
+}
+
+#[test]
+fn a_chunked_request_whose_body_is_malformed_or_incomplete_is_refused() {
+    let head = "POST /upload HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n";
+    let bodies = [
+        // No terminating zero-size chunk: the rest of the body has not arrived.
+        "5\r\nhello\r\n",
+        // A chunk shorter than its declared size.
+        "a\r\nhello\r\n0\r\n\r\n",
+        // A size that is not hex.
+        "zz\r\nhello\r\n0\r\n\r\n",
+        // Chunk data not followed by CRLF.
+        "5\r\nhelloXX0\r\n\r\n",
+        // Bare LF framing.
+        "5\nhello\n0\n\n",
+        // The final CRLF after the last chunk is missing.
+        "5\r\nhello\r\n0\r\n",
+        // Bytes after the end of the body: a second request riding along.
+        "5\r\nhello\r\n0\r\n\r\nGET /admin HTTP/1.1\r\nHost: internal\r\n\r\n",
+        // No body at all.
+        "",
+    ];
+    for body in bodies {
+        let request = format!("{head}{body}");
+        let result = ProxyServer::apply_request_modifications(
+            request.as_bytes(),
+            &modify(Some(headers(&[("X-Proxy", "NetGet")])), None),
+        );
+        assert!(
+            result.is_err(),
+            "chunked body {body:?} must be refused, got {:?}",
+            result.map(|r| String::from_utf8_lossy(&r).into_owned())
+        );
+    }
+
+    // A transfer coding the proxy cannot decode is refused rather than relabelled.
+    let gzip = "POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: gzip, chunked\r\n\r\n\
+        5\r\nhello\r\n0\r\n\r\n";
+    let err = ProxyServer::apply_request_modifications(gzip.as_bytes(), &modify(None, None))
+        .expect_err("gzip, chunked must be refused");
+    assert!(err.to_string().contains("Transfer-Encoding"), "{err:#}");
 }
