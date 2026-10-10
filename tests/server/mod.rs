@@ -523,6 +523,8 @@ pub mod msgpack_rpc;
 pub mod ninep;
 #[cfg(feature = "pfcp")]
 pub mod pfcp;
+#[cfg(feature = "pulsar")]
+pub mod pulsar;
 #[cfg(feature = "radsec")]
 pub mod radsec;
 #[cfg(feature = "rcon")]
@@ -533,8 +535,12 @@ pub mod restconf;
 pub mod rsync;
 #[cfg(feature = "smpp")]
 pub mod smpp;
+#[cfg(feature = "stratum")]
+pub mod stratum;
 #[cfg(feature = "sunrpc")]
 pub mod sunrpc;
+#[cfg(feature = "tr069")]
+pub mod tr069;
 #[cfg(feature = "vxlan")]
 pub mod vxlan;
 #[cfg(feature = "webtransport")]
