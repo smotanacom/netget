@@ -646,6 +646,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::bfd::actions::BfdClientProtocol::new(),
         ));
+        #[cfg(feature = "vxlan")]
+        self.register(Arc::new(
+            crate::client::vxlan::actions::VxlanClientProtocol::new(),
+        ));
         #[cfg(feature = "wsdiscovery")]
         self.register(Arc::new(
             crate::client::wsdiscovery::actions::WsDiscoveryClientProtocol::new(),
@@ -1200,6 +1204,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("RadSec", "radsec"),
     ("D-Bus", "dbus"),
     ("BFD", "bfd"),
+    ("VXLAN", "vxlan"),
     ("WS-Discovery", "wsdiscovery"),
     ("X11", "x11"),
     ("HTTP", "http"),

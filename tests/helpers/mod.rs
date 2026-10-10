@@ -18,6 +18,8 @@ pub mod mock_config;
 pub mod mock_matcher;
 pub mod mock_ollama;
 pub mod netget;
+#[cfg(all(feature = "vxlan", target_os = "linux"))]
+pub mod netns;
 pub mod ollama_test_builder;
 pub mod pcap_oracle;
 pub mod real_server;

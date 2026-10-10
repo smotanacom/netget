@@ -464,6 +464,8 @@ impl ServerRegistry {
         self.register(Arc::new(crate::server::dbus::actions::DbusProtocol::new()));
         #[cfg(feature = "bfd")]
         self.register(Arc::new(crate::server::bfd::actions::BfdProtocol::new()));
+        #[cfg(feature = "vxlan")]
+        self.register(Arc::new(crate::server::vxlan::actions::VxlanProtocol::new()));
         #[cfg(feature = "wsdiscovery")]
         self.register(Arc::new(
             crate::server::wsdiscovery::actions::WsDiscoveryProtocol::new(),
@@ -1700,6 +1702,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("RadSec", "radsec"),
     ("D-Bus", "dbus"),
     ("BFD", "bfd"),
+    ("VXLAN", "vxlan"),
     ("WS-Discovery", "wsdiscovery"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
