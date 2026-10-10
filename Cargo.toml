@@ -147,6 +147,7 @@ portable-base = [
     "rsync",
     "pfcp",
     "matrix",
+    "libp2p",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -398,6 +399,7 @@ vxlan = [] # VXLAN (RFC 7348) and Geneve (RFC 8926) tunnel endpoint and overlay 
 rsync = ["dep:md4"] # rsync daemon (rsync://, protocol 29) and client, hand-rolled; md4 for its checksums
 pfcp = [] # PFCP (3GPP TS 29.244, the 5G N4 interface) UPF and SMF, hand-rolled
 matrix = ["urlencoding"] # Matrix homeserver (client-server API v3) and client, hyper HTTP/1.1
+libp2p = ["dep:x25519-dalek", "x25519-dalek/static_secrets", "dep:ed25519-dalek", "dep:sha2", "dep:hkdf", "ring"] # libp2p host and dialler over TCP (multistream-select, Noise XX, yamux, identify, ping), hand-rolled
 wsdiscovery = ["quick-xml"] # WS-Discovery (SOAP-over-UDP 3702) target service and discovery client, 2005/04 and 2009/01
 x11 = [] # X11 client (X Window System core protocol): windows, properties and events against an X server
 jmap = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"] # JMAP (RFC 8620/8621) server and client
@@ -729,6 +731,7 @@ dist-windows = [
     "rsync",
     "pfcp",
     "matrix",
+    "libp2p",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -958,6 +961,7 @@ all-protocols = [
     "rsync",
     "pfcp",
     "matrix",
+    "libp2p",
     "wsdiscovery",
     "x11",
     "sflow",

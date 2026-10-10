@@ -44,6 +44,11 @@ const ALLOWED: &[(&str, usize, &str)] = &[
          split one request or response into two",
     ),
     (
+        "src/server/libp2p/wire.rs",
+        1,
+        "An encoding predicate: shown reports a stream message as utf8 only when it has no control characters other than line breaks and tabs, and as hex otherwise. Nothing is filtered.",
+    ),
+    (
         "src/server/rsync/wire.rs",
         1,
         "An encoding predicate: content_json reports file contents as utf8 only when they have no control characters other than line breaks and tabs, and as hex otherwise. Nothing is filtered.",
