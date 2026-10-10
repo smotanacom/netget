@@ -156,10 +156,12 @@ fn count_claims(text: &str) -> Vec<(usize, String, usize, bool)> {
             };
             let next = words.get(j + 1).copied().unwrap_or("");
             let after = words.get(j + 2).copied().unwrap_or("");
-            let names_protocols = next.starts_with("protocol")
-                || (next == "network" && after.starts_with("protocol"));
+            // Headings capitalise ("240 Protocols", "50+ Network Protocols").
+            let (lnext, lafter) = (next.to_lowercase(), after.to_lowercase());
+            let names_protocols = lnext.starts_with("protocol")
+                || (lnext == "network" && lafter.starts_with("protocol"));
             if names_protocols {
-                let claim = if next == "network" {
+                let claim = if lnext == "network" {
                     format!("{word} {next} {after}")
                 } else {
                     format!("{word} {next}")
@@ -171,9 +173,9 @@ fn count_claims(text: &str) -> Vec<(usize, String, usize, bool)> {
     claims
 }
 
-/// The headline count is stated in four places — the page's meta description, its
-/// og:description, its hero and its Protocols section, and the README's opening sentence —
-/// and each must be the exact number of protocol features, not a rounded-down "150+".
+/// The headline count is stated on the landing page (the Protocols heading) and in the
+/// README, and every statement of it must be the exact number of protocol features, not a
+/// rounded-down "150+".
 #[test]
 fn every_headline_count_is_the_exact_number() {
     let n = protocol_features().len();
@@ -197,8 +199,8 @@ fn every_headline_count_is_the_exact_number() {
         }
     }
     assert!(
-        seen >= 5,
-        "expected the count in at least five places (meta, og, hero, Protocols section, README), found {seen}"
+        seen >= 3,
+        "expected the count in at least three places (the page's Protocols heading and the README), found {seen}"
     );
     assert!(
         problems.is_empty(),

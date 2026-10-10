@@ -36,7 +36,7 @@ without any code changes.
 
 ## Key Features
 
-### 🌐 50+ Network Protocols
+### 🌐 240 Network Protocols
 
 Both server and client modes for:
 
