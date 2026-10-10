@@ -147,6 +147,10 @@ portable-base = [
     "rsync",
     "pfcp",
     "matrix",
+    "libp2p",
+    "sunrpc",
+    "guacamole",
+    "activitypub",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -398,6 +402,10 @@ vxlan = [] # VXLAN (RFC 7348) and Geneve (RFC 8926) tunnel endpoint and overlay 
 rsync = ["dep:md4"] # rsync daemon (rsync://, protocol 29) and client, hand-rolled; md4 for its checksums
 pfcp = [] # PFCP (3GPP TS 29.244, the 5G N4 interface) UPF and SMF, hand-rolled
 matrix = ["urlencoding"] # Matrix homeserver (client-server API v3) and client, hyper HTTP/1.1
+libp2p = ["dep:x25519-dalek", "x25519-dalek/static_secrets", "dep:ed25519-dalek", "dep:sha2", "dep:hkdf", "ring"] # libp2p host and dialler over TCP (multistream-select, Noise XX, yamux, identify, ping), hand-rolled
+sunrpc = [] # ONC RPC portmapper/rpcbind (PMAP v2, RPCBIND v3-v4) server and client, hand-rolled
+guacamole = ["dep:font8x8"] # Apache Guacamole protocol server (in guacd's place) and client of guacd, hand-rolled
+activitypub = ["dep:rsa", "dep:sha2", "urlencoding"] # ActivityPub instance and actor (WebFinger, HTTP Signatures rsa-sha256, signed delivery), hyper + reqwest
 wsdiscovery = ["quick-xml"] # WS-Discovery (SOAP-over-UDP 3702) target service and discovery client, 2005/04 and 2009/01
 x11 = [] # X11 client (X Window System core protocol): windows, properties and events against an X server
 jmap = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"] # JMAP (RFC 8620/8621) server and client
@@ -729,6 +737,10 @@ dist-windows = [
     "rsync",
     "pfcp",
     "matrix",
+    "libp2p",
+    "sunrpc",
+    "guacamole",
+    "activitypub",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -958,6 +970,10 @@ all-protocols = [
     "rsync",
     "pfcp",
     "matrix",
+    "libp2p",
+    "sunrpc",
+    "guacamole",
+    "activitypub",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -1352,6 +1368,7 @@ tor-cert = { version = "0.36", optional = true }  # Tor certificate handling
 tor-cell = { version = "0.36", optional = true }  # Tor cell encoding/decoding (RELAY, CREATE, etc.)
 ed25519-dalek = { version = "2.1", optional = true }  # Ed25519 signatures for relay identity
 sha2 = { version = "0.10", optional = true }  # SHA-256 for ntor handshake
+rsa = { version = "0.9", optional = true, features = ["sha2"] }  # ActivityPub: HTTP signatures (rsa-sha256)
 md-5 = { version = "0.10", optional = true }  # MD5 for the RADIUS authenticators (RFC 2865 §3, §5.2) - already in the tree transitively
 md4 = { version = "0.10", optional = true }  # MD4: rsync protocol 29 file and block checksums, and its daemon auth response
 aes = { version = "0.8", optional = true }  # AES for relay cell encryption
@@ -1366,6 +1383,7 @@ hkdf = { version = "0.12", optional = true }  # HKDF for key derivation in ntor
 tiny-skia = "0.11"  # 2D graphics rendering
 cosmic-text = "0.12"  # Text rendering with font support
 image = "0.25"  # Image buffer manipulation
+font8x8 = { version = "0.3", optional = true }  # Guacamole: the model's text, rendered to PNG
 sys-locale = "0.3"  # System locale detection for text rendering
 
 # VNC server (Remote Frame Buffer protocol)
@@ -1650,6 +1668,12 @@ async-opcua-core = { path = "vendor/async-opcua-core" }
 async-opcua-server = { path = "vendor/async-opcua-server" }
 hyper = { path = "vendor/hyper" }
 h3-quinn = { path = "vendor/h3-quinn" }
+# kafka-protocol 0.14.1 sizes allocations from peer-supplied counts and lengths (arrays, a
+# record batch's record count, a record's header count, owned strings and bytes, a snappy
+# block's declared length), so a few unauthenticated bytes could abort the process. Each is
+# bounded by the bytes actually present. See vendor/kafka-protocol/README.netget.md and
+# tests/vendored_kafka_protocol_patch_test.rs.
+kafka-protocol = { path = "vendor/kafka-protocol" }
 # Bound tonic0.12.3 decompression with the configured receive limit in both directions.
 # See vendor/tonic/README.netget.md and tests/vendored_tonic_patch_test.rs.
 tonic = { path = "vendor/tonic" }

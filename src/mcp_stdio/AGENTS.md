@@ -13,6 +13,19 @@ transports share the exact same tool implementation:
   (servers started in one session are visible to all). Bind address comes from
   `--listen-addr` (default `127.0.0.1`).
 
+  **Every request is admitted by `http_guard::HttpGuard` first.** The tools are a
+  control plane (`start_server` takes `event_handlers`, and a `script` handler runs
+  `python3 -c <code>` as the operator), and rmcp's transport validates neither `Origin`
+  nor `Host` — so without the guard a web page could drive the endpoint through DNS
+  rebinding. Two modes: on a loopback bind with no token, `Host` and `Origin` must name
+  a loopback host; with `--mcp-token` / `NETGET_MCP_TOKEN`, every request needs that
+  bearer token and `Host`/`Origin` are free (a rebound page cannot know the token), and
+  that is the only way `--listen-addr` may be a non-loopback address — `run_mcp_http`
+  refuses to start otherwise. Bodies are capped at
+  `http_guard::MAX_REQUEST_BODY_BYTES` (4 MiB) because rmcp collects a body in full
+  before parsing it. `tests/mcp_http_guard_test.rs` pins the policy;
+  `tests/mcp_http_transport_test.rs` drives the real binary over a socket.
+
 The two flags are mutually exclusive.
 
 ## Architecture
@@ -60,7 +73,8 @@ OllamaClient (3 backends)
 `netget --mcp-http PORT` triggers `mcp_stdio::run_mcp_http()`:
 1. Builds `SharedState` once via `NetGetMcpService::create_shared_state()`
 2. Wraps it in an rmcp `StreamableHttpService` (one `NetGetMcpService` per session,
-   all sharing the same `SharedState`) mounted at `/mcp` on an axum router
+   all sharing the same `SharedState`) mounted at `/mcp` on an axum router, behind
+   the `admit` middleware (`HttpGuard::check`, then an `http_body_util::Limited` body)
 3. Serves until the process is stopped
 
 ## MCP Tools

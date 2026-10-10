@@ -294,12 +294,52 @@ pub struct DatabaseConnection {
     instance: DatabaseInstance,
 }
 
+/// Refuse every statement that would make the connection touch a file other than
+/// the one it was opened on.
+///
+/// `ATTACH` reports its filename only when it is a string literal; a computed one
+/// (`'/etc/' || 'x'`) reaches the authorizer as the raw `SQLITE_ATTACH` code with no
+/// argument, so that case is matched on the code, not on the parsed variant. An
+/// empty filename or `:memory:` is a private temporary database and stays allowed —
+/// a plain `VACUUM` attaches one.
+#[cfg(feature = "sqlite")]
+fn filesystem_authorizer(ctx: rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization {
+    use rusqlite::hooks::{AuthAction, Authorization};
+    match ctx.action {
+        AuthAction::Attach { filename } => {
+            if filename.is_empty() || filename == MEMORY_DATABASE_PATH {
+                Authorization::Allow
+            } else {
+                Authorization::Deny
+            }
+        }
+        AuthAction::Unknown { code, .. } if code == rusqlite::ffi::SQLITE_ATTACH => {
+            Authorization::Deny
+        }
+        AuthAction::Function { function_name }
+            if function_name.eq_ignore_ascii_case("load_extension") =>
+        {
+            Authorization::Deny
+        }
+        _ => Authorization::Allow,
+    }
+}
+
 #[cfg(feature = "sqlite")]
 impl DatabaseConnection {
     /// Create a new database connection
     pub fn new(instance: DatabaseInstance) -> Result<Self> {
         let conn =
             Connection::open(&instance.path).context("Failed to open database connection")?;
+
+        // The SQL on this connection is model-authored, so the connection must not be a
+        // way to the filesystem. `create_database` validates the *name* precisely so a
+        // model can never choose a path; `ATTACH DATABASE '<path>'` and
+        // `VACUUM INTO '<path>'` (which attaches its target internally) would otherwise
+        // create, overwrite or read any SQLite file the process can reach in one
+        // statement. `load_extension` is already disabled at the C API level; denying
+        // it here says so where the other refusals live.
+        conn.authorizer(Some(filesystem_authorizer));
 
         conn.set_limit(
             rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH,

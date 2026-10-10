@@ -37,6 +37,18 @@ use std::path::{Path, PathBuf};
 /// The count is the number of occurrences allowed in that file. It may only go down.
 const ALLOWED: &[(&str, usize, &str)] = &[
     (
+        "src/server/proxy/filter.rs",
+        2,
+        "validator: a model-supplied header value, or a request path or query part, with a \
+         control character (CR/LF above all) is refused rather than altered, so it cannot \
+         split one request or response into two",
+    ),
+    (
+        "src/server/libp2p/wire.rs",
+        1,
+        "An encoding predicate: shown reports a stream message as utf8 only when it has no control characters other than line breaks and tabs, and as hex otherwise. Nothing is filtered.",
+    ),
+    (
         "src/server/rsync/wire.rs",
         1,
         "An encoding predicate: content_json reports file contents as utf8 only when they have no control characters other than line breaks and tabs, and as hex otherwise. Nothing is filtered.",
@@ -355,8 +367,9 @@ fn the_sanitize_variants_do_what_the_sites_relying_on_them_need() {
     );
     assert_eq!(
         sanitize::line_field("plain\u{1b}[31mred"),
-        "plain [31mred",
-        "ESC forges a screen, not merely a line"
+        "plain     red",
+        "ESC forges a screen, not merely a line, and the whole sequence goes — a space per \
+         character, so no `[31m` is left painted and the character count is unchanged"
     );
 
     // strip_controls: deletion, where the format has no columns to shift.
@@ -366,7 +379,7 @@ fn the_sanitize_variants_do_what_the_sites_relying_on_them_need() {
     // nothing — this is finger's plan/project, on both the server and the client side.
     assert_eq!(
         sanitize::multiline("line one\nindented\tvalue\u{1b}[31m"),
-        "line one\nindented\tvalue[31m"
+        "line one\nindented\tvalue"
     );
     assert_eq!(
         sanitize::multiline("bare\rcr"),

@@ -244,6 +244,8 @@ impl Protocol for A2sProtocol {
             .notes("Challenges are a keyed hash of the client's address with a per-server random key, so no state is kept per client and a spoofed source cannot complete a query. No GoldSource format, A2A_PING or compressed splits. Requests are capped at 1400 bytes, responses at 64 KiB in at most 64 packets, 64 queries in flight; datagrams beyond that are dropped. A handler failure or refusal leaves the query unanswered.")
             // Every A2S reply asserts something about the server; there is no error reply.
             .deliberately_silent()
+            // Each query stands alone: the challenge is recomputed from the address, never stored.
+            .connectionless()
             .max_inbound_bytes(super::wire::MAX_REQUEST)
             .build()
     }

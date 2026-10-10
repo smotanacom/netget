@@ -12,11 +12,22 @@ use netget::llm::ollama_client::OllamaClient;
 use netget::state::app_state::AppState;
 use netget::state::{ClientId, ClientInstance, ClientStatus};
 
+/// The test account: the JID and password go in startup parameters, the server's address in
+/// `remote_addr`.
+fn alice_params() -> netget::protocol::StartupParams {
+    use netget::llm::actions::protocol_trait::Protocol;
+    netget::protocol::StartupParams::new(
+        serde_json::json!({"jid": "alice@localhost", "password": "password"}),
+        netget::client::xmpp::XmppClientProtocol::new().get_startup_parameters(),
+    )
+    .expect("valid XMPP startup parameters")
+}
+
 /// Test basic XMPP client connection
 ///
 /// This test connects to a local XMPP server and sends presence.
-/// Requires a local XMPP server (prosody/ejabberd) running on localhost:5222
-/// with test account: alice@localhost/netget
+/// Requires a local XMPP server (prosody/ejabberd) listening on 127.0.0.1:5222
+/// with test account alice@localhost, password "password".
 #[tokio::test]
 #[ignore = "Requires local XMPP server"]
 async fn test_xmpp_client_connect() -> Result<()> {
@@ -30,7 +41,7 @@ async fn test_xmpp_client_connect() -> Result<()> {
     // Create client instance
     let client = ClientInstance::new(
         ClientId::new(0), // overwritten by add_client with the real allocated id
-        "alice@localhost@password".to_string(),
+        "127.0.0.1:5222".to_string(),
         "XMPP".to_string(),
         "Send presence and log any messages".to_string(),
     );
@@ -41,12 +52,12 @@ async fn test_xmpp_client_connect() -> Result<()> {
     let result = timeout(
         Duration::from_secs(10),
         XmppClientConnection::connect_with_llm_actions(
-            "alice@localhost@password".to_string(),
+            "127.0.0.1:5222".to_string(),
             llm_client,
             app_state.clone(),
             status_tx.clone(),
             client_id,
-            None,
+            Some(alice_params()),
         ),
     )
     .await;
@@ -100,7 +111,7 @@ async fn test_xmpp_client_send_message() -> Result<()> {
     // Create client instance
     let client = ClientInstance::new(
         ClientId::new(0), // overwritten by add_client with the real allocated id
-        "alice@localhost@password".to_string(),
+        "127.0.0.1:5222".to_string(),
         "XMPP".to_string(),
         "Send a test message to bob@localhost".to_string(),
     );
@@ -109,12 +120,12 @@ async fn test_xmpp_client_send_message() -> Result<()> {
     // Connect client
     use netget::client::xmpp::XmppClientConnection;
     XmppClientConnection::connect_with_llm_actions(
-        "alice@localhost@password".to_string(),
+        "127.0.0.1:5222".to_string(),
         llm_client,
         app_state.clone(),
         status_tx.clone(),
         client_id,
-        None,
+        Some(alice_params()),
     )
     .await?;
 
@@ -150,7 +161,7 @@ async fn test_xmpp_client_presence() -> Result<()> {
     // Create client instance with presence instruction
     let client = ClientInstance::new(
         ClientId::new(0), // overwritten by add_client with the real allocated id
-        "alice@localhost@password".to_string(),
+        "127.0.0.1:5222".to_string(),
         "XMPP".to_string(),
         "Send presence as 'away' with status 'Testing NetGet XMPP'".to_string(),
     );
@@ -159,12 +170,12 @@ async fn test_xmpp_client_presence() -> Result<()> {
     // Connect client
     use netget::client::xmpp::XmppClientConnection;
     XmppClientConnection::connect_with_llm_actions(
-        "alice@localhost@password".to_string(),
+        "127.0.0.1:5222".to_string(),
         llm_client,
         app_state.clone(),
         status_tx.clone(),
         client_id,
-        None,
+        Some(alice_params()),
     )
     .await?;
 

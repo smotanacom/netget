@@ -5183,6 +5183,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "font8x8"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "875488b8711a968268c7cf5d139578713097ca4635a76044e8fe8eedf831d07e"
+
+[[package]]
 name = "fontconfig-parser"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7222,8 +7228,6 @@ dependencies = [
 [[package]]
 name = "kafka-protocol"
 version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ce8ca397fccce043d8e1c12ab0122d2facf9249c57ef030ab90f62449413294"
 dependencies = [
  "anyhow",
  "bytes",
@@ -8576,6 +8580,7 @@ dependencies = [
  "etcd-client",
  "feed-rs",
  "flate2",
+ "font8x8",
  "form_urlencoded",
  "fs2",
  "futures",
@@ -8667,6 +8672,7 @@ dependencies = [
  "rfb",
  "ring 0.17.14",
  "rmcp",
+ "rsa",
  "rsntp",
  "rss",
  "rumqttc",

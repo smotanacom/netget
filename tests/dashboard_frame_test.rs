@@ -876,3 +876,129 @@ fn fold_state_is_forgotten_after_instances_and_peers_disappear() {
     assert!(state.is_open(&peer));
     assert!(!state.is_open(&config));
 }
+
+/// Every cell of a rendered frame, as symbols.
+fn cells(app: &mut DashboardApp, width: u16, height: u16) -> Vec<String> {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| render::draw(f, app)).expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    (0..height)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .map(|pos| buffer[pos].symbol().to_string())
+        .collect()
+}
+
+/// A peer's escape sequences never reach the terminal as cells.
+///
+/// ratatui's `Paragraph` writes every grapheme of width > 0 straight into the buffer and
+/// `CrosstermBackend` prints each cell verbatim, and unicode-width gives ESC, C1 and BEL a
+/// width of one — so until September 2026 a telnet line of `\x1b]52;c;QUJD\x07` (an OSC 52
+/// clipboard write) rendered as exactly that on the operator's terminal, from the request row
+/// on a card, from a `[LEVEL]` line quoting it, and from the model's reply echoing it. A DSR
+/// query would even have had its answer typed into the chat box.
+#[test]
+fn peer_escape_sequences_are_not_painted_as_terminal_cells() {
+    const HOSTILE: &str = "hi\u{1b}]52;c;QUJD\u{7}\u{9b}31m\u{1b}[2Jthere\u{1b}[6n";
+    let mut app = app();
+    let mut snapshot = populated();
+    snapshot.servers[0].requests.push(AccessLogEntry {
+        id: 99,
+        unix_ms: 1_700_000_099_000,
+        server_id: Some(1),
+        client_id: None,
+        protocol: "TELNET".into(),
+        connection_id: Some(7),
+        event_type: "telnet_line_received".into(),
+        request: serde_json::json!({"message": HOSTILE, "connection_id": "conn-7"}),
+        response: vec![serde_json::json!({"type": "send_telnet_line", "text": HOSTILE})],
+    });
+    app.absorb_snapshot(snapshot);
+    app.activity.push_log(
+        netget::ui::app::LogLevel::Info,
+        format!("SSH auth for '{HOSTILE}': decision=model_reject"),
+    );
+    app.push_chat(netget::tui::chat::EntryKind::System, HOSTILE.to_string());
+    app.push_chat(netget::tui::chat::EntryKind::Reasoning, HOSTILE.to_string());
+
+    for (w, h) in [(160, 48), (80, 24)] {
+        let cells = cells(&mut app, w, h);
+        let painted: String = cells.concat();
+        assert!(
+            painted.contains("hi") && painted.contains("there"),
+            "the legitimate text around the escapes must still render at {w}x{h}"
+        );
+        let bad: Vec<&String> = cells
+            .iter()
+            .filter(|c| c.chars().any(char::is_control))
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "control characters reached the frame buffer at {w}x{h}: {bad:?}"
+        );
+    }
+}
+
+/// The intercept overlay and the request detail modal pretty-print a peer's payload, and
+/// `serde_json` escapes only U+0000..U+001F inside a string: DEL and the C1 range — U+009B is
+/// an 8-bit CSI, U+009D an 8-bit OSC — come out raw. Neither modal may paint one as a cell,
+/// and the intercept's description is the peer's text too.
+#[test]
+fn intercept_payload_controls_are_not_painted_as_terminal_cells() {
+    const HOSTILE: &str = "hi\u{9b}31m\u{7f}\u{9d}52;c;QUJD\u{9c}there\u{1b}[2J";
+    let payload = serde_json::json!({"message": HOSTILE, "connection_id": "conn-7"});
+
+    let modal = |name: &str| match name {
+        "intercept" => netget::tui::modal::Modal::Intercept(Box::new(
+            netget::tui::modal::intercept::InterceptModel {
+                id: 4,
+                owner: UiKey::Server(ServerId::new(1)),
+                protocol: "TELNET".into(),
+                event_type: "telnet_line_received".into(),
+                description: format!("line {HOSTILE}"),
+                event_data: Some(payload.clone()),
+                vocabulary: Vec::new(),
+                error: None,
+                focused: 0,
+            },
+        )),
+        _ => netget::tui::modal::Modal::RequestDetail {
+            entry: Box::new(AccessLogEntry {
+                id: 98,
+                unix_ms: 1_700_000_098_000,
+                server_id: Some(1),
+                client_id: None,
+                protocol: "TELNET".into(),
+                connection_id: Some(7),
+                event_type: "telnet_line_received".into(),
+                request: payload.clone(),
+                response: vec![serde_json::json!({"type": "send_telnet_line", "text": HOSTILE})],
+            }),
+            scroll: 0,
+        },
+    };
+
+    for name in ["intercept", "request detail"] {
+        for (w, h) in [(160, 48), (80, 24)] {
+            let mut app = app();
+            app.absorb_snapshot(populated());
+            app.modals.push(modal(name));
+            let cells = cells(&mut app, w, h);
+            let bad: Vec<&String> = cells
+                .iter()
+                .filter(|c| c.chars().any(char::is_control))
+                .collect();
+            assert!(
+                bad.is_empty(),
+                "control characters reached the {name} frame at {w}x{h}: {bad:?}"
+            );
+            if (w, h) == (160, 48) {
+                let painted: String = cells.concat();
+                assert!(
+                    painted.contains("message"),
+                    "the {name} modal must still show the payload at {w}x{h}"
+                );
+            }
+        }
+    }
+}
