@@ -222,9 +222,6 @@ fn server_only_protocols_have_no_dual() {
         "Mercurial",
         "Reverse Shell",
         "OpenVPN",
-        "HLS",
-        "RTSP",
-        "RTP",
         // Profile servers deliberately not paired with the generic base clients:
         "USB-Keyboard",
         "BLUETOOTH_BLE_KEYBOARD",
