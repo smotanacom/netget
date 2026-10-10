@@ -90,3 +90,18 @@ file removed from this directory is removed from the bucket — except an exclud
 
 `DRY_RUN=1 ./deploy.sh` stages everything and prints what would be uploaded or deleted, changing
 nothing; `STAGE_DIR=<dir>` keeps the staged copy — serve it to test the exact layout that ships.
+
+## Third-party scripts carry subresource integrity
+
+`demo.html` loads xterm.js and its fit addon from jsdelivr with `integrity="sha384-…"` and
+`crossorigin="anonymous"`: the browser refuses the file unless its hash matches the one
+computed from the pinned, immutable version, so a CDN compromise or an interception on the
+way fails the load rather than running someone else's script on netget.net (jsdelivr sends
+`access-control-allow-origin: *`, which SRI needs). Bumping either version means
+recomputing the hash — the comment above the tags has the command. WebLLM is a dynamic
+`import()` from esm.run, which rebundles on the CDN, so no hash can describe it; the only
+way to pin it is to self-host the bundle under `demo/`, which `deploy.sh` already versions
+by content hash. Neither page ships a Content-Security-Policy yet: one would have to allow
+`'wasm-unsafe-eval'`, the inline theme script, esm.run, Hugging Face model downloads and
+blob workers, and a policy that is wrong breaks the demo silently, so it belongs with a
+headless-Chromium run of `web/test/page_composer.py`, not in a text edit.
