@@ -26,7 +26,7 @@ pub mod theme;
 pub use tasks::{execute_due_tasks_owned_public, execute_due_tasks_public};
 
 use anyhow::Result;
-pub use args::Args;
+pub use args::{Args, MCP_TOKEN_ENV};
 use clap::Parser;
 use tracing::debug;
 

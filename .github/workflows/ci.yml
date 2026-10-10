@@ -482,7 +482,7 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo -E apt-get install -y --no-install-recommends \
-            aria2 awscli curl bind9-dnsutils dict dictd dictfmt beanstalkd ffmpeg freeradius-utils \
+            aria2 awscli capnproto curl bind9-dnsutils dict dictd dictfmt beanstalkd ffmpeg freeradius-utils \
             libcoap2-bin libmemcached-tools mbpoll mercurial \
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
             postgresql-client python3-pip redis-tools sipsak smbclient \

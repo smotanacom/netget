@@ -1,5 +1,6 @@
 //! Git client implementation
 pub mod actions;
+pub mod credentials;
 pub mod sandbox;
 
 pub use actions::GitClientProtocol;
@@ -7,9 +8,7 @@ pub use sandbox::{GitSandbox, ALLOWED_ROOT_PARAM, ALLOW_REMOTE_WRITES_PARAM};
 
 use crate::protocol::StartupParams;
 use anyhow::{Context, Result};
-use git2::{
-    BranchType, Cred, FetchOptions, ObjectType, RemoteCallbacks, Repository, StatusOptions,
-};
+use git2::{BranchType, ObjectType, Repository, StatusOptions};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -39,8 +38,9 @@ struct GitSession {
     /// The `local_path` startup parameter, used as the clone destination when a
     /// `git_clone` action does not name one. Already resolved inside the sandbox.
     local_path: Option<String>,
-    username: Option<String>,
-    password: Option<String>,
+    /// The declared `username`/`password`, bound to the one origin they may be offered to.
+    /// See [`credentials`].
+    credentials: Option<credentials::CredentialScope>,
     /// The filesystem boundary every model-supplied path is checked against. See
     /// [`sandbox`]. Held here rather than rebuilt per operation so the root is
     /// canonicalised (and created) exactly once, at connect.
@@ -262,50 +262,87 @@ impl GitClient {
             return Err(err);
         }
 
-        let session = Arc::new(Mutex::new(GitSession {
-            repo_path: [Some(remote_addr.clone()), local_path.clone()]
-                .into_iter()
-                .flatten()
-                // Confine before opening. `Repository::open` walks *up* from the path it is
-                // given looking for a `.git`, so an unconfined candidate one level outside
-                // the root could open an enclosing repository that is entirely outside it.
-                .filter_map(|candidate| sandbox.resolve(&candidate, "repository path").ok())
-                .find_map(|candidate| match Repository::open(&candidate) {
-                    Ok(repo) => {
-                        let path = repo
-                            .workdir()
-                            .map(|w| w.to_path_buf())
-                            .unwrap_or_else(|| candidate.clone());
-                        // `open` walked upwards to find this, so re-check the result: the
-                        // repository it landed on may sit above the root even though the
-                        // path handed in did not.
-                        match sandbox.resolve(&path.to_string_lossy(), "opened repository") {
-                            Ok(confined) => {
-                                info!(
-                                    "Git client {} opened existing repository at {}",
-                                    client_id,
-                                    confined.display()
-                                );
-                                Some(confined)
-                            }
-                            Err(e) => {
-                                warn!("Git client {} ignoring repository: {}", client_id, e);
-                                None
-                            }
+        let repo_path = [Some(remote_addr.clone()), local_path.clone()]
+            .into_iter()
+            .flatten()
+            // Confine before opening. `Repository::open` walks *up* from the path it is
+            // given looking for a `.git`, so an unconfined candidate one level outside
+            // the root could open an enclosing repository that is entirely outside it.
+            .filter_map(|candidate| sandbox.resolve(&candidate, "repository path").ok())
+            .find_map(|candidate| match Repository::open(&candidate) {
+                Ok(repo) => {
+                    let path = repo
+                        .workdir()
+                        .map(|w| w.to_path_buf())
+                        .unwrap_or_else(|| candidate.clone());
+                    // `open` walked upwards to find this, so re-check the result: the
+                    // repository it landed on may sit above the root even though the
+                    // path handed in did not.
+                    match sandbox.resolve(&path.to_string_lossy(), "opened repository") {
+                        Ok(confined) => {
+                            info!(
+                                "Git client {} opened existing repository at {}",
+                                client_id,
+                                confined.display()
+                            );
+                            Some(confined)
+                        }
+                        Err(e) => {
+                            warn!("Git client {} ignoring repository: {}", client_id, e);
+                            None
                         }
                     }
-                    Err(_) => None,
-                }),
+                }
+                Err(_) => None,
+            });
+
+        // Seed the declared credentials. They were plumbed all the way to
+        // `Cred::userpass_plaintext` but the session was built with
+        // `..Default::default()`, so both were always `None` and authenticated
+        // Git over HTTPS could never work -- a parameter declared, threaded and
+        // never actually supplied. CLAUDE.md calls a declared-but-unread
+        // parameter dead weight the model will try to use; this was the shape
+        // where the plumbing existed and only the seeding was missing.
+        //
+        // They are bound to one origin: `remote_addr`'s when it is a URL, else the
+        // opened repository's `origin` remote. A credential that cannot be bound to a
+        // host is offered nowhere — see `credentials`.
+        let username = read_field(params, &app_state, client_id, "username").await;
+        let password = read_field(params, &app_state, client_id, "password").await;
+        let bound_to = credentials::remote_origin(&remote_addr)
+            .map(|_| remote_addr.clone())
+            .or_else(|| {
+                repo_path.as_ref().and_then(|path| {
+                    Repository::open(path)
+                        .ok()?
+                        .find_remote("origin")
+                        .ok()?
+                        .url()
+                        .map(str::to_owned)
+                })
+            });
+        let credentials = credentials::CredentialScope::bind(
+            username.as_deref(),
+            password.as_deref(),
+            bound_to.as_deref(),
+        );
+        match (&credentials, username.is_some() && password.is_some()) {
+            (Some(scope), _) => info!(
+                "Git client {} credentials are bound to {}",
+                client_id, scope.origin
+            ),
+            (None, true) => warn!(
+                "Git client {} has a username/password but neither remote_addr nor an \
+                 opened repository's `origin` names a host, so they will be offered to no one",
+                client_id
+            ),
+            (None, false) => {}
+        }
+
+        let session = Arc::new(Mutex::new(GitSession {
+            repo_path,
             local_path,
-            // Seed the declared credentials. They were plumbed all the way to
-            // `Cred::userpass_plaintext` but the session was built with
-            // `..Default::default()`, so both were always `None` and authenticated
-            // Git over HTTPS could never work -- a parameter declared, threaded and
-            // never actually supplied. CLAUDE.md calls a declared-but-unread
-            // parameter dead weight the model will try to use; this was the shape
-            // where the plumbing existed and only the seeding was missing.
-            username: read_field(params, &app_state, client_id, "username").await,
-            password: read_field(params, &app_state, client_id, "password").await,
+            credentials,
             sandbox,
         }));
 
@@ -668,13 +705,12 @@ impl GitClient {
         };
 
         // Copy the session out; git2 is synchronous, so nothing awaits while we hold it.
-        let (repo_path, local_path, username, password, sandbox) = {
+        let (repo_path, local_path, credentials, sandbox) = {
             let guard = session.lock().await;
             (
                 guard.repo_path.clone(),
                 guard.local_path.clone(),
-                guard.username.clone(),
-                guard.password.clone(),
+                guard.credentials.clone(),
                 guard.sandbox.clone(),
             )
         };
@@ -687,8 +723,7 @@ impl GitClient {
                 &data,
                 repo_path,
                 local_path.as_deref(),
-                username.as_deref(),
-                password.as_deref(),
+                credentials.as_ref(),
                 &sandbox,
                 client_id,
                 &op_status_tx,
@@ -714,8 +749,7 @@ impl GitClient {
         data: &serde_json::Value,
         repo_path: Option<PathBuf>,
         local_path: Option<&str>,
-        username: Option<&str>,
-        password: Option<&str>,
+        credentials: Option<&credentials::CredentialScope>,
         sandbox: &GitSandbox,
         client_id: ClientId,
         status_tx: &mpsc::UnboundedSender<String>,
@@ -790,7 +824,7 @@ impl GitClient {
                     client_id, url, shown
                 ));
 
-                Self::git_clone(&effective_url, &shown, username, password)
+                Self::git_clone(&effective_url, &shown, credentials)
                     .with_context(|| format!("clone of {url} failed"))?;
                 info!("Git client {} clone successful", client_id);
                 let _ = status_tx.send(format!(
@@ -814,7 +848,7 @@ impl GitClient {
                     "Git client {} fetching from remote {}",
                     client_id, remote_name
                 );
-                Self::git_fetch(&path, remote_name, username, password)
+                Self::git_fetch(&path, remote_name, credentials)
                     .with_context(|| format!("fetch from {remote_name} failed"))?;
                 Ok(OperationOutcome::summary(format!(
                     "git_fetch from '{remote_name}'"
@@ -878,7 +912,7 @@ impl GitClient {
                 let path = require_repo()?;
 
                 info!("Git client {} pulling from {}", client_id, remote_name);
-                let result = Self::git_pull(&path, remote_name, branch, username, password)
+                let result = Self::git_pull(&path, remote_name, branch, credentials)
                     .with_context(|| format!("pull from {remote_name} failed"))?;
                 info!("Git client {} pull: {}", client_id, result);
                 Ok(OperationOutcome::with_output(
@@ -900,7 +934,7 @@ impl GitClient {
                 let path = require_repo()?;
 
                 info!("Git client {} pushing to {}", client_id, remote_name);
-                let result = Self::git_push(&path, remote_name, branch, username, password)
+                let result = Self::git_push(&path, remote_name, branch, credentials)
                     .with_context(|| format!("push to {remote_name} failed"))?;
                 info!("Git client {} push: {}", client_id, result);
                 Ok(OperationOutcome::with_output(
@@ -946,9 +980,8 @@ impl GitClient {
                 let path = require_repo()?;
 
                 info!("Git client {} deleting branch {}", client_id, branch);
-                let result =
-                    Self::git_delete_branch(&path, branch, force, remote, username, password)
-                        .with_context(|| format!("delete of branch {branch} failed"))?;
+                let result = Self::git_delete_branch(&path, branch, force, remote, credentials)
+                    .with_context(|| format!("delete of branch {branch} failed"))?;
                 info!("Git client {} delete branch: {}", client_id, result);
                 Ok(OperationOutcome::with_output(
                     format!("git_delete_branch: {result}"),
@@ -1012,25 +1045,10 @@ impl GitClient {
     fn git_clone(
         url: &str,
         path: &str,
-        username: Option<&str>,
-        password: Option<&str>,
+        credentials: Option<&credentials::CredentialScope>,
     ) -> Result<Repository> {
-        let mut callbacks = RemoteCallbacks::new();
-
-        // Set up authentication callback
-        if let (Some(user), Some(pass)) = (username, password) {
-            let user = user.to_string();
-            let pass = pass.to_string();
-            callbacks.credentials(move |_url, _username_from_url, _allowed_types| {
-                Cred::userpass_plaintext(&user, &pass)
-            });
-        }
-
-        let mut fetch_options = FetchOptions::new();
-        fetch_options.remote_callbacks(callbacks);
-
         let mut builder = git2::build::RepoBuilder::new();
-        builder.fetch_options(fetch_options);
+        builder.fetch_options(credentials::fetch_options(credentials));
 
         let repo = builder.clone(url, std::path::Path::new(path))?;
         Ok(repo)
@@ -1040,23 +1058,12 @@ impl GitClient {
     fn git_fetch(
         path: &PathBuf,
         remote_name: &str,
-        username: Option<&str>,
-        password: Option<&str>,
+        credentials: Option<&credentials::CredentialScope>,
     ) -> Result<()> {
         let repo = Repository::open(path)?;
         let mut remote = repo.find_remote(remote_name)?;
 
-        let mut callbacks = RemoteCallbacks::new();
-        if let (Some(user), Some(pass)) = (username, password) {
-            let user = user.to_string();
-            let pass = pass.to_string();
-            callbacks.credentials(move |_url, _username_from_url, _allowed_types| {
-                Cred::userpass_plaintext(&user, &pass)
-            });
-        }
-
-        let mut fetch_options = FetchOptions::new();
-        fetch_options.remote_callbacks(callbacks);
+        let mut fetch_options = credentials::fetch_options(credentials);
 
         remote.fetch(
             &["refs/heads/*:refs/remotes/origin/*"],
@@ -1154,8 +1161,7 @@ impl GitClient {
         path: &PathBuf,
         remote_name: &str,
         branch_name: Option<&str>,
-        username: Option<&str>,
-        password: Option<&str>,
+        credentials: Option<&credentials::CredentialScope>,
     ) -> Result<String> {
         let repo = Repository::open(path)?;
 
@@ -1171,18 +1177,7 @@ impl GitClient {
 
         // Fetch first
         let mut remote = repo.find_remote(remote_name)?;
-        let mut callbacks = RemoteCallbacks::new();
-
-        if let (Some(user), Some(pass)) = (username, password) {
-            let user = user.to_string();
-            let pass = pass.to_string();
-            callbacks.credentials(move |_url, _username_from_url, _allowed_types| {
-                Cred::userpass_plaintext(&user, &pass)
-            });
-        }
-
-        let mut fetch_options = FetchOptions::new();
-        fetch_options.remote_callbacks(callbacks);
+        let mut fetch_options = credentials::fetch_options(credentials);
 
         remote.fetch(
             &[format!(
@@ -1223,8 +1218,7 @@ impl GitClient {
         path: &PathBuf,
         remote_name: &str,
         branch_name: Option<&str>,
-        username: Option<&str>,
-        password: Option<&str>,
+        credentials: Option<&credentials::CredentialScope>,
     ) -> Result<String> {
         let repo = Repository::open(path)?;
 
@@ -1239,18 +1233,7 @@ impl GitClient {
         };
 
         let mut remote = repo.find_remote(remote_name)?;
-        let mut callbacks = RemoteCallbacks::new();
-
-        if let (Some(user), Some(pass)) = (username, password) {
-            let user = user.to_string();
-            let pass = pass.to_string();
-            callbacks.credentials(move |_url, _username_from_url, _allowed_types| {
-                Cred::userpass_plaintext(&user, &pass)
-            });
-        }
-
-        let mut push_options = git2::PushOptions::new();
-        push_options.remote_callbacks(callbacks);
+        let mut push_options = credentials::push_options(credentials);
 
         // Push the branch
         let refspec = format!(
@@ -1306,8 +1289,7 @@ impl GitClient {
         branch_name: &str,
         force: bool,
         remote_name: Option<&str>,
-        username: Option<&str>,
-        password: Option<&str>,
+        credentials: Option<&credentials::CredentialScope>,
     ) -> Result<String> {
         let repo = Repository::open(path)?;
         let mut result_msgs = Vec::new();
@@ -1342,17 +1324,7 @@ impl GitClient {
         if let Some(remote) = remote_name {
             let mut remote_obj = repo.find_remote(remote)?;
 
-            let mut callbacks = RemoteCallbacks::new();
-            if let (Some(user), Some(pass)) = (username, password) {
-                let user = user.to_string();
-                let pass = pass.to_string();
-                callbacks.credentials(move |_url, _username_from_url, _allowed_types| {
-                    Cred::userpass_plaintext(&user, &pass)
-                });
-            }
-
-            let mut push_options = git2::PushOptions::new();
-            push_options.remote_callbacks(callbacks);
+            let mut push_options = credentials::push_options(credentials);
 
             // Push empty refspec to delete remote branch
             let refspec = format!(":refs/heads/{}", branch_name);

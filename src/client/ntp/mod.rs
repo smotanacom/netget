@@ -32,13 +32,16 @@ impl NtpClient {
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
     ) -> Result<SocketAddr> {
-        // Parse remote address
-        let remote_sock_addr: SocketAddr = remote_addr
-            .parse()
-            .context(format!("Invalid NTP server address: {}", remote_addr))?;
+        let remote_sock_addr = Self::resolve_server(&remote_addr).await?;
 
-        // Bind to any local port for UDP
-        let socket = UdpSocket::bind("0.0.0.0:0")
+        // Bind an ephemeral local port in the family of the address we send to: an IPv4
+        // socket cannot send to an IPv6 address, nor the other way round.
+        let local_bind = if remote_sock_addr.is_ipv6() {
+            "[::]:0"
+        } else {
+            "0.0.0.0:0"
+        };
+        let socket = UdpSocket::bind(local_bind)
             .await
             .context("Failed to bind UDP socket")?;
 
@@ -201,7 +204,34 @@ impl NtpClient {
         Ok(local_addr)
     }
 
-    /// Put one NTP request on the wire, returning the byte count `send_to` reported.
+    /// Resolve the NTP server's `host:port`.
+    ///
+    /// A literal `IP:port` is used as given, with no name lookup. A hostname is resolved and
+    /// its first IPv4 address is taken when it has one, otherwise its first address. UDP has
+    /// no handshake that would reveal an unreachable address and move on to the next, and
+    /// `localhost` commonly resolves to `::1` ahead of `127.0.0.1`, where a server listening
+    /// on IPv4 alone never hears the query.
+    async fn resolve_server(remote_addr: &str) -> Result<SocketAddr> {
+        if let Ok(addr) = remote_addr.parse::<SocketAddr>() {
+            return Ok(addr);
+        }
+        let candidates: Vec<SocketAddr> = tokio::net::lookup_host(remote_addr)
+            .await
+            .with_context(|| {
+                format!(
+                    "Could not resolve NTP server address {remote_addr:?} (expected host:port, \
+                     e.g. 127.0.0.1:123 or ntp.example.org:123)"
+                )
+            })?
+            .collect();
+        candidates
+            .iter()
+            .find(|addr| addr.is_ipv4())
+            .or_else(|| candidates.first())
+            .copied()
+            .with_context(|| format!("NTP server address {remote_addr:?} resolved to no address"))
+    }
+
     /// Send one request and read its reply. Raises no event and calls no LLM.
     ///
     /// This is what a `query_time` the model asks for in answer to
@@ -217,6 +247,7 @@ impl NtpClient {
         Ok(Self::parse_ntp_response(&buffer[..n]))
     }
 
+    /// Put one NTP request on the wire, returning the byte count `send_to` reported.
     async fn send_query(socket: &Arc<UdpSocket>, remote: SocketAddr) -> Result<usize> {
         let packet = Self::build_ntp_request();
         let sent = socket.send_to(&packet, remote).await?;

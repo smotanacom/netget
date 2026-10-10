@@ -203,7 +203,17 @@ pair; neither line exists anywhere in the code.
 
 ### Authentication
 
-- ✅ AWS credentials from environment variables
+- ✅ AWS credentials from environment variables — **only against AWS itself** (no
+  `endpoint_url`, empty `remote_addr`). With a custom endpoint and no `access_key_id` /
+  `secret_access_key` the connect is refused (`client::aws_support`): the SDK would otherwise
+  sign requests to a model-settable host with the operator's ambient identity, and on EC2 or
+  under an assumed role the session token rides along in `x-amz-security-token`. Any value
+  works for a local emulator. `tests/client/dynamodb/ambient_credentials_test.rs`.
+- ✅ `region` is validated before the SDK sees it (`client::aws_support::validate_region`):
+  1–32 characters of `a-z`, `0-9` and `-`, not starting or ending with `-`. Without an
+  endpoint the SDK builds the host as `dynamodb.` + region + `.amazonaws.com`, so a
+  model-set `"region": "attacker.example/x"` would send requests signed with the ambient
+  identity to `attacker.example`. Same test file.
 - ✅ Explicit credentials via startup parameters
 - ✅ Custom endpoint for local testing
 - ✅ AWS Signature v4 (handled by SDK)

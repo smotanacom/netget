@@ -69,9 +69,13 @@ async fn client_works_against_mediamtx() {
 
     // MediaMTX treats a connection as one reader or one publisher, so publishing is a second
     // client. While it publishes the clip, MediaMTX must see a ready path with both tracks.
-    let pub_id = client_in(&state, mediamtx.addr(), json!({"app": "live"}))
-        .await
-        .unwrap();
+    let pub_id = client_in(
+        &state,
+        mediamtx.addr(),
+        json!({"app": "live", "media_root": dir.path()}),
+    )
+    .await
+    .unwrap();
     let watcher = tokio::spawn({
         let api = api.clone();
         async move { wait_ready(&api, "live/netget", Duration::from_secs(20)).await }
