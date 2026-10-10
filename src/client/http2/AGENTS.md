@@ -92,7 +92,10 @@ HTTP/2 client stores minimal state in `protocol_data`:
 
 ### Startup Parameters
 
-- `default_headers` (optional) — headers included in every request.
+- `default_headers` (optional) — headers included in every request. Because of that, an
+  absolute `path` is accepted only on the client's own origin
+  (`http_fetch::resolve_same_origin`; see the `http` client's AGENTS.md), and the reqwest
+  client follows no redirect to another origin.
   `perform_request` merges them **underneath** the headers the model puts on the request
   itself, keyed by the lowercased header name (HTTP header names are case-insensitive), so
   `Accept` on the request replaces `accept` from the defaults. The merge happens before any

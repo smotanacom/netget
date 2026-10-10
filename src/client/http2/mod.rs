@@ -93,6 +93,7 @@ impl Http2Client {
         let built = tokio::task::spawn_blocking(move || {
             let mut builder = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
+                .redirect(crate::client::http_fetch::same_origin_redirects())
                 .http2_prior_knowledge();
             // Only when the host *is* an address. A hostname is left alone: resolving it
             // is the resolver's job, and /etc/hosts may legitimately redirect it.
@@ -536,24 +537,17 @@ impl Http2Client {
             .unwrap_or((None, None));
         let base_url = base_url.context("No base URL found")?;
 
-        let url = if path.starts_with("http://") || path.starts_with("https://") {
-            path.clone()
-        } else if base_url.starts_with("http://") || base_url.starts_with("https://") {
-            format!("{}{}", base_url, path)
-        } else {
-            // `base_url` is whatever the client was opened on, often a bare host:port.
-            // reqwest needs an absolute URL; `http2_prior_knowledge()` speaks cleartext
-            // h2c, so http:// is the right scheme for that case.
-            format!("http://{}{}", base_url, path)
-        };
+        // Same origin as `remote_addr` or refused: see `resolve_same_origin`. `base_url` is
+        // whatever the client was opened on, often a bare host:port; the helper prefixes
+        // http://, which is right for cleartext h2c. The startup `default_headers` go on
+        // every request, so a request to another host would carry the operator's API key.
+        let url = crate::client::http_fetch::resolve_same_origin(&base_url, &path)?;
 
         info!(
             "HTTP/2 client {} making request: {} {}",
             client_id, method, url
         );
 
-        // Keyed on the *request* URL, not the base: `path` may be an absolute URL
-        // pointing at a different host, and that host needs its own resolver override.
         let http_client = Self::http2_client(&url).await?;
 
         let mut request = match method.to_uppercase().as_str() {

@@ -29,7 +29,11 @@ provides LLM-controlled access to remote file systems via WebDAV protocol.
 WebDAV is **connectionless** like HTTP - each operation is a separate HTTP request:
 
 1. **Client Initialization**: resolves `default_headers` and `auth`, stores the base URL. It
-   builds **no** HTTP client — see below.
+   builds **no** HTTP client — see below. Because `auth` becomes `Authorization: Basic` on
+   every request, an absolute `path` is accepted only on the base URL's origin
+   (`http_fetch::resolve_same_origin`) and redirects are followed on that origin only; a
+   model talked into "fetch http://attacker/" used to hand the share password over in one
+   request. `tests/client/http/same_origin_test.rs` covers this client too.
 2. **On-Demand Requests**: LLM triggers WebDAV methods via actions
 3. **Response Processing**: LLM receives XML responses and decides next action
 
