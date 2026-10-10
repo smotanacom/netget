@@ -40,12 +40,21 @@ fn config() -> String {
             port += 1;
         }
     }
-    // QOTD has no built-in: xinetd runs a program per connection, as inetd sites did.
-    let user = if unsafe { libc::geteuid() } == 0 {
-        "    user = nobody\n"
+    // QOTD has no built-in: xinetd runs a program per connection, as inetd sites did. xinetd
+    // disables an external service without a `user` ("missing attribute user - DISABLING")
+    // even when it is not root and cannot switch: name nobody as root, else ourselves.
+    let euid = unsafe { libc::geteuid() };
+    let name = if euid == 0 {
+        "nobody".to_string()
     } else {
-        ""
+        // SAFETY: getpwuid returns a pointer to static storage or null; it is read at once.
+        let entry = unsafe { libc::getpwuid(euid) };
+        assert!(!entry.is_null(), "no passwd entry for uid {euid}");
+        unsafe { std::ffi::CStr::from_ptr((*entry).pw_name) }
+            .to_string_lossy()
+            .into_owned()
     };
+    let user = format!("    user = {name}\n");
     conf.push_str(&format!(
         "service qotd\n{{\n    type = UNLISTED\n    socket_type = stream\n    protocol = tcp\n    port = {{port10}}\n    wait = no\n{user}    server = /bin/echo\n    server_args = Independent quote of the day\n    bind = 127.0.0.1\n}}\n"
     ));
