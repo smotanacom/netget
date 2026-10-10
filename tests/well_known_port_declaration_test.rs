@@ -51,6 +51,10 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
         "Cap'n Proto RPC registers no port: each application's schema and deployment choose one",
     ),
     (
+        "dbus",
+        "D-Bus registers no port: buses listen on Unix sockets, and a TCP address names whatever port its bus config chose",
+    ),
+    (
         "zeromq",
         "ZeroMQ registers no port: every endpoint is chosen by its application (the guide's examples use 5555)",
     ),

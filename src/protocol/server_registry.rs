@@ -460,6 +460,8 @@ impl ServerRegistry {
         self.register(Arc::new(
             crate::server::radsec::actions::RadsecProtocol::new(),
         ));
+        #[cfg(feature = "dbus")]
+        self.register(Arc::new(crate::server::dbus::actions::DbusProtocol::new()));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1690,6 +1692,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("Milter", "milter"),
     ("Anthropic", "anthropic"),
     ("RadSec", "radsec"),
+    ("D-Bus", "dbus"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),
