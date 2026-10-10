@@ -394,6 +394,8 @@ pub mod smpp;
 pub mod webtransport;
 #[cfg(feature = "zeromq")]
 pub mod zeromq;
+#[cfg(feature = "zipkin")]
+pub mod zipkin;
 
 #[cfg(feature = "diameter")]
 pub mod diameter;

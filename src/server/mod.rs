@@ -1360,6 +1360,8 @@ pub mod webtransport;
 pub mod zenoh;
 #[cfg(feature = "zeromq")]
 pub mod zeromq;
+#[cfg(feature = "zipkin")]
+pub mod zipkin;
 
 #[cfg(feature = "s7comm")]
 pub mod s7comm;
