@@ -499,6 +499,8 @@ pub mod knx;
 pub mod lmtp;
 #[cfg(feature = "lpd")]
 pub mod lpd;
+#[cfg(feature = "milter")]
+pub mod milter;
 #[cfg(feature = "minecraft")]
 pub mod minecraft;
 #[cfg(feature = "msgpack-rpc")]
