@@ -133,6 +133,7 @@ fn golden_duals_map() {
         "BFD",
         "VXLAN",
         "rsync",
+        "PFCP",
         "WS-Discovery",
         "Nostr",
         "Vault",
