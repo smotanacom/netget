@@ -37,6 +37,12 @@ use std::path::{Path, PathBuf};
 /// The count is the number of occurrences allowed in that file. It may only go down.
 const ALLOWED: &[(&str, usize, &str)] = &[
     (
+        "src/client/dc/mod.rs",
+        1,
+        "validator: NMDC has no escape for a nickname, so validate_nmdc_nickname refuses one \
+         with whitespace, a control character or a protocol delimiter rather than altering it",
+    ),
+    (
         "src/server/proxy/filter.rs",
         2,
         "validator: a model-supplied header value, or a request path or query part, with a \
@@ -52,6 +58,11 @@ const ALLOWED: &[(&str, usize, &str)] = &[
         "src/server/rsync/wire.rs",
         1,
         "An encoding predicate: content_json reports file contents as utf8 only when they have no control characters other than line breaks and tabs, and as hex otherwise. Nothing is filtered.",
+    ),
+    (
+        "src/server/pulsar/wire.rs",
+        1,
+        "An encoding predicate: show reports a message payload as utf8 only when it has no control characters other than line breaks and tabs, and as hex otherwise. Nothing is filtered.",
     ),
     (
         "src/server/vxlan/frame.rs",
