@@ -17,3 +17,8 @@ emits `Announced`, Slow sleeps 3 s.
 Mutation-checked: dropping the model's actions and removing the fail-closed answer each fail
 the chain test. Peers: `apt-get install dbus-daemon dbus-bin python3-dbus-next`; fails rather
 than skips without them.
+
+The bus config disables AppArmor mediation (`<apparmor mode="disabled"/>`): on a host with
+AppArmor (GitHub's Ubuntu runners), dbus-daemon asks it about every connecting peer, the query
+fails for a TCP socket, and the connection is dropped mid-authentication. A host without
+AppArmor never shows this.
