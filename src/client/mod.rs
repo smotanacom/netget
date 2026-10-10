@@ -776,6 +776,8 @@ pub mod consul;
 pub mod dbus;
 #[cfg(feature = "epp")]
 pub mod epp;
+#[cfg(feature = "guacamole")]
+pub mod guacamole;
 #[cfg(feature = "inetd")]
 pub mod inetd;
 #[cfg(feature = "jmap")]
