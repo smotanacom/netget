@@ -1370,6 +1370,8 @@ pub mod restconf;
 pub mod smpp;
 #[cfg(feature = "webtransport")]
 pub mod webtransport;
+#[cfg(feature = "wsdiscovery")]
+pub mod wsdiscovery;
 #[cfg(feature = "zenoh")]
 pub mod zenoh;
 #[cfg(feature = "zeromq")]

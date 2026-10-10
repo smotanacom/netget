@@ -142,6 +142,7 @@ portable-base = [
     "anthropic",
     "radsec",
     "dbus",
+    "wsdiscovery",
     "x11",
     "sflow",
     "prometheus-remote-write",
@@ -387,6 +388,7 @@ milter = [] # Mail filter (milter) protocol server and MTA-side client
 anthropic = [] # Anthropic Messages API server and client
 radsec = ["radius", "tls"] # RADIUS over TLS (RFC 6614) server and client
 dbus = [] # D-Bus server (a small message bus) and client, hand-rolled wire protocol
+wsdiscovery = ["quick-xml"] # WS-Discovery (SOAP-over-UDP 3702) target service and discovery client, 2005/04 and 2009/01
 x11 = [] # X11 client (X Window System core protocol): windows, properties and events against an X server
 jmap = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"] # JMAP (RFC 8620/8621) server and client
 webtransport = ["dep:rustls", "dep:wtransport", "dep:wtransport-proto", "dep:sha2"] # WebTransport over HTTP/3 (draft-02) server and client
@@ -712,6 +714,7 @@ dist-windows = [
     "anthropic",
     "radsec",
     "dbus",
+    "wsdiscovery",
     "x11",
     "sflow",
     "prometheus-remote-write",
@@ -935,6 +938,7 @@ all-protocols = [
     "anthropic",
     "radsec",
     "dbus",
+    "wsdiscovery",
     "x11",
     "sflow",
     "prometheus-remote-write",

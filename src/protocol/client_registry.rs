@@ -642,6 +642,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::dbus::actions::DbusClientProtocol::new(),
         ));
+        #[cfg(feature = "wsdiscovery")]
+        self.register(Arc::new(
+            crate::client::wsdiscovery::actions::WsDiscoveryClientProtocol::new(),
+        ));
         #[cfg(feature = "x11")]
         self.register(Arc::new(
             crate::client::x11::actions::X11ClientProtocol::new(),
@@ -1191,6 +1195,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("Anthropic", "anthropic"),
     ("RadSec", "radsec"),
     ("D-Bus", "dbus"),
+    ("WS-Discovery", "wsdiscovery"),
     ("X11", "x11"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),

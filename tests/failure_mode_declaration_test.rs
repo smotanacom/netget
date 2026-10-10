@@ -116,6 +116,9 @@ const DOCUMENTED_SILENT: &[&str] = &[
     "usb/mouse",
     "vrrp",
     "wol",
+    // WS-Discovery has no negative reply: a target that does not match says nothing, and every
+    // message it could send (ProbeMatches, ResolveMatches, Hello) claims a service exists.
+    "wsdiscovery",
 ];
 
 /// Protocols that answer on LLM failure and were, at some point, believed or listed to be
