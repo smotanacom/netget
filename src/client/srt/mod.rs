@@ -49,6 +49,12 @@ pub async fn connect(ctx: ConnectContext) -> Result<SocketAddr> {
         .map(|p| p.get_optional_string("passphrase"))
         .transpose()?
         .flatten();
+    let media_root = crate::client::media_root::MediaRoot::new(
+        p.map(|p| p.get_optional_string(crate::client::media_root::MEDIA_ROOT_PARAM))
+            .transpose()?
+            .flatten()
+            .as_deref(),
+    )?;
     let remote: SocketAddr = tokio::net::lookup_host(&ctx.remote_addr)
         .await?
         .next()
@@ -138,7 +144,16 @@ pub async fn connect(ctx: ConnectContext) -> Result<SocketAddr> {
         .await;
     let session_ctx = ctx.clone();
     let task = tokio::spawn(async move {
-        if let Err(e) = run(&session_ctx, &mut socket, external, internal_rx, &event_tx).await {
+        if let Err(e) = run(
+            &session_ctx,
+            &media_root,
+            &mut socket,
+            external,
+            internal_rx,
+            &event_tx,
+        )
+        .await
+        {
             Log::new(Some(&session_ctx.status_tx)).warn(format!("SRT client ended: {e:#}"));
         }
         let _ = socket.close().await;
@@ -166,6 +181,7 @@ fn stats(s: Option<&SocketStatistics>) -> Value {
 
 async fn run(
     ctx: &ConnectContext,
+    media_root: &crate::client::media_root::MediaRoot,
     socket: &mut SrtSocket,
     mut external: mpsc::Receiver<ClientCommand>,
     mut internal: mpsc::Receiver<Value>,
@@ -218,7 +234,7 @@ async fn run(
                         .await
                     }
                     Some("srt_send_file") => {
-                        send_file(socket, &mut stats_stream, &mut latest, &action).await
+                        send_file(media_root, socket, &mut stats_stream, &mut latest, &action).await
                     }
                     _ => {
                         let text =
@@ -366,20 +382,25 @@ async fn receive(
 }
 
 async fn send_file(
+    media_root: &crate::client::media_root::MediaRoot,
     socket: &mut SrtSocket,
     stats_stream: &mut (impl futures::Stream<Item = SocketStatistics> + Unpin),
     latest: &mut Option<SocketStatistics>,
     a: &Value,
 ) -> Result<Value> {
     let path = a["path"].as_str().unwrap_or_default();
-    let meta = tokio::fs::metadata(path)
+    // The peer this file goes to is the peer whose responses the model reads: confined
+    // to `media_root`, or it is a file-exfiltration primitive. See `client::media_root`.
+    let path = media_root.resolve(path, "the srt_send_file 'path'")?;
+    let meta = tokio::fs::metadata(&path)
         .await
-        .with_context(|| format!("reading {path}"))?;
-    ensure!(meta.len() <= MAX_FILE, "{path} is over 64 MiB");
-    let file = tokio::fs::read(path).await?;
+        .with_context(|| format!("reading {}", path.display()))?;
+    ensure!(meta.len() <= MAX_FILE, "{} is over 64 MiB", path.display());
+    let file = tokio::fs::read(&path).await?;
     ensure!(
         file.len() >= TS && file[0] == 0x47,
-        "{path} is not an MPEG-TS file"
+        "{} is not an MPEG-TS file",
+        path.display()
     );
     let kbps = a["bitrate_kbps"].as_f64().unwrap_or(2000.0);
     let per_message = Duration::from_secs_f64(MESSAGE as f64 * 8.0 / (kbps * 1000.0));
