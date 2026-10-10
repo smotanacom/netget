@@ -297,9 +297,13 @@ impl ClientInstance {
     /// Get or create a log file path for the given output name
     /// Returns the path to the log file with format: netget_<output_name>_<timestamp>.log
     /// The timestamp is based on when the client was created
-    pub fn get_or_create_log_path(&mut self, output_name: &str) -> PathBuf {
+    ///
+    /// `output_name` is model-authored and becomes part of a filename; see
+    /// `server::validate_log_output_name`.
+    pub fn get_or_create_log_path(&mut self, output_name: &str) -> anyhow::Result<PathBuf> {
+        crate::state::server::validate_log_output_name(output_name)?;
         if let Some(path) = self.log_files.get(output_name) {
-            return path.clone();
+            return Ok(path.clone());
         }
 
         // Calculate the absolute time when the client was created
@@ -317,7 +321,7 @@ impl ClientInstance {
 
         self.log_files
             .insert(output_name.to_string(), log_path.clone());
-        log_path
+        Ok(log_path)
     }
 
     /// Get a summary for display
