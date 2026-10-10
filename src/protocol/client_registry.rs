@@ -630,6 +630,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::milter::actions::MilterClientProtocol::new(),
         ));
+        #[cfg(feature = "anthropic")]
+        self.register(Arc::new(
+            crate::client::anthropic::actions::AnthropicClientProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1172,6 +1176,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("KNX/IP", "knx"),
     ("Consul", "consul"),
     ("Milter", "milter"),
+    ("Anthropic", "anthropic"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),

@@ -199,6 +199,11 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
         "WebRTC media and data ride ICE-negotiated ephemeral UDP ports; there is no fixed one",
     ),
     (
+        "anthropic",
+        "the Anthropic API is served over HTTPS 443, which this plain-HTTP server does not speak; \
+         compatible servers pick their own (llama.cpp 8080, LiteLLM 4000)",
+    ),
+    (
         "milter",
         "no registry or specification assigns a milter port; each filter's socket is local MTA \
          configuration and the filters disagree (OpenDKIM 8891, OpenDMARC 8893, rspamd 11332)",

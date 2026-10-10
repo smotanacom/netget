@@ -127,6 +127,7 @@ fn golden_duals_map() {
         "KNX/IP",
         "Consul",
         "Milter",
+        "Anthropic",
         "Nostr",
         "Vault",
         "Bolt",
