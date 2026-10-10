@@ -43,6 +43,22 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
         "raw UDP carries whatever the operator says it does; there is no protocol to register",
     ),
     (
+        "msgpack_rpc",
+        "MessagePack-RPC registers no port: each application picks its own (Neovim listens wherever --listen says)",
+    ),
+    (
+        "capnp_rpc",
+        "Cap'n Proto RPC registers no port: each application's schema and deployment choose one",
+    ),
+    (
+        "dbus",
+        "D-Bus registers no port: buses listen on Unix sockets, and a TCP address names whatever port its bus config chose",
+    ),
+    (
+        "zeromq",
+        "ZeroMQ registers no port: every endpoint is chosen by its application (the guide's examples use 5555)",
+    ),
+    (
         "tls",
         "generic TLS termination; 443 belongs to HTTPS, which this server does not speak",
     ),
@@ -185,6 +201,16 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
     (
         "webrtc",
         "WebRTC media and data ride ICE-negotiated ephemeral UDP ports; there is no fixed one",
+    ),
+    (
+        "anthropic",
+        "the Anthropic API is served over HTTPS 443, which this plain-HTTP server does not speak; \
+         compatible servers pick their own (llama.cpp 8080, LiteLLM 4000)",
+    ),
+    (
+        "milter",
+        "no registry or specification assigns a milter port; each filter's socket is local MTA \
+         configuration and the filters disagree (OpenDKIM 8891, OpenDMARC 8893, rspamd 11332)",
     ),
 ];
 

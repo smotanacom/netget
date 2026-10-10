@@ -11,12 +11,14 @@
 //!   Secret)` — RFC 2865 §3. A real client rejects the reply if this is wrong, so it is the
 //!   one computation that cannot be faked.
 //! - **User-Password** hiding/unhiding — RFC 2865 §5.2.
+//! - **Message-Authenticator (attribute 80)**, the HMAC-MD5 of RFC 3579 §3.2: put first in
+//!   every Access-Accept, -Reject and -Challenge ([`encode_signed_response`]), and verified on
+//!   an Access-Request or Status-Server that carries one
+//!   ([`verify_request_message_authenticator`]). A request without one is still answered.
 //! - The **Accounting-Request Authenticator**, `MD5(Code | ID | Length | 16 zero bytes |
 //!   Attributes | Secret)` — RFC 2866 §3. This one is *verifiable*, and the server verifies it.
 //!
 //! Deliberately **not** implemented, and not claimed anywhere else:
-//! - **Message-Authenticator (attribute 80)**, the HMAC-MD5 of RFC 3579 §3.2. It is neither
-//!   computed nor verified. A packet carrying one is accepted, and the reply does not carry one.
 //! - **CHAP (RFC 2865 §5.3)**, **MS-CHAP**, and **EAP (RFC 3579)**. CHAP-Password and
 //!   EAP-Message are decoded to hex and handed to the model as opaque; no challenge is
 //!   validated and no EAP state machine exists.
@@ -415,6 +417,109 @@ pub fn encode_response(
     Ok(out)
 }
 
+/// HMAC-MD5 (RFC 2104), which RFC 3579's Message-Authenticator is.
+pub fn hmac_md5(key: &[u8], message: &[u8]) -> [u8; 16] {
+    let mut block = [0u8; 64];
+    if key.len() > 64 {
+        block[..16].copy_from_slice(&Md5::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let mut inner = Md5::new();
+    inner.update(block.map(|b| b ^ 0x36));
+    inner.update(message);
+    let inner = inner.finalize();
+    let mut outer = Md5::new();
+    outer.update(block.map(|b| b ^ 0x5c));
+    outer.update(inner);
+    outer.finalize().into()
+}
+
+/// [`encode_response`] with a Message-Authenticator (RFC 3579 §3.2) as the first attribute,
+/// for Access-Accept, -Reject and -Challenge. It is the HMAC-MD5 of the reply with the
+/// *Request* Authenticator in the authenticator field and itself zeroed, computed before the
+/// Response Authenticator, which then covers it. Clients patched for BlastRADIUS
+/// (CVE-2024-3596) refuse an Access reply without one; NetGet's own RADIUS client does.
+pub fn encode_signed_response(
+    code: u8,
+    identifier: u8,
+    attributes: &[Attribute],
+    request_authenticator: &[u8; 16],
+    secret: &[u8],
+) -> Result<Vec<u8>, RadiusError> {
+    let mut attr_bytes = Attribute::new(ATTR_MESSAGE_AUTHENTICATOR, vec![0; 16]).encode()?;
+    for attr in attributes
+        .iter()
+        .filter(|a| a.attr_type != ATTR_MESSAGE_AUTHENTICATOR)
+    {
+        attr_bytes.extend_from_slice(&attr.encode()?);
+    }
+    let total = HEADER_LEN + attr_bytes.len();
+    if total > MAX_PACKET_LEN {
+        return Err(RadiusError::ResponseTooLong(total));
+    }
+    let mut out = Vec::with_capacity(total);
+    out.push(code);
+    out.push(identifier);
+    out.extend_from_slice(&(total as u16).to_be_bytes());
+    out.extend_from_slice(request_authenticator);
+    out.extend_from_slice(&attr_bytes);
+    let mac = hmac_md5(secret, &out);
+    out[HEADER_LEN + 2..HEADER_LEN + 18].copy_from_slice(&mac);
+    let auth = response_authenticator(
+        code,
+        identifier,
+        &out[HEADER_LEN..],
+        request_authenticator,
+        secret,
+    );
+    out[4..20].copy_from_slice(&auth);
+    Ok(out)
+}
+
+/// Check the Message-Authenticator of an Access-Request or Status-Server as received (RFC 3579
+/// §3.2: the HMAC-MD5 of the packet with the attribute zeroed). `Ok(false)` when the packet
+/// carries none; `Err` when it carries one that does not verify, which means the sender does
+/// not hold the shared secret — the packet is to be discarded.
+pub fn verify_request_message_authenticator(raw: &[u8], secret: &[u8]) -> Result<bool, String> {
+    if raw.len() < HEADER_LEN {
+        return Err("shorter than a RADIUS header".into());
+    }
+    let declared = usize::from(u16::from_be_bytes([raw[2], raw[3]])).min(raw.len());
+    let mut offset = HEADER_LEN;
+    let mut found = None;
+    while offset + 2 <= declared {
+        let len = usize::from(raw[offset + 1]);
+        if len < 2 {
+            break;
+        }
+        if raw[offset] == ATTR_MESSAGE_AUTHENTICATOR {
+            if len != 18 {
+                return Err("a Message-Authenticator that is not 16 octets".into());
+            }
+            found = Some(offset);
+        }
+        offset += len;
+    }
+    let Some(at) = found else { return Ok(false) };
+    let mut copy = raw[..declared].to_vec();
+    copy[at + 2..at + 18].fill(0);
+    let mac = hmac_md5(secret, &copy);
+    if mac
+        .iter()
+        .zip(&raw[at + 2..at + 18])
+        .fold(0u8, |d, (x, y)| d | (x ^ y))
+        == 0
+    {
+        Ok(true)
+    } else {
+        Err(
+            "the Message-Authenticator does not verify: the sender does not hold the shared secret"
+                .into(),
+        )
+    }
+}
+
 /// Accounting-Request Authenticator, RFC 2866 §3.
 ///
 /// `MD5(Code | Identifier | Length | 16 zero octets | Attributes | Secret)`
@@ -572,5 +677,38 @@ pub fn attribute_value_json(attr_type: u8, value: &[u8]) -> serde_json::Value {
             }
         }
         AttrKind::Octets => serde_json::Value::String(hex::encode(value)),
+    }
+}
+
+/// Read whole RADIUS packets from a stream: the 4-byte header's Length says how much follows.
+/// A length outside 20..=4096 ends the connection (RFC 6614 §2.5: the stream cannot be
+/// resynchronised), as does EOF.
+pub async fn read_frames<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: R,
+    frames: tokio::sync::mpsc::Sender<std::io::Result<Vec<u8>>>,
+) {
+    use tokio::io::AsyncReadExt;
+    loop {
+        let mut header = [0u8; 4];
+        let result = match reader.read_exact(&mut header).await {
+            Ok(_) => {
+                let len = u16::from_be_bytes([header[2], header[3]]) as usize;
+                if !(MIN_PACKET_LEN..=MAX_PACKET_LEN).contains(&len) {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("a packet length of {len} is outside 20..=4096"),
+                    ))
+                } else {
+                    let mut packet = header.to_vec();
+                    packet.resize(len, 0);
+                    reader.read_exact(&mut packet[4..]).await.map(|_| packet)
+                }
+            }
+            Err(e) => Err(e),
+        };
+        let done = result.is_err();
+        if frames.send(result).await.is_err() || done {
+            return;
+        }
     }
 }

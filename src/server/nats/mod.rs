@@ -23,6 +23,7 @@
 //! process died.
 
 pub mod actions;
+pub mod jetstream;
 
 use anyhow::Result;
 use std::collections::{BTreeMap, HashMap};
@@ -463,6 +464,7 @@ impl NatsServer {
     /// The bind is awaited before returning, so a port that is taken (or privileged) is an
     /// `Err` the caller turns into `ServerStatus::Error` rather than a server that reports
     /// `Running` with no socket.
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn_with_llm_actions(
         listen_addr: SocketAddr,
         llm_client: OllamaClient,
@@ -471,6 +473,7 @@ impl NatsServer {
         server_id: crate::state::ServerId,
         server_name: String,
         max_payload: u64,
+        jetstream: Option<Arc<jetstream::Shared>>,
     ) -> Result<SocketAddr> {
         let listener =
             crate::server::socket_helpers::create_reusable_tcp_listener(listen_addr).await?;
@@ -521,6 +524,7 @@ impl NatsServer {
                             &protocol,
                             &server_name,
                             max_payload,
+                            jetstream.clone(),
                             permit,
                         )
                         .await
@@ -570,6 +574,7 @@ async fn accept_connection(
     protocol: &Arc<NatsProtocol>,
     server_name: &str,
     max_payload: u64,
+    jetstream: Option<Arc<jetstream::Shared>>,
     permit: crate::server::accept_bounded::ConnectionPermit,
 ) -> Result<()> {
     // One connection, two tasks: the slot must stay taken until *both* are gone, so the permit
@@ -634,6 +639,7 @@ async fn accept_connection(
         local_addr.port(),
         connection_id.as_u32() as u64,
         &peer_addr.ip().to_string(),
+        jetstream.is_some(),
     );
     let greeting = format!("INFO {}\r\n", info);
     log.debug(format!("NATS -> {} INFO greeting", peer_addr));
@@ -678,6 +684,7 @@ async fn accept_connection(
         connection_id,
         peer_addr,
         protocol.clone(),
+        jetstream,
     );
     let dispatcher_handle = tokio::spawn(async move {
         let _permit = permit;
@@ -958,6 +965,7 @@ async fn run_dispatcher(
     connection_id: ConnectionId,
     peer_addr: SocketAddr,
     protocol: Arc<NatsProtocol>,
+    jetstream: Option<Arc<jetstream::Shared>>,
 ) {
     let log = Log::new(Some(&status_tx));
     // Owned by this task alone, so there is no lock to hold across the LLM call.
@@ -965,6 +973,59 @@ async fn run_dispatcher(
     let mut close_tx = Some(close_tx);
 
     while let Some(frame) = frame_rx.recv().await {
+        // JetStream's subjects are answered by the JetStream module, never as plain publishes.
+        if let (
+            Some(js),
+            Frame::Publish {
+                subject,
+                reply_to,
+                headers,
+                payload,
+            },
+        ) = (&jetstream, &frame)
+        {
+            if let Some(kind) = js.classify(subject) {
+                let sid_for = |inbox: &str| {
+                    subscriptions
+                        .iter()
+                        .find(|(_, sub)| subject_matches(&sub.subject, inbox))
+                        .map(|(sid, _)| sid.clone())
+                };
+                let ask = async |event: Event| {
+                    call_llm(
+                        &llm_client,
+                        &app_state,
+                        server_id,
+                        Some(connection_id),
+                        &event,
+                        protocol.as_ref(),
+                    )
+                    .await
+                };
+                let bytes = jetstream::answer(
+                    js,
+                    kind,
+                    jetstream::Frame {
+                        subject,
+                        reply_to: reply_to.as_deref(),
+                        headers,
+                        payload,
+                    },
+                    sid_for,
+                    ask,
+                    &log,
+                )
+                .await;
+                if !bytes.is_empty()
+                    && write_counted(&write_half, &bytes, &app_state, server_id, connection_id)
+                        .await
+                        .is_err()
+                {
+                    break;
+                }
+                continue;
+            }
+        }
         let event = match &frame {
             Frame::Connect(doc) => Event::new(
                 &NATS_CONNECT_EVENT,

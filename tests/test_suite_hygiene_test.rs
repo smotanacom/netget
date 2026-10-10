@@ -147,6 +147,7 @@ const SLEEP_BASELINE: &[(&str, usize)] = &[
     ("tests/client/stomp/e2e_test.rs", 2),
     ("tests/client/tor/e2e_test.rs", 2),
     ("tests/client/wireguard/e2e_test.rs", 4),
+    ("tests/client/x11/wire_test.rs", 1), // proves the depth-bounded chain stops: an absence
     ("tests/client/xmpp/e2e_test.rs", 3),
     ("tests/server/arp/e2e_test.rs", 1),
     ("tests/server/bluetooth_ble/e2e_test.rs", 2),

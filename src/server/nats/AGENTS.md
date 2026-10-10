@@ -230,9 +230,9 @@ Everything a real broker does apart from framing:
   subscription; one with a `max` leaves it targetable and reports the threshold
   to the model, which must honour it. Under-delivering and over-delivering are
   both wrong, and this picks the one the model can correct.
-- **No JetStream, no authentication, no TLS, no clustering, no `connect_urls`.**
-  `INFO` advertises `auth_required: false`, `tls_required: false`,
-  `jetstream: false` and an empty cluster, which is honest.
+- **No authentication, no TLS, no clustering, no `connect_urls`.** `INFO`
+  advertises `auth_required: false`, `tls_required: false` and an empty cluster,
+  which is honest; `jetstream` follows the startup flag (below).
 - **The advertised version is `2.10.0`.** Clients gate optional client-protocol
   features on it, and `headers`/`HPUB` need a version that has them. It is a
   claim about the *client protocol*, not feature parity — see the list above.
@@ -303,3 +303,33 @@ BOGUS
 
 (The bare-LF tolerance in `parse_frame` exists for exactly this: `nc` sends LF,
 not CRLF.)
+
+## JetStream (`jetstream: true`)
+
+`jetstream.rs`. JetStream is an API over request/reply, so it lives above the codec: in the
+dispatcher, a `PUB` whose subject is `$JS.API.…`, `$JS.ACK.…` (nine tokens) or one a known
+stream captures goes to `jetstream::answer` instead of becoming `nats_publish`.
+
+- `nats_js_api {operation, stream, consumer, request}` → `nats_js_reply {response}` or
+  `nats_js_error {code, err_code, description}`. The handler gives only what it decides; Rust
+  adds the response `type` and every field a client decodes (a stream's config defaults and
+  zero state, a consumer's policies and sequences, account limits, list totals). Operations:
+  INFO, STREAM.CREATE/UPDATE/INFO/DELETE/PURGE/NAMES/LIST, CONSUMER.CREATE (named, ephemeral,
+  filtered and the legacy DURABLE form)/INFO/DELETE/NAMES/LIST; anything else, a body that is
+  not JSON, or a name with a wildcard is a 400 error in Rust.
+- Which subjects a stream captures is learned from the config the handler *accepted* on
+  STREAM.CREATE/UPDATE (its own name when it lists none) and forgotten on DELETE — routing,
+  like the subscription table. Messages are never stored: `nats_js_publish {stream, subject,
+  payload, headers, wants_ack}` → `nats_js_ack {seq}` (`{"stream","seq"}` to the publisher).
+- `nats_js_pull {stream, consumer, batch, no_wait, expires_ms}` → `nats_js_deliver
+  {messages, pending}`: each message goes out on its own subject through the inbox
+  subscription's sid with a `$JS.ACK.<stream>.<consumer>.<delivered>.<sseq>.<cseq>.<ts>.<pending>`
+  reply; a short batch ends with `NATS/1.0 404 No Messages` (no_wait, nothing) or
+  `408 Request Timeout`, as the real server ends one. At most 256 per pull.
+- `nats_js_acked {stream_seq, consumer_seq, delivered, kind}` (ack, nak, progress, term,
+  next); a synchronous ack's reply is answered empty in Rust.
+
+Failure: a handler failure, silence or wrong answer to an API call or a publish is a 503
+API error carrying `WireFailure`'s text, never a fabricated success; a failed pull delivers
+nothing and ends with 408. Evidence: `tests/server/nats/jetstream_test.rs` (nats.go v1.54
+`jetstream`, nats-py 2.16, and raw frames).

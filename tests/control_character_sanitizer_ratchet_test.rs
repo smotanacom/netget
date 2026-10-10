@@ -44,6 +44,16 @@ const ALLOWED: &[(&str, usize, &str)] = &[
          split one request or response into two",
     ),
     (
+        "src/server/rsync/wire.rs",
+        1,
+        "An encoding predicate: content_json reports file contents as utf8 only when they have no control characters other than line breaks and tabs, and as hex otherwise. Nothing is filtered.",
+    ),
+    (
+        "src/server/vxlan/frame.rs",
+        1,
+        "An encoding predicate: data_json reports a payload as utf8 only when it has no control characters other than line breaks and tabs, and as hex otherwise. Nothing is filtered.",
+    ),
+    (
         "src/client/webtransport/mod.rs",
         1,
         "validator: the session path becomes the request's :path; one with whitespace or a \

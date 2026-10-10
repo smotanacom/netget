@@ -1,0 +1,10 @@
+# pycapnp (MIT), the Python binding of the C++ Cap'n Proto runtime it bundles, and its
+# jinja2 dependency; CPython 3.12
+# and 3.13 manylinux wheels.
+pycapnp==2.2.4 \
+    --hash=sha256:80e12e4713dca8683188aae7dd883b25d9175c1b41455af2b5d5a35dd0d3c42a \
+    --hash=sha256:3d5444575a2f9c2f1cf50c99ef08d9a76dde47a3a13fdf02909fe6c6e1b69901
+jinja2==3.1.6 --hash=sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
+markupsafe==3.0.4 \
+    --hash=sha256:8e124f974786f831d6043728e38296969d3579db8896fe004682f5758e613581 \
+    --hash=sha256:434139499bb20b502ed3baa1f169e618f924a97e7a777fea1a49446d80106cf6

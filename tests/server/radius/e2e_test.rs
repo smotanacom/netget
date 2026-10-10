@@ -468,14 +468,17 @@ async fn fails_closed_when_the_model_returns_nothing() -> E2EResult<()> {
         packet::code_name(reply.code)
     );
 
-    // The whole synthesised packet, byte for byte, against a literal computed with Python
-    // hashlib. This pins both the denial and the fact that it is still correctly signed.
+    // The whole synthesised packet, byte for byte, against a literal computed with Python's
+    // hmac and hashlib. This pins the denial and both of its signatures: the RFC 3579
+    // Message-Authenticator (first attribute, HMAC-MD5 over the reply with the Request
+    // Authenticator in place) and the Response Authenticator that then covers it.
     assert_eq!(
         hex::encode(&raw),
-        "0300004b5823fcbd45cbbb3021b23d62f546dbce\
-         12374163636573732064656e6965643a206e6f20\
-         617574686f72697a6174696f6e20646563697369\
-         6f6e207761732070726f6475636564",
+        "0300005db4669b514d44711ec4fe19e0ad2191b3\
+         50127277f47e15336e8e8f09aff9a26cabf01237\
+         4163636573732064656e6965643a206e6f206175\
+         74686f72697a6174696f6e206465636973696f6e\
+         207761732070726f6475636564",
         "fail-closed Access-Reject must be exactly the packet an independent implementation \
          computes"
     );

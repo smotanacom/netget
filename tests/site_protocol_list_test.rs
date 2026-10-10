@@ -9,9 +9,9 @@
 //! To update the page, edit the table by hand: put the new feature in the row it belongs to.
 //! This test says what is missing.
 //!
-//! The same number is the headline: every "<N> network protocols" / "<N> protocol features"
-//! on the page and in the README must be exactly the count of protocol features, and a
-//! rounded-down "150+" is a failure that names the line to fix.
+//! The same number is the headline: every "<N> Protocols" / "<N> network protocols" /
+//! "<N> protocol features" on the page and in the README must be exactly the count of
+//! protocol features, and a rounded-down "150+" is a failure that names the line to fix.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -173,9 +173,10 @@ fn count_claims(text: &str) -> Vec<(usize, String, usize, bool)> {
     claims
 }
 
-/// The headline count is stated on the landing page (the Protocols heading) and in the
-/// README, and every statement of it must be the exact number of protocol features, not a
-/// rounded-down "150+".
+/// The headline count is stated on the page's Protocols heading and twice in the README (its
+/// opening sentence and its feature list), and each must be the exact number of protocol
+/// features, not a rounded-down "150+". The redesigned page's meta, og and hero text state no
+/// count, so they are not required to.
 #[test]
 fn every_headline_count_is_the_exact_number() {
     let n = protocol_features().len();
@@ -200,7 +201,7 @@ fn every_headline_count_is_the_exact_number() {
     }
     assert!(
         seen >= 3,
-        "expected the count in at least three places (the page's Protocols heading and the README), found {seen}"
+        "expected the count in at least three places (the Protocols heading, the README's opening sentence and feature list), found {seen}"
     );
     assert!(
         problems.is_empty(),

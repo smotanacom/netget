@@ -135,11 +135,18 @@ const DECISION_DEADLINE: Duration = Duration::from_secs(20);
 /// Keys are matched against the registry's protocol name, case-insensitively — that name is
 /// the display form (`"Bitcoin P2P"`, `"XML-RPC"`, `"SSH Agent"`), not the source directory.
 /// A first version keyed these tables on the directory name and every entry silently missed.
-const STREAMING_BOUND: &[(&str, &str)] = &[(
-    "tcp",
-    "MAX_QUEUED_BYTES bounds data queued behind an in-flight LLM call, not one message; TCP \
-     answers each read by design",
-)];
+const STREAMING_BOUND: &[(&str, &str)] = &[
+    (
+        "tcp",
+        "MAX_QUEUED_BYTES bounds data queued behind an in-flight LLM call, not one message; TCP \
+         answers each read by design",
+    ),
+    (
+        "echo",
+        "READ_CHUNK bounds one read, not one message; RFC 862 echo answers each read by design, \
+         so the handler sees every chunk of an over-bound send",
+    ),
+];
 
 /// Protocols that are probed and **do not** pass, each with what the probe found.
 ///
@@ -216,6 +223,14 @@ const NOT_PROBED: &[(&str, &str)] = &[
          RESOURCE_EXHAUSTED through the independent Connect-ES peer, for plain and gzip input. \
          over_cap_upload_closes_without_waiting_for_declared_eof separately proves an unfinished \
          over-cap upload closes without an unlimited drain.",
+    ),
+    #[cfg(feature = "capnp-rpc")]
+    (
+        "Cap'n Proto RPC",
+        "will not start without `schema` and `interface` startup parameters, and there is no \
+         default interface to invent here. tests/server/capnp_rpc/wire_test.rs::\
+         bounds_close_the_connection refuses a segment table announcing MAX_MESSAGE_BYTES + 1 \
+         (and more than 64 segments) before allocating anything, with no reply.",
     ),
 ];
 // The first version also listed the USB family and `nfc` here. Every one of those entries was

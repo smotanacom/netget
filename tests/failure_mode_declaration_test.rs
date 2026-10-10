@@ -66,6 +66,8 @@ const UNDECLARED_CONNECTIONLESS_BASELINE: &[&str] = &[];
 /// Protocols that write nothing on LLM failure, deliberately. Each declares it in `metadata()`
 /// with its reason; the per-protocol `CLAUDE.md` failure section says why.
 const DOCUMENTED_SILENT: &[&str] = &[
+    // A2S defines no error reply: every response asserts a server's info, players or rules.
+    "a2s",
     "arp",
     // RFC 7854 defines no collector-to-router message; failed handling closes the session.
     "bmp",
@@ -85,8 +87,14 @@ const DOCUMENTED_SILENT: &[&str] = &[
     "igmp",
     // RFC 7011 UDP collection has no acknowledgement or negative response.
     "ipfix",
+    // A group read answered by nobody is silence on a real bus; an invented value would be a
+    // device that does not exist.
+    "knx",
     // sFlow v5 UDP collection has no application reply or negative acknowledgement.
     "sflow",
+    // BFD has no refusal: a session the model does not accept is one the speaker never
+    // answers, and any Control packet it sent would move the peer's session towards Up.
+    "bfd",
     // RFC 3954 UDP flow collection has no acknowledgement or refusal message.
     "netflow_v9",
     "ipsec",
@@ -110,7 +118,13 @@ const DOCUMENTED_SILENT: &[&str] = &[
     "usb/keyboard",
     "usb/mouse",
     "vrrp",
+    // A VXLAN/Geneve overlay host that does not exist is silence: every ARP, echo or UDP reply
+    // asserts that a host is there.
+    "vxlan",
     "wol",
+    // WS-Discovery has no negative reply: a target that does not match says nothing, and every
+    // message it could send (ProbeMatches, ResolveMatches, Hello) claims a service exists.
+    "wsdiscovery",
 ];
 
 /// Protocols that answer on LLM failure and were, at some point, believed or listed to be
