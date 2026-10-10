@@ -41,6 +41,14 @@ impl<B: ByteBuf> Decompressor<B> for Snappy {
         // Allocate a temporary buffer to hold the uncompressed bytes
         let buf = buf.copy_to_bytes(buf.remaining());
         let actual_len = decompress_len(&buf).context("Failed to decompress snappy")?;
+        // netget: the length is a header the peer wrote (up to 4 GiB, zero-filled below). No
+        // snappy element yields more than 64 bytes from 3, so 32x the input is a sound ceiling.
+        if actual_len > buf.len().saturating_mul(32) {
+            anyhow::bail!(
+                "Snappy header declares {actual_len} bytes from {} compressed",
+                buf.len()
+            );
+        }
         let mut tmp = BytesMut::new();
         tmp.resize(actual_len, 0);
 

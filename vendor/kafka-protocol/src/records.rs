@@ -558,7 +558,9 @@ impl RecordBatchDecoder {
         version: i8,
         records: &mut Vec<Record>,
     ) -> Result<()> {
-        records.reserve(batch_decode_info.record_count);
+        // netget: record_count is any non-negative i32 the peer chose and every record costs
+        // at least one byte, so the bytes left bound the reservation.
+        records.reserve(batch_decode_info.record_count.min(buf.remaining()));
         for _ in 0..batch_decode_info.record_count {
             records.push(Record::decode_new(buf, batch_decode_info, version)?);
         }
@@ -1097,7 +1099,8 @@ impl Record {
         }
         let num_headers = num_headers as usize;
 
-        let mut headers = IndexMap::with_capacity(num_headers);
+        // netget: num_headers is peer-chosen and every header costs at least one byte.
+        let mut headers = IndexMap::with_capacity(num_headers.min(buf.len()));
         for _ in 0..num_headers {
             // Key len
             let key_len: i32 = types::VarInt.decode(buf)?;

@@ -1543,9 +1543,10 @@ async-opcua-core = { path = "vendor/async-opcua-core" }
 async-opcua-server = { path = "vendor/async-opcua-server" }
 hyper = { path = "vendor/hyper" }
 h3-quinn = { path = "vendor/h3-quinn" }
-# kafka-protocol 0.14.1 pre-allocated every array from the peer-supplied count, so an 18-byte
-# unauthenticated request aborted the process asking for ~144 GiB. Bounded by the bytes
-# remaining in the buffer. See vendor/kafka-protocol/README.netget.md and
+# kafka-protocol 0.14.1 sizes allocations from peer-supplied counts and lengths (arrays, a
+# record batch's record count, a record's header count, owned strings and bytes, a snappy
+# block's declared length), so a few unauthenticated bytes could abort the process. Each is
+# bounded by the bytes actually present. See vendor/kafka-protocol/README.netget.md and
 # tests/vendored_kafka_protocol_patch_test.rs.
 kafka-protocol = { path = "vendor/kafka-protocol" }
 # Bound tonic0.12.3 decompression with the configured receive limit in both directions.

@@ -1,5 +1,10 @@
-//! The vendored kafka-protocol is the one Cargo builds, still carries its patch, and the
-//! patch does what it is for. See vendor/kafka-protocol/README.netget.md.
+//! The vendored kafka-protocol is the one Cargo builds, still carries its patches, and the
+//! patches do what they are for. See vendor/kafka-protocol/README.netget.md.
+//!
+//! `every_decode_allocation_in_the_crate_is_bounded_by_the_bytes_present` is the ratchet:
+//! it reads every `.rs` file under the vendored `src/` and fails on any `with_capacity`,
+//! `reserve`, `vec![0; …]` or `resize` it cannot classify as bounded, so an upgrade that
+//! brings a new peer-sized allocation in has to be looked at rather than inherited.
 //!
 //! The decode test is the reproduction: unpatched, `MetadataRequest::decode` on a topics
 //! array declaring 0x7fffffff entries calls `Vec::with_capacity` for ~144 GiB and the test
@@ -111,6 +116,127 @@ fn both_array_decoders_bound_their_preallocation_by_the_bytes_remaining() {
                 .count(),
         0,
         "an unbounded with_capacity from a wire count is back"
+    );
+}
+
+#[test]
+fn record_batch_counts_are_bounded_by_the_bytes_remaining() {
+    let records = read("vendor/kafka-protocol/src/records.rs");
+    assert!(
+        records.contains("records.reserve(batch_decode_info.record_count.min(buf.remaining()))"),
+        "RecordBatchDecoder::decode_new_records lost its bound: a ~61-byte batch declaring \
+         0x7fffffff records reserves hundreds of GiB"
+    );
+    assert!(
+        records.contains("IndexMap::with_capacity(num_headers.min(buf.len()))"),
+        "Record::decode_new lost its header-count bound"
+    );
+    assert!(
+        !records.contains("records.reserve(batch_decode_info.record_count);")
+            && !records.contains("IndexMap::with_capacity(num_headers);"),
+        "an unbounded record-batch reservation is back"
+    );
+}
+
+#[test]
+fn declared_byte_lengths_are_checked_before_they_are_zero_filled() {
+    let types = read("vendor/kafka-protocol/src/protocol/types.rs");
+    let lines: Vec<&str> = types.lines().collect();
+    let fills: Vec<usize> = (0..lines.len())
+        .filter(|&i| lines[i].contains("vec![0;"))
+        .collect();
+    assert_eq!(
+        fills.len(),
+        4,
+        "String, CompactString, Bytes and CompactBytes each zero-fill once"
+    );
+    for i in fills {
+        assert!(
+            lines[i.saturating_sub(4)..i]
+                .iter()
+                .any(|l| l.contains("> buf.remaining()")),
+            "types.rs:{} zero-fills a declared length with no remaining-bytes check before it",
+            i + 1
+        );
+    }
+
+    let snappy = read("vendor/kafka-protocol/src/compression/snappy.rs");
+    let guard = snappy
+        .find("actual_len > buf.len().saturating_mul(32)")
+        .expect("the snappy decompressor lost its declared-length ceiling");
+    let fill = snappy
+        .find("tmp.resize(actual_len, 0)")
+        .expect("snappy's zero-fill moved; re-check the ceiling still precedes it");
+    assert!(
+        guard < fill,
+        "the snappy ceiling must run before the zero-fill"
+    );
+}
+
+/// Every allocation-sizing call in the vendored crate, classified. A line that matches the
+/// pattern and none of the known shapes fails the test, so a new site is looked at.
+#[test]
+fn every_decode_allocation_in_the_crate_is_bounded_by_the_bytes_present() {
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor/kafka-protocol/src");
+    let mut files = Vec::new();
+    walk(&root, &mut files);
+    assert!(files.len() > 100, "walked only {} files", files.len());
+
+    let mut unclassified = Vec::new();
+    for file in &files {
+        let text = fs::read_to_string(file).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            let sizes = [
+                "with_capacity(",
+                ".reserve(",
+                "reserve_exact(",
+                "vec![0;",
+                ".resize(",
+            ]
+            .iter()
+            .any(|p| code.contains(p));
+            if !sizes {
+                continue;
+            }
+            let before = &lines[i.saturating_sub(4)..i];
+            let bounded = code.contains(".min(buf.remaining())")
+                || code.contains(".min(buf.len())")
+                || (code.contains("vec![0;")
+                    && before.iter().any(|l| l.contains("> buf.remaining()")))
+                || (code.contains("tmp.resize(actual_len, 0)")
+                    && lines[i.saturating_sub(10)..i]
+                        .iter()
+                        .any(|l| l.contains("saturating_mul(32)")))
+                // ByteBufMut::seek on the encode side: the offset is our own.
+                || (code.trim() == "self.resize(offset, 0);"
+                    && file.ends_with("protocol/buf.rs"));
+            if !bounded {
+                unclassified.push(format!(
+                    "{}:{}: {}",
+                    file.strip_prefix(&root).unwrap().display(),
+                    i + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+    assert!(
+        unclassified.is_empty(),
+        "allocation sized by something other than the bytes present — bound it (see \
+         vendor/kafka-protocol/README.netget.md) or, if the size is our own, classify it here:\n{}",
+        unclassified.join("\n")
     );
 }
 
