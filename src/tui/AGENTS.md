@@ -141,6 +141,25 @@ network I/O, all spawned, all reporting back through `uimsg::UiMsg`. Awaiting on
 froze the whole dashboard for the kernel's SYN-retry window once. `handle_ui_msg` closes the
 originating modal on success and leaves it open showing the error on failure.
 
+## Peer text is made terminal-safe at ingestion, not per renderer
+
+ratatui's `Paragraph` writes every grapheme of width > 0 into the buffer verbatim and
+`CrosstermBackend` prints each cell as is; unicode-width gives ESC, C1 and BEL a width of
+one, and only `Buffer::set_string` filters controls. Every pane here is a `Paragraph`, so
+until September 2026 a telnet line of `\x1b]52;c;QUJD\x07` was painted on the operator's
+real terminal as the OSC 52 clipboard write it is — from the request row on a card, from a
+`[LEVEL]` line quoting it, from the model's reply echoing it — and a DSR query would have
+had its answer typed into the chat box as keystrokes. Three choke points now strip them
+with `utils::sanitize`: `ActivityFeed::push` (every stream entry: logs, replies, reasoning,
+command output, error strings), `cards::payload_summary` (the one row a request gets) and
+`logging::emit::Log::emit` (the status channel and `netget.log`, which `tail -f` paints
+too); `cli::non_interactive::emit_status_line` does the same for headless stdout.
+`tests/dashboard_frame_test.rs::peer_escape_sequences_are_not_painted_as_terminal_cells`
+renders a hostile payload through all three TUI paths and requires no control character in
+any cell; `tests/terminal_escape_injection_test.rs` covers the channel and the row. Still
+unfiltered: a protocol's own `tracing::info!("{}", peer_text)`, which the headless fmt layer
+writes to stderr with ANSI on — route peer text through `Log` rather than `tracing` directly.
+
 ## Tests
 
 - `tests/dashboard_frame_test.rs` — whole frames rendered into ratatui's `TestBackend`:
