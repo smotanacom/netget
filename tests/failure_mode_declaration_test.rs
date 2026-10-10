@@ -118,6 +118,9 @@ const DOCUMENTED_SILENT: &[&str] = &[
     "usb/keyboard",
     "usb/mouse",
     "vrrp",
+    // A VXLAN/Geneve overlay host that does not exist is silence: every ARP, echo or UDP reply
+    // asserts that a host is there.
+    "vxlan",
     "wol",
     // WS-Discovery has no negative reply: a target that does not match says nothing, and every
     // message it could send (ProbeMatches, ResolveMatches, Hello) claims a service exists.

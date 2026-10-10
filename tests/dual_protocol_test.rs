@@ -131,6 +131,7 @@ fn golden_duals_map() {
         "RadSec",
         "D-Bus",
         "BFD",
+        "VXLAN",
         "WS-Discovery",
         "Nostr",
         "Vault",

@@ -143,6 +143,7 @@ portable-base = [
     "radsec",
     "dbus",
     "bfd",
+    "vxlan",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -390,6 +391,7 @@ anthropic = [] # Anthropic Messages API server and client
 radsec = ["radius", "tls"] # RADIUS over TLS (RFC 6614) server and client
 dbus = [] # D-Bus server (a small message bus) and client, hand-rolled wire protocol
 bfd = ["dep:md-5", "dep:sha1"] # BFD (RFC 5880/5881/5883) speaker and client, hand-rolled; md-5/sha1 for keyed authentication
+vxlan = [] # VXLAN (RFC 7348) and Geneve (RFC 8926) tunnel endpoint and overlay host, hand-rolled
 wsdiscovery = ["quick-xml"] # WS-Discovery (SOAP-over-UDP 3702) target service and discovery client, 2005/04 and 2009/01
 x11 = [] # X11 client (X Window System core protocol): windows, properties and events against an X server
 jmap = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"] # JMAP (RFC 8620/8621) server and client
@@ -717,6 +719,7 @@ dist-windows = [
     "radsec",
     "dbus",
     "bfd",
+    "vxlan",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -942,6 +945,7 @@ all-protocols = [
     "radsec",
     "dbus",
     "bfd",
+    "vxlan",
     "wsdiscovery",
     "x11",
     "sflow",

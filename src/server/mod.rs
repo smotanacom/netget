@@ -1370,6 +1370,8 @@ pub mod rcon;
 pub mod restconf;
 #[cfg(feature = "smpp")]
 pub mod smpp;
+#[cfg(feature = "vxlan")]
+pub mod vxlan;
 #[cfg(feature = "webtransport")]
 pub mod webtransport;
 #[cfg(feature = "wsdiscovery")]
