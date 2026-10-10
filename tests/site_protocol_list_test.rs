@@ -156,11 +156,12 @@ fn count_claims(text: &str) -> Vec<(usize, String, usize, bool)> {
             };
             let next = words.get(j + 1).copied().unwrap_or("");
             let after = words.get(j + 2).copied().unwrap_or("");
-            // The page's section heading is capitalised ("245 Protocols").
-            let names_protocols = next.to_ascii_lowercase().starts_with("protocol")
-                || (next == "network" && after.starts_with("protocol"));
+            // Headings capitalise ("240 Protocols", "50+ Network Protocols").
+            let (lnext, lafter) = (next.to_lowercase(), after.to_lowercase());
+            let names_protocols = lnext.starts_with("protocol")
+                || (lnext == "network" && lafter.starts_with("protocol"));
             if names_protocols {
-                let claim = if next == "network" {
+                let claim = if lnext == "network" {
                     format!("{word} {next} {after}")
                 } else {
                     format!("{word} {next}")

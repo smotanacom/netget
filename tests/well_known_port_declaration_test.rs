@@ -162,6 +162,7 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
     ("carddav", "CardDAV is WebDAV over HTTP(S) on the web server's port, found through /.well-known/carddav or DNS SRV (RFC 6764); no port is assigned"),
     ("srt", "SRT has no assigned port; each deployment picks one (srt-live-transmit and OBS examples use 9000, MediaMTX 8890)"),
     ("wamp", "WAMP runs over WebSocket on the web server's port; no port is assigned (Crossbar.io's 8080 is a convention)"),
+    ("activitypub", "ActivityPub is served over HTTP(S) at the instance's own origin (its ids are URLs); W3C assigns no port, and real instances sit behind 443"),
     ("restconf", "RESTCONF is carried on HTTP(S) at whatever port the web server uses; RFC 8040 assigns none (443 for HTTPS by convention)"),
     ("jmap", "JMAP is served on an HTTPS server's port and found through /.well-known/jmap; RFC 8620 assigns no port of its own"),
     ("webtransport", "WebTransport sessions are extended CONNECT requests on an HTTP/3 server's port; the draft assigns none (443/UDP by convention)"),

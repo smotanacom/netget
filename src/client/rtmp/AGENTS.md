@@ -12,3 +12,16 @@ FCUnpublish and deleteStream). Each ends with one `rtmp_report`. Every command w
 15 s overall for its answer, however much media keeps arriving. Some servers (MediaMTX) treat
 a connection as one reader or one publisher, so play and publish belong on separate clients
 there.
+
+## Local files come from `media_root` only
+
+`rtmp_publish` reads a file on this machine and streams it to the peer — the peer whose
+responses the model reads — so until October 2026 its `flv_file` was a file-exfiltration
+primitive one prompt injection away (`"/home/op/.ssh/id_ed25519"`; the content gate was
+format sniffing, not confinement). `client::media_root::MediaRoot`, shared with the
+other media client, is the boundary: the `media_root` startup parameter, defaulting to
+NetGet's own `media` directory under the platform's local-data dir (neither `$HOME`
+nor the working directory, for the Git client's reasons). A path is canonicalised and
+must be a regular file under the root; a relative path is resolved against the root.
+Refused by name, not relocated. `tests/client/srt/media_root_test.rs` covers the
+boundary for both clients.

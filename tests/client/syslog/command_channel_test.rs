@@ -173,6 +173,65 @@ async fn injected_syslog_message_reaches_the_wire_over_udp() {
     panic!("command handle should be gone after an injected disconnect");
 }
 
+/// A `host:port` target is resolved: `localhost:<port>` reaches a collector listening on
+/// 127.0.0.1 alone, even where `localhost` resolves to `::1` first.
+#[tokio::test]
+async fn injected_syslog_message_reaches_a_hostname_target_over_udp() {
+    let state = new_state().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let collector = UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind collector");
+    let target = format!("localhost:{}", collector.local_addr().unwrap().port());
+
+    let client_id = ClientForm {
+        protocol: "syslog".to_string(),
+        remote_addr: Some(target.clone()),
+        instruction: Some("test client".to_string()),
+        event_handlers: no_llm_handlers(),
+        ..Default::default()
+    }
+    .create(
+        &state,
+        netget::llm::OllamaClient::new("http://127.0.0.1:1".to_string()),
+        tx.clone(),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("create syslog client for {target}: {e}"));
+
+    wait_for_client_handle(&state, client_id).await;
+
+    let outcome = state
+        .send_to_client(
+            client_id,
+            serde_json::json!({
+                "type": "send_syslog_message",
+                "facility": "local0",
+                "severity": "info",
+                "message": "hostname-marker"
+            }),
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("send_to_client syslog message");
+    assert!(
+        matches!(outcome, ClientSendOutcome::Sent { .. }),
+        "expected Sent, got {outcome:?}"
+    );
+
+    let mut buf = vec![0u8; 4096];
+    let (n, _from) = tokio::time::timeout(Duration::from_secs(5), collector.recv_from(&mut buf))
+        .await
+        .unwrap_or_else(|_| panic!("no syslog datagram for {target} reached 127.0.0.1"))
+        .expect("recv_from");
+    let line = String::from_utf8_lossy(&buf[..n]).to_string();
+    assert!(
+        line.starts_with("<134>1 ") && line.ends_with("hostname-marker"),
+        "expected the injected RFC 5424 line, got {line:?}"
+    );
+}
+
 #[tokio::test]
 async fn injected_syslog_message_reaches_the_wire_over_tcp() {
     let state = new_state().await;

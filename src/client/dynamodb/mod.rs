@@ -62,6 +62,8 @@ impl DynamoDbClient {
             .transpose()?
             .flatten()
             .unwrap_or_else(|| "us-east-1".to_string());
+        // The SDK builds `https://dynamodb.<region>.amazonaws.com` from this; see `aws_support`.
+        crate::client::aws_support::validate_region("DynamoDB", &region)?;
 
         let endpoint_url = startup_params
             .as_ref()
@@ -90,6 +92,14 @@ impl DynamoDbClient {
         // now means what it says. `endpoint_url` still wins when both are given, and
         // targeting AWS proper is done by passing that URL explicitly.
         let endpoint_url = endpoint_url.or_else(|| endpoint_url_from_remote_addr(&remote_addr));
+
+        // A custom endpoint and no credentials would sign with the operator's ambient AWS
+        // identity against a host the model may have chosen; see `aws_support`.
+        crate::client::aws_support::refuse_ambient_credentials(
+            "DynamoDB",
+            endpoint_url.as_deref(),
+            access_key_id.is_some() && secret_access_key.is_some(),
+        )?;
 
         info!(
             "DynamoDB client {} initializing for region {}",
@@ -791,6 +801,7 @@ impl DynamoDbClient {
     ) -> Result<aws_config::SdkConfig> {
         use aws_config::BehaviorVersion;
 
+        crate::client::aws_support::validate_region("DynamoDB", region)?;
         let mut config_loader = aws_config::defaults(BehaviorVersion::latest())
             .region(aws_config::Region::new(region.to_string()));
 

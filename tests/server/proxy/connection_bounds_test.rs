@@ -3,8 +3,8 @@
 //! A proxy connection is the most expensive kind in this tree: a `CONNECT` tunnel holds a
 //! *second* socket to the upstream for as long as the client keeps it, so an uncapped accept
 //! loop exhausts descriptors at twice the rate, and with MITM enabled each one also drives a TLS
-//! handshake and a certificate mint. Until September 2026 this accept loop admitted every
-//! connection offered to it.
+//! handshake and a certificate mint. The accept loop therefore admits connections through a
+//! shared limiter rather than taking every one offered to it.
 //!
 //! Three claims:
 //!

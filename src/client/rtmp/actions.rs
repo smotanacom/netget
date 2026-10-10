@@ -34,10 +34,10 @@ fn publish() -> ActionDefinition {
         "Publish an FLV file the operator supplied as a live stream, its tags paced by their timestamps, then unpublish and report",
         vec![
             parameter("stream", "string", "Stream name (often a stream key) to publish as", true),
-            parameter("flv_file", "string", "Path of an FLV file on this machine (64 MiB at most)", true),
+            parameter("flv_file", "string", "Path of an FLV file under the client's media_root directory (64 MiB at most); a relative path is resolved against that directory, and nothing outside it is read", true),
             parameter("realtime", "boolean", "Pace tags by their timestamps (default true); false sends as fast as possible", false),
         ],
-        json!({"type": "rtmp_publish", "stream": "abc123", "flv_file": "/tmp/clip.flv"}),
+        json!({"type": "rtmp_publish", "stream": "abc123", "flv_file": "clip.flv"}),
     )
 }
 fn disconnect() -> ActionDefinition {
@@ -165,14 +165,24 @@ impl Protocol for RtmpClientProtocol {
         vec![CONNECTED_EVENT.clone(), REPORT_EVENT.clone()]
     }
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
-        vec![ParameterDefinition {
-            name: "app".into(),
-            type_hint: "string".into(),
-            description: "Application to connect to, e.g. live".into(),
-            required: false,
-            example: json!("live"),
-            default: Some(json!(super::DEFAULT_APP)),
-        }]
+        vec![
+            ParameterDefinition {
+                name: "app".into(),
+                type_hint: "string".into(),
+                description: "Application to connect to, e.g. live".into(),
+                required: false,
+                example: json!("live"),
+                default: Some(json!(super::DEFAULT_APP)),
+            },
+            ParameterDefinition {
+                name: crate::client::media_root::MEDIA_ROOT_PARAM.into(),
+                type_hint: "string".into(),
+                description: "Directory rtmp_publish may read FLV files from; nothing outside it is sent. Defaults to NetGet's own media directory under the platform's local-data dir.".into(),
+                required: false,
+                example: json!("/var/lib/netget/media"),
+                default: None,
+            },
+        ]
     }
     fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
         use crate::protocol::metadata::*;

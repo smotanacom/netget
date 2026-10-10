@@ -58,11 +58,14 @@ pub static OPENVPN_PEER_RESET_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         }),
     )
     .with_actions(vec![accept_peer_action(), reject_peer_action()])
+    // The sender is named from `peer_addr`, which the event data always carries. The
+    // `client_ip` enrichment comes from a connection registered in AppState, and a peer is
+    // registered only once `accept_peer` answers this event.
     .with_log_template(
         LogTemplate::new()
-            .with_info("{client_ip} OpenVPN reset (session {client_session_id})")
+            .with_info("{peer_addr} OpenVPN reset (session {client_session_id})")
             .with_debug(
-                "OpenVPN {reset_type} from {client_ip}, session {client_session_id}, \
+                "OpenVPN {reset_type} from {peer_addr}, session {client_session_id}, \
                  key_id {key_id}",
             )
             .with_trace("OpenVPN peer reset: {json_pretty(.)}"),
@@ -95,10 +98,12 @@ pub static OPENVPN_KEY_EXCHANGE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         accept_key_exchange_action(),
         reject_key_exchange_action(),
     ])
+    // Named from `peer_addr` like the reset event: the event data always carries it, while
+    // `client_ip` depends on the peer's connection entry still being in AppState.
     .with_log_template(
         LogTemplate::new()
-            .with_info("{client_ip} OpenVPN key exchange (user {username})")
-            .with_debug("OpenVPN key method 2 from {client_ip}: user {username}, {options}")
+            .with_info("{peer_addr} OpenVPN key exchange (user {username})")
+            .with_debug("OpenVPN key method 2 from {peer_addr}: user {username}, {options}")
             .with_trace("OpenVPN key exchange: {json_pretty(.)}"),
     )
 });

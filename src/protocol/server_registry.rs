@@ -474,6 +474,22 @@ impl ServerRegistry {
         self.register(Arc::new(
             crate::server::matrix::actions::MatrixProtocol::new(),
         ));
+        #[cfg(feature = "libp2p")]
+        self.register(Arc::new(
+            crate::server::libp2p::actions::Libp2pProtocol::new(),
+        ));
+        #[cfg(feature = "sunrpc")]
+        self.register(Arc::new(
+            crate::server::sunrpc::actions::SunRpcProtocol::new(),
+        ));
+        #[cfg(feature = "guacamole")]
+        self.register(Arc::new(
+            crate::server::guacamole::actions::GuacamoleProtocol::new(),
+        ));
+        #[cfg(feature = "activitypub")]
+        self.register(Arc::new(
+            crate::server::activitypub::actions::ActivityPubProtocol::new(),
+        ));
         #[cfg(feature = "tr069")]
         self.register(Arc::new(crate::server::tr069::actions::Tr069Protocol::new()));
         #[cfg(feature = "wsdiscovery")]
@@ -1716,6 +1732,10 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("rsync", "rsync"),
     ("PFCP", "pfcp"),
     ("Matrix", "matrix"),
+    ("libp2p", "libp2p"),
+    ("SunRPC", "sunrpc"),
+    ("Guacamole", "guacamole"),
+    ("ActivityPub", "activitypub"),
     ("TR-069 (CWMP)", "tr069"),
     ("WS-Discovery", "wsdiscovery"),
     ("etcd", "etcd"),

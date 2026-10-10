@@ -73,7 +73,9 @@ Bytes 40-47: Transmit timestamp (server sent response)
 
 ### Connection Flow
 
-1. **Client Connect:** Bind UDP socket to local port
+1. **Client Connect:** Resolve `remote_addr` (a literal `IP:port` as given; a `host:port`
+   through `tokio::net::lookup_host`, taking its first IPv4 address when it has one), then bind
+   an ephemeral UDP socket in that address's family
 2. **Initial LLM Call:** Get instruction, usually triggers `query_time` action
 3. **Send NTP Request:** Build and send 48-byte packet
 4. **Wait for Response:** 5 second timeout
@@ -195,7 +197,7 @@ LLM Actions:
 
 ### Localhost Only
 
-- **Default Bind:** Binds to 0.0.0.0:0 (any local address, random port)
+- **Default Bind:** `0.0.0.0:0` for an IPv4 server, `[::]:0` for an IPv6 one (random port)
 - **No External Listen:** Does not listen on fixed ports
 - **Ephemeral Ports:** Uses OS-assigned ephemeral source port
 
@@ -203,10 +205,13 @@ LLM Actions:
 
 ### E2E Testing
 
-- **Public NTP Servers:** Test against pool.ntp.org, time.google.com
-- **Stratum Verification:** Check stratum is reasonable (1-15)
-- **Timestamp Validation:** Verify timestamps are recent (within 1 hour)
-- **LLM Call Budget:** < 3 LLM calls per test (1 initial, 1 response)
+- **Local responder:** a UDP socket on 127.0.0.1 inside the test answers with a minimal
+  valid server reply; no public server is contacted
+- **Field checks:** the model's `ntp_response_received` rule matches the responder's stratum
+  and fixed transmit timestamp
+- **Hostname target:** `localhost:<port>` reaches the responder on 127.0.0.1
+- **LLM Call Budget:** 3 mocked calls per test (startup, `ntp_connected`, response)
+- See `tests/client/ntp/AGENTS.md`
 
 ### Unit Testing
 

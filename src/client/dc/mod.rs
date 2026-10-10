@@ -28,6 +28,68 @@ use crate::protocol::Event;
 use crate::state::app_state::AppState;
 use crate::state::{ClientId, ClientStatus};
 
+/// Longest wait between two reconnection attempts, in seconds.
+pub const MAX_RECONNECT_DELAY_SECS: u64 = 60;
+
+/// Delay before reconnection attempt `attempt` (1-based): `initial_delay_secs` doubled for
+/// every attempt after the first, capped at [`MAX_RECONNECT_DELAY_SECS`].
+///
+/// The arithmetic saturates, so `max_reconnect_attempts: 0` ("unlimited") and a large
+/// `initial_reconnect_delay_secs` reach the cap instead of overflowing.
+pub fn reconnect_delay_secs(initial_delay_secs: u64, attempt: u32) -> u64 {
+    let factor = 2u64
+        .checked_pow(attempt.saturating_sub(1))
+        .unwrap_or(u64::MAX);
+    initial_delay_secs
+        .saturating_mul(factor)
+        .min(MAX_RECONNECT_DELAY_SECS)
+}
+
+/// Escape free text (a chat line, a private message, a search query, a `$MyINFO`
+/// description or email) for an NMDC frame, the way DC++ does: `$` becomes `&#36;`, `|`
+/// becomes `&#124;`, and a `&` that would otherwise read as the start of `&#36;`, `&#124;`
+/// or `&amp;` becomes `&amp;`. The text can then neither end the frame nor open a new
+/// command, and the hub decodes exactly the characters given.
+pub fn escape_nmdc_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (i, c) in text.char_indices() {
+        match c {
+            '$' => out.push_str("&#36;"),
+            '|' => out.push_str("&#124;"),
+            // `&` is one byte, so `i + 1` is a char boundary.
+            '&' if ["amp;", "#36;", "#124;"]
+                .iter()
+                .any(|entity| text[i + 1..].starts_with(entity)) =>
+            {
+                out.push_str("&amp;")
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Check a nickname before it is written into `$ValidateNick`, `$MyINFO`, a chat prefix or
+/// a `$To:` line.
+///
+/// NMDC has no escape for a nickname: `$` and `|` delimit commands and fields, whitespace
+/// ends the nickname in `$ValidateNick` and `$MyINFO`, and `<`/`>` frame it in chat. A
+/// nickname containing any of them, or a control character, or nothing at all, is refused
+/// rather than rewritten, because the hub would register a different name from the one asked
+/// for. Non-ASCII nicknames are accepted.
+pub fn validate_nmdc_nickname(nickname: &str) -> Result<&str> {
+    anyhow::ensure!(
+        !nickname.is_empty()
+            && !nickname.chars().any(|c| {
+                c.is_whitespace() || c.is_control() || matches!(c, '$' | '|' | '<' | '>')
+            }),
+        "invalid NMDC nickname {:?}: it must be non-empty and contain no whitespace, control \
+         characters, '$', '|', '<' or '>'",
+        nickname
+    );
+    Ok(nickname)
+}
+
 /// Enum to handle both TCP and TLS write halves
 enum DcWriteHalf {
     Plain(tokio::io::WriteHalf<TcpStream>),
@@ -82,6 +144,9 @@ struct DcClientState {
     share_size: u64,
     memory: String,
     file_list: Vec<DcFileEntry>, // Files to advertise
+    /// Set once a `disconnect` action has written `$Quit|`; the read loop stops at the next
+    /// check instead of handing further hub messages to the model.
+    quit_requested: bool,
 }
 
 /// DC client that connects to a DC hub
@@ -104,6 +169,7 @@ impl DcClient {
             .transpose()?
             .flatten()
             .unwrap_or_else(|| "NetGetUser".to_string());
+        validate_nmdc_nickname(&nickname)?;
         let description = startup_params
             .as_ref()
             .map(|p| p.get_optional_string("description"))
@@ -229,7 +295,7 @@ impl DcClient {
                 }
                 Err(e) => {
                     // Will reconnect
-                    reconnect_attempt += 1;
+                    reconnect_attempt = reconnect_attempt.saturating_add(1);
 
                     // Raise dc_client_disconnected.
                     //
@@ -297,8 +363,7 @@ impl DcClient {
                         }
                     }
                     let delay_secs =
-                        initial_reconnect_delay_secs * (2u64.pow(reconnect_attempt - 1));
-                    let delay_secs = delay_secs.min(60); // Cap at 60 seconds
+                        reconnect_delay_secs(initial_reconnect_delay_secs, reconnect_attempt);
 
                     info!(
                         "DC client {} connection failed (attempt {}/{}), retrying in {}s: {}",
@@ -494,6 +559,7 @@ where
         share_size,
         memory: String::new(),
         file_list: Vec::new(), // Start with empty file list
+        quit_requested: false,
     }));
 
     // Command channel for injected actions (the dashboard's [ send_dc_chat ] and friends).
@@ -564,6 +630,13 @@ where
 
                     trace!("DC client {} received: {}", client_id, segment);
 
+                    // An injected `disconnect` sets the flag from the command task while this
+                    // loop waits on the socket; nothing that arrives after it is processed.
+                    if session_end_requested(&client_state).await {
+                        end_session(&app_state, &status_tx, client_id).await;
+                        break;
+                    }
+
                     // Process DC message
                     if let Err(e) = process_dc_message(
                         segment,
@@ -578,6 +651,13 @@ where
                     {
                         error!("Error processing DC message: {}", e);
                     }
+
+                    // The model answered this message with `disconnect`: `$Quit|` is on the
+                    // wire and the write half is shut, so stop reading now.
+                    if session_end_requested(&client_state).await {
+                        end_session(&app_state, &status_tx, client_id).await;
+                        break;
+                    }
                 }
                 Err(e) => {
                     error!("DC client {} read error: {}", client_id, e);
@@ -590,8 +670,9 @@ where
             }
         }
 
-        // Both exits (EOF, read error) land here: the socket is gone, so stop offering
-        // [ send ] on it. Dropping the handle also closes the command task's channel.
+        // Every exit (EOF, read error, a `disconnect` action) lands here: the session is over,
+        // so stop offering [ send ] on it. Dropping the handle also closes the command task's
+        // channel, which drops the last reference to the write half and closes the socket.
         app_state.remove_client_handle(client_id).await;
     });
     task_registrar
@@ -601,16 +682,22 @@ where
     Ok(local_addr)
 }
 
-/// Helper struct for parsing private messages
-struct PrivateMessageParts {
-    target: String,
-    source: String,
-    message: String,
+/// The fields of an NMDC private message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrivateMessageParts {
+    pub target: String,
+    pub source: String,
+    pub message: String,
 }
 
-/// Parse NMDC private message format: $To: <target> From: <source> $<<source>> <message>
-fn parse_private_message(message: &str) -> Result<PrivateMessageParts> {
-    // Expected format: "$To: <target> From: <source> $<<source>> <message>"
+/// Parse an NMDC private message: `$To: <target> From: <source> $<<source>> <message>`.
+///
+/// Every range is taken with `str::get`, so a frame the hub controls cannot index outside
+/// the string or inside a multi-byte character: anything malformed is an `Err`, never a
+/// panic.
+pub fn parse_private_message(message: &str) -> Result<PrivateMessageParts> {
+    let malformed = |what: &str| anyhow::anyhow!("Malformed private message: {}", what);
+
     if !message.starts_with("$To:") {
         return Err(anyhow::anyhow!("Not a private message"));
     }
@@ -618,38 +705,44 @@ fn parse_private_message(message: &str) -> Result<PrivateMessageParts> {
     // Find "From:" to split target and source
     let from_pos = message
         .find(" From:")
-        .ok_or_else(|| anyhow::anyhow!("Missing 'From:' in private message"))?;
+        .ok_or_else(|| malformed("missing 'From:'"))?;
 
-    // Extract target (between "$To: " and " From:")
-    let target_part = &message[5..from_pos]; // Skip "$To: "
-    let target = target_part.trim().to_string();
+    // Target: between "$To: " and " From:"
+    let target = message
+        .get(5..from_pos)
+        .ok_or_else(|| malformed("no target"))?
+        .trim()
+        .to_string();
 
-    // Find the second $ which marks the start of the actual message
-    let msg_start = message[from_pos..]
-        .find('$')
-        .ok_or_else(|| anyhow::anyhow!("Missing message delimiter '$' in private message"))?
-        + from_pos;
+    // The '$' after "From:" opens the message body.
+    let msg_start = message
+        .get(from_pos..)
+        .and_then(|rest| rest.find('$'))
+        .map(|p| p + from_pos)
+        .ok_or_else(|| malformed("missing message delimiter '$'"))?;
 
-    // Extract source (between "From: " and " $")
-    let source_part = &message[from_pos + 6..msg_start]; // Skip " From:"
-    let source = source_part.trim().to_string();
+    // Source: between " From:" and that '$'
+    let source = message
+        .get(from_pos + 6..msg_start)
+        .ok_or_else(|| malformed("no source"))?
+        .trim()
+        .to_string();
 
-    // Extract message content
-    // Format is: $<<source>> <message>
-    let msg_part = &message[msg_start + 1..]; // Skip '$'
-
-    // Find the end of <<source>> pattern
-    let msg_text_start = msg_part
-        .find(">> ")
-        .map(|p| p + 3) // Skip ">> "
-        .unwrap_or(0);
-
-    let msg_text = msg_part[msg_text_start..].to_string();
+    // Body: "<source> text". Strip the "<source>" prefix and the one space after it; a body
+    // without that prefix is taken whole.
+    let body = message
+        .get(msg_start + 1..)
+        .ok_or_else(|| malformed("no body"))?;
+    let text = body
+        .strip_prefix('<')
+        .and_then(|rest| rest.split_once('>'))
+        .map(|(_, after)| after.strip_prefix(' ').unwrap_or(after))
+        .unwrap_or(body);
 
     Ok(PrivateMessageParts {
         target,
         source,
-        message: msg_text,
+        message: text.to_string(),
     })
 }
 
@@ -919,49 +1012,28 @@ async fn handle_lock_message(
         .await
         .unwrap_or_default();
 
+    // Copied out in its own statement so the guard is dropped before the model is called;
+    // the answer is applied below through the same mutex.
+    let memory = client_state.lock().await.memory.clone();
+
     match call_llm_for_client(
         llm_client,
         app_state,
         client_id.to_string(),
         &instruction,
-        &client_state.lock().await.memory,
+        &memory,
         Some(&event),
         &DcClientProtocol::new(),
         status_tx,
     )
     .await
     {
-        Ok(ClientLlmResult {
-            actions,
-            memory_updates,
-        }) => {
-            // Update memory
-            if let Some(mem) = memory_updates {
-                client_state.lock().await.memory = mem;
-            }
-
-            // Put what the model asked for on the wire. These were discarded, so a model
-            // told to announce itself or greet the hub as it joined was ignored -- the
-            // handshake events are precisely where a Direct Connect client is expected to
-            // speak.
-            //
-            // `apply_dc_action` is the shared NMDC encoder used by the LLM path and by
-            // injected commands, and it raises no event, so this cannot loop.
-            use crate::llm::actions::client_trait::Client;
-            for action in actions {
-                match DcClientProtocol::new().execute_action(action.clone()) {
-                    Ok(result) => {
-                        if let Err(e) =
-                            apply_dc_action(result, client_state, write_half, client_id).await
-                        {
-                            error!("DC client {} handshake action failed: {}", client_id, e);
-                        }
-                    }
-                    Err(e) => error!(
-                        "DC client {} rejected its own handshake action: {}",
-                        client_id, e
-                    ),
-                }
+        Ok(result) => {
+            // The handshake events are where a Direct Connect client is expected to speak,
+            // so the model's actions go on the wire. A `disconnect` here ends the session
+            // before `$Key` is sent.
+            if execute_dc_actions(result, client_state, write_half, status_tx, client_id).await {
+                return Ok(());
             }
         }
         Err(e) => {
@@ -995,7 +1067,10 @@ async fn handle_lock_message(
     // Send MyINFO
     let myinfo_cmd = format!(
         "$MyINFO $ALL {} {}$ $LAN(T3)A${}${}$|",
-        nickname, description, email, share_size
+        nickname,
+        escape_nmdc_text(description),
+        escape_nmdc_text(email),
+        share_size
     );
     send_dc_command(write_half, &myinfo_cmd).await?;
     info!("DC client {} sent MyINFO", client_id);
@@ -1010,10 +1085,6 @@ async fn handle_lock_message(
 async fn handle_hello_message(
     message: &str,
     client_state: &Arc<Mutex<DcClientState>>,
-    // Needed so the model's answer to $Hello can actually be sent. It used to be
-    // discarded with a note saying post-auth actions "will be sent on subsequent events",
-    // which meant an instruction given at the one moment the hub expects a client to
-    // announce itself simply never happened.
     write_half: &Arc<Mutex<DcWriteHalf>>,
     llm_client: &OllamaClient,
     app_state: &Arc<AppState>,
@@ -1054,38 +1125,10 @@ async fn handle_hello_message(
     )
     .await
     {
-        Ok(ClientLlmResult {
-            actions,
-            memory_updates,
-        }) => {
-            // Update memory
-            if let Some(mem) = memory_updates {
-                client_state.lock().await.memory = mem;
-            }
-
-            // Put what the model asked for on the wire. These were discarded, so a model
-            // told to announce itself or greet the hub as it joined was ignored -- the
-            // handshake events are precisely where a Direct Connect client is expected to
-            // speak.
-            //
-            // `apply_dc_action` is the shared NMDC encoder used by the LLM path and by
-            // injected commands, and it raises no event, so this cannot loop.
-            use crate::llm::actions::client_trait::Client;
-            for action in actions {
-                match DcClientProtocol::new().execute_action(action.clone()) {
-                    Ok(result) => {
-                        if let Err(e) =
-                            apply_dc_action(result, client_state, write_half, client_id).await
-                        {
-                            error!("DC client {} handshake action failed: {}", client_id, e);
-                        }
-                    }
-                    Err(e) => error!(
-                        "DC client {} rejected its own handshake action: {}",
-                        client_id, e
-                    ),
-                }
-            }
+        Ok(result) => {
+            // The model's answer to $Hello goes on the wire: this is the moment a hub
+            // expects a client to announce itself.
+            execute_dc_actions(result, client_state, write_half, status_tx, client_id).await;
         }
         Err(e) => {
             error!("LLM error on dc_authenticated event: {}", e);
@@ -1154,7 +1197,7 @@ async fn handle_chat_message(
     .await
     {
         Ok(result) => {
-            execute_dc_actions(result, client_state, write_half, client_id).await?;
+            execute_dc_actions(result, client_state, write_half, status_tx, client_id).await;
         }
         Err(e) => {
             error!("LLM error on dc_message_received: {}", e);
@@ -1228,7 +1271,7 @@ async fn handle_private_message(
     .await
     {
         Ok(result) => {
-            execute_dc_actions(result, client_state, write_half, client_id).await?;
+            execute_dc_actions(result, client_state, write_half, status_tx, client_id).await;
         }
         Err(e) => {
             error!("LLM error on private message: {}", e);
@@ -1318,7 +1361,7 @@ async fn handle_search_result(
     .await
     {
         Ok(result) => {
-            execute_dc_actions(result, client_state, write_half, client_id).await?;
+            execute_dc_actions(result, client_state, write_half, status_tx, client_id).await;
         }
         Err(e) => {
             error!("LLM error on search result: {}", e);
@@ -1385,7 +1428,7 @@ async fn handle_nicklist(
     .await
     {
         Ok(result) => {
-            execute_dc_actions(result, client_state, write_half, client_id).await?;
+            execute_dc_actions(result, client_state, write_half, status_tx, client_id).await;
         }
         Err(e) => {
             error!("LLM error on userlist: {}", e);
@@ -1442,7 +1485,7 @@ async fn handle_hub_name(
     .await
     {
         Ok(result) => {
-            execute_dc_actions(result, client_state, write_half, client_id).await?;
+            execute_dc_actions(result, client_state, write_half, status_tx, client_id).await;
         }
         Err(e) => {
             error!("LLM error on hub name: {}", e);
@@ -1499,7 +1542,7 @@ async fn handle_hub_topic(
     .await
     {
         Ok(result) => {
-            execute_dc_actions(result, client_state, write_half, client_id).await?;
+            execute_dc_actions(result, client_state, write_half, status_tx, client_id).await;
         }
         Err(e) => {
             error!("LLM error on hub topic: {}", e);
@@ -1640,27 +1683,83 @@ async fn handle_redirect(
     Ok(())
 }
 
-/// Execute DC actions from LLM result
+/// Apply the model's answer to one event: store its memory update, then run its actions in
+/// order. Returns `true` when one of them ended the session.
+///
+/// Each action stands alone. One the protocol rejects (an unknown name, a missing field) or
+/// one that cannot be written is logged and reported on the status channel, and the rest
+/// still run. A `disconnect` writes `$Quit|`, shuts the write half, marks the session as
+/// ended for the read loop and stops the batch, so nothing after it is sent.
+/// [`apply_dc_action`] raises no event, so nothing here calls the model again.
 async fn execute_dc_actions(
     result: ClientLlmResult,
     client_state: &Arc<Mutex<DcClientState>>,
     write_half: &Arc<Mutex<DcWriteHalf>>,
+    status_tx: &mpsc::UnboundedSender<String>,
     client_id: ClientId,
-) -> Result<()> {
-    // Update memory
+) -> bool {
     if let Some(mem) = result.memory_updates {
         client_state.lock().await.memory = mem;
     }
 
     let protocol = DcClientProtocol::new();
 
-    // Execute actions
     for action in result.actions {
-        let action_result = protocol.execute_action(action)?;
-        apply_dc_action(action_result, client_state, write_half, client_id).await?;
+        let action_type = action
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<missing type>")
+            .to_string();
+        let outcome = match protocol.execute_action(action) {
+            Ok(action_result) => {
+                apply_dc_action(action_result, client_state, write_half, client_id).await
+            }
+            Err(e) => Err(e),
+        };
+        match outcome {
+            Ok(Applied::Sent(_)) => {}
+            Ok(Applied::Disconnect) => {
+                client_state.lock().await.quit_requested = true;
+                let _ = write_half.lock().await.shutdown().await;
+                info!(
+                    "DC client {} ending the session: decision=model_disconnect",
+                    client_id
+                );
+                return true;
+            }
+            Err(e) => {
+                error!(
+                    "DC client {} action '{}' failed: {}",
+                    client_id, action_type, e
+                );
+                let _ = status_tx.send(format!(
+                    "[WARN] DC client {} action '{}' failed: {}",
+                    client_id, action_type, e
+                ));
+            }
+        }
     }
 
-    Ok(())
+    false
+}
+
+/// Whether a `disconnect` (from the model or injected) has ended this session.
+async fn session_end_requested(client_state: &Arc<Mutex<DcClientState>>) -> bool {
+    client_state.lock().await.quit_requested
+}
+
+/// Record a session ended by a `disconnect` action.
+async fn end_session(
+    app_state: &Arc<AppState>,
+    status_tx: &mpsc::UnboundedSender<String>,
+    client_id: ClientId,
+) {
+    info!("DC client {} session ended by disconnect", client_id);
+    app_state
+        .update_client_status(client_id, ClientStatus::Disconnected)
+        .await;
+    let _ = status_tx.send(format!("[CLIENT] DC client {} disconnected", client_id));
+    let _ = status_tx.send("__UPDATE_UI__".to_string());
 }
 
 /// What [`apply_dc_action`] did with one action.
@@ -1673,6 +1772,11 @@ enum Applied {
 
 /// Put one executed action on the wire. Shared by the LLM path and injected commands so the
 /// NMDC encoding of every `send_dc_*` verb exists exactly once.
+///
+/// Free text from the action is escaped with [`escape_nmdc_text`]; a private-message target
+/// that is not a valid nickname ([`validate_nmdc_nickname`]) is refused with an error. The
+/// client's own nickname was validated when the client started. `send_dc_raw_command` is
+/// written as given: sending an arbitrary frame is its declared purpose.
 async fn apply_dc_action(
     action_result: crate::llm::actions::client_trait::ClientActionResult,
     client_state: &Arc<Mutex<DcClientState>>,
@@ -1689,7 +1793,7 @@ async fn apply_dc_action(
             ClientActionResult::Custom { name, data } => match name.as_str() {
                 "dc_chat" => {
                     if let Some(message) = data.get("message").and_then(|v| v.as_str()) {
-                        let cmd = format!("<{}> {}|", nickname, message);
+                        let cmd = format!("<{}> {}|", nickname, escape_nmdc_text(message));
                         send_dc_command(write_half, &cmd).await?;
                         sent = cmd.len();
                         info!("DC client {} sent chat: {}", client_id, message);
@@ -1700,9 +1804,14 @@ async fn apply_dc_action(
                         data.get("target").and_then(|v| v.as_str()),
                         data.get("message").and_then(|v| v.as_str()),
                     ) {
+                        let target = validate_nmdc_nickname(target)
+                            .context("send_dc_private_message target")?;
                         let cmd = format!(
                             "$To: {} From: {} $<{}> {}|",
-                            target, nickname, nickname, message
+                            target,
+                            nickname,
+                            nickname,
+                            escape_nmdc_text(message)
                         );
                         send_dc_command(write_half, &cmd).await?;
                         sent = cmd.len();
@@ -1715,7 +1824,11 @@ async fn apply_dc_action(
                 "dc_search" => {
                     if let Some(query) = data.get("query").and_then(|v| v.as_str()) {
                         // Simple search format: "$Search Hub:nickname F?F?0?1?query"
-                        let cmd = format!("$Search Hub:{} F?F?0?1?{}|", nickname, query);
+                        let cmd = format!(
+                            "$Search Hub:{} F?F?0?1?{}|",
+                            nickname,
+                            escape_nmdc_text(query)
+                        );
                         send_dc_command(write_half, &cmd).await?;
                         sent = cmd.len();
                         info!("DC client {} sent search: {}", client_id, query);
@@ -1729,7 +1842,10 @@ async fn apply_dc_action(
                     ) {
                         let cmd = format!(
                             "$MyINFO $ALL {} {}$ $LAN(T3)A${}${}$|",
-                            nickname, description, email, share_size
+                            nickname,
+                            escape_nmdc_text(description),
+                            escape_nmdc_text(email),
+                            share_size
                         );
                         send_dc_command(write_half, &cmd).await?;
                         sent = cmd.len();
@@ -1868,8 +1984,9 @@ async fn command_loop(
         crate::client::command_support::reply(command, outcome);
 
         if disconnect {
-            // $Quit| is already on the wire; half-close so the hub reads EOF and the read
-            // loop runs its normal disconnect path.
+            // $Quit| is already on the wire. Mark the session ended so the read loop stops at
+            // its next frame, and half-close so the hub reads EOF.
+            client_state.lock().await.quit_requested = true;
             let _ = write_half.lock().await.shutdown().await;
             break;
         }

@@ -50,20 +50,58 @@ and interact with other XMPP clients.
 ### Connection Flow
 
 ```
-1. Parse JID and password from remote_addr or startup params
-   Format: "user@domain@password" or via startup params
+1. Read `jid` and `password` from the startup parameters (both required)
 
-2. Create tokio-xmpp Client with JID and password
+2. Resolve the target from `remote_addr` alone (`resolve_target`)
 
-3. Authenticate via SASL (handled by library)
+3. Create a tokio-xmpp Client with DnsConfig::Addr(target): STARTTLS transport,
+   no SRV lookup
 
-4. Call LLM with "xmpp_connected" event
+4. Register the command channel, spawn the event loop
 
-5. Spawn event loop to process incoming stanzas
+5. Wait for tokio-xmpp's `Online` event (TCP connect, STARTTLS, SASL, bind),
+   bounded by `session_timeout_secs` (default `SESSION_TIMEOUT`, 30s)
 
-6. State machine: Idle → Processing → Accumulating
+6. Online: return Ok (the startup path then marks the client Connected) and call
+   the LLM with "xmpp_connected" in its own task
+   No Online in time, or the stream ended first: return Err (the client is Error)
+
+7. State machine: Idle → Processing → Accumulating
    (prevents concurrent LLM calls)
 ```
+
+### Target: `remote_addr` and nothing else
+
+`tokio_xmpp::Client::new(jid, password)` finds its server by an SRV lookup on
+`_xmpp-client._tcp.<JID domain>`, falling back to the domain's A/AAAA records. A client built
+that way ignores the address it was given: pointed at a local server, it would offer the
+account's password to whatever the JID's domain publishes. This client never calls it.
+
+`resolve_target` turns `remote_addr` into one socket address — `IP:port`, `[IPv6]:port`, a
+bare IP, `host:port` or a bare host, a missing port meaning 5222 — and the client is built with
+`Client::new_starttls(.., DnsConfig::Addr { addr }, ..)`, a plain TCP connect to exactly that
+address. A host name in `remote_addr` is resolved by the system resolver as an ordinary address
+lookup, because the operator named that host; the JID's domain is never resolved and no SRV
+record is ever queried. The JID still names the account and the stream's `to`, which is what
+it is for.
+
+An empty `remote_addr`, or one containing `@` (an account, not an address), is refused before
+anything is dialled. That error does not echo the value, which may contain a password.
+
+### Status: `Connected` means the server accepted the session
+
+`cli/client_startup.rs` marks every client `Connected` as soon as `connect()` returns `Ok`.
+Constructing a tokio-xmpp `Client` performs no I/O, so `connect()` waits for the library's
+`Online` event before returning, bounded by `session_timeout_secs` (1..600, default
+`SESSION_TIMEOUT`). Until then the client is `Connecting`. If the stream ends first, an injected
+`disconnect` closes it, or the timeout runs out, `connect()` returns `Err` naming the target, and
+the startup path records `Error` (or, for `ClientForm::create`, removes the client). The event
+loop also sets `Connected` on every `Online`, which covers tokio-xmpp's own reconnects.
+
+tokio-xmpp 5.0 reports no connection failure through its event stream: a refused connect, a
+TLS failure or a SASL rejection is logged by the library (`Failed to connect: … Retrying in …`,
+which reaches `netget.log`) and retried with backoff. So every failure before `Online` surfaces
+as the session timeout, not as its specific cause.
 
 ### State Management
 
@@ -81,7 +119,8 @@ and interact with other XMPP clients.
 
 **Stored in AppState:**
 
-- `jid`: Connected Jabber ID
+- `jid`: the requested Jabber ID (recorded before connecting)
+- `bound_jid`: the full JID the server bound, recorded on `Online`
 - XMPP client writer (for sending stanzas)
 
 ### XMPP Features Implemented
@@ -91,7 +130,7 @@ and interact with other XMPP clients.
 1. **Authentication:** SASL authentication via tokio-xmpp
 2. **Messages:** Send and receive chat messages
 3. **Presence:** Send presence updates (away, chat, dnd, xa), receive presence from contacts
-4. **Auto-reconnect:** Handled by tokio-xmpp
+4. **Auto-reconnect:** Handled by tokio-xmpp, always to the same `remote_addr`
 
 **⚠️ Partially Implemented:**
 
@@ -110,8 +149,8 @@ and interact with other XMPP clients.
 ### Events Sent to LLM
 
 1. **xmpp_connected**
-    - Triggered: After successful authentication
-    - Parameters: `jid` (connected Jabber ID)
+    - Triggered: on the first `Online` — stream established, SASL done, resource bound
+    - Parameters: `jid` (the full JID the server bound)
     - LLM Action: Send initial presence, greet contacts, etc.
 
 2. **xmpp_message_received**
@@ -196,58 +235,56 @@ The client handler parses the custom action and executes the corresponding XMPP 
 **Workaround:** Use direct messages only
 **Future:** Implement XEP-0045 for MUC support
 
-### 4. No TLS Configuration
+### 4. No TLS Configuration, STARTTLS only
 
-**Issue:** TLS settings are library defaults, no customization
-**Impact:** Cannot connect to servers with self-signed certs
+**Issue:** The transport is STARTTLS with the library's default TLS settings. A server that
+does not offer `<starttls/>` (NetGet's own XMPP server among them) is refused by tokio-xmpp,
+and a self-signed certificate fails verification
 **Future:** Expose TLS configuration in startup params
 
-### 5. Password in URL
+### 5. A failed client keeps dialling its target
 
-**Issue:** Password must be in connection string or startup params
-**Security:** Not ideal for production use
-**Workaround:** Use startup params instead of URL
+**Issue:** tokio-xmpp 5.0's connect-and-login loop runs in a task the library spawns itself and
+retries on every failure (1s backoff doubling to 30s) until a login succeeds. Dropping the
+`Client` does not reach it. So after this client gives up on a session — or is stopped while
+one is pending — the library goes on dialling `remote_addr` in the background until the
+process exits or a login succeeds (it then closes that fresh stream). It only ever dials the
+configured address.
+**Fix:** wrap the connector in a `ServerConnector` that refuses to dial once the client has
+ended. The trait's return type names `sasl::common::ChannelBinding`, which tokio-xmpp does not
+re-export, so that needs `sasl` (0.5, the version tokio-xmpp locks) as a direct dependency.
 
-Until September 2026 that workaround did not exist. `jid` and `password` were declared
-startup parameters, but `parse_connection_info` read them off
-`ClientInstance::protocol_data` — which `cli/client_startup.rs` leaves as `Value::Null`,
-and which this client writes to only *after* it has connected. Both were therefore always
-`None`, every connection fell through to parsing `remote_addr` as `user@domain@password`,
-and a caller who used the declared parameters instead was refused with "Invalid XMPP
-address format". They are now read from `ConnectContext::startup_params`, which is where
-what the caller actually passed arrives; `protocol_data` is consulted only as a second
-chance, and either source may supply one half with `remote_addr` filling in the other.
-Pinned by `tests/client/xmpp/startup_params_test.rs`.
+### 6. Connection drops are not visible
 
-## Connection String Format
+tokio-xmpp's `Client` stream swallows the stanza stream's `Suspended` event and does not emit
+`Disconnected`, so a session that drops and is being reconnected still shows `Connected`.
 
-**Option 1: URL Format**
+## Connection Parameters
 
-```
-user@domain@password
-```
+`remote_addr` is the server's address, `"host:port"`. The account goes in the startup
+parameters:
 
-Example:
+| Parameter | Required | |
+|---|---|---|
+| `jid` | yes | the account, e.g. `alice@example.com` |
+| `password` | yes | SASL password |
+| `session_timeout_secs` | no | 1..600, default `SESSION_TIMEOUT` (30) |
 
-```
-alice@example.com@secretpass
-```
-
-**Option 2: Startup Parameters (Recommended)**
-
-```bash
-open_client xmpp example.com --param jid=alice@example.com --param password=secretpass "Reply to all messages"
+```json
+{"type": "open_client", "protocol": "xmpp", "remote_addr": "127.0.0.1:5222",
+ "startup_params": {"jid": "alice@localhost", "password": "secret"},
+ "instruction": "Reply to all messages"}
 ```
 
 ## Security Considerations
 
-1. **TLS Encryption:** tokio-xmpp uses TLS by default (STARTTLS or direct TLS)
+1. **TLS Encryption:** STARTTLS is mandatory; a server that does not offer it is refused
 2. **Password Storage:** The password is taken from the startup parameters and moved
    straight into `tokio_xmpp::Client`; it is never written to `protocol_data`. Only the
-   connected `jid` is recorded there. A password embedded in `remote_addr` is a different
-   matter — `remote_addr` is shown in the dashboard and the status stream, which is the
-   reason to prefer the startup parameters
+   requested `jid` and the server's `bound_jid` are recorded there. `remote_addr` cannot
+   carry credentials: one containing `@` is refused without being echoed
 3. **SASL Authentication:** Uses library's SASL implementation (PLAIN, SCRAM)
+4. **Target:** the password is only ever offered to `remote_addr` — see "Target" above
 
 **⚠️ Warning:** Do not hardcode passwords in prompts or instructions. Use startup params.
 
@@ -279,10 +316,6 @@ sudo apt install ejabberd
 sudo ejabberdctl register alice localhost password
 ```
 
-### Public Test Server
-
-XMPP has public test servers (e.g., `jabber.org`, `404.city`), but use with caution for testing.
-
 ### E2E Test Strategy
 
 1. **Setup:** Start local prosody server with two test users
@@ -308,7 +341,8 @@ xmpp-parsers = "0.20"
 
 - `tokio-tls` (TLS support)
 - `minidom` (XML DOM)
-- `trust-dns-resolver` (SRV record lookups)
+- `hickory-resolver` (tokio-xmpp's SRV lookups; not on this client's path, which uses
+  `DnsConfig::Addr`)
 
 ## Required API Updates for tokio-xmpp 5.0
 
@@ -401,13 +435,13 @@ answer and must not serialise behind the loop's next turn.
 
 Two structural changes came with it:
 
-- The channel is registered before anything else, and the `xmpp_connected` LLM call now runs in
-  **its own task**. Inline, that call blocked `connect()` itself and — worse for this feature —
-  nothing was draining the stanza channel while it waited, so an injected stanza could not have
-  been written until it finished.
-- An injected `disconnect` signals a `oneshot` the event loop selects on; the loop breaks, drops
-  the handle, sets the status and then closes the stream (bounded by a 5s timeout, because
-  `close()` waits on a peer that may never have existed).
+- The channel is registered before the session is up, and the `xmpp_connected` LLM call runs
+  in **its own task** once it is, so neither a pending session nor a parked call keeps the
+  event loop from draining the stanza channel.
+- An injected `disconnect` signals a `Notify` the event loop selects on; the loop breaks, drops
+  the handle and then closes the stream (bounded by a 5s timeout, because `close()` waits on a
+  peer that may never have existed). After `Online` it sets `Disconnected`; before it, it fails
+  the pending `connect()` instead, which sets `Error`.
 
 | Outcome | When |
 |---|---|
@@ -420,6 +454,7 @@ Two structural changes came with it:
 internally and reports no byte count.
 
 **Gap.** `tests/client/xmpp/command_channel_test.rs` pins registration, execution, the access-log
-entry and disconnect, but **not** a stanza reaching a peer: no XMPP server this suite can start
+entry and disconnect against a loopback listener that never answers, but **not** a stanza
+reaching a peer: no XMPP server this suite can start
 completes tokio-xmpp's STARTTLS/SASL negotiation, so the wire path is still only exercised by the
 `#[ignore]`d e2e test against a real prosody/ejabberd.

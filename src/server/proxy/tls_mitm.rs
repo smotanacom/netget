@@ -100,44 +100,8 @@ pub async fn perform_mitm(
         dest_host
     ));
 
-    // Step 5: Connect to upstream server
-    let dest_addr = format!("{}:{}", dest_host, dest_port);
-    let upstream_tcp = TcpStream::connect(&dest_addr)
-        .await
-        .context(format!("Failed to connect to upstream {}", dest_addr))?;
-
-    debug!("Connected to upstream server {}", dest_addr);
-
-    // Step 6: Create TLS client config for upstream connection
-    let root_store =
-        rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-
-    let client_config = ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-
-    let tls_connector = TlsConnector::from(Arc::new(client_config));
-
-    // Step 7: Perform TLS handshake with upstream server
-    let server_name =
-        ServerName::try_from(dest_host.to_string()).context("Invalid server name for TLS")?;
-
-    let mut upstream_tls_stream = tls_connector
-        .connect(server_name, upstream_tcp)
-        .await
-        .context("TLS handshake with upstream server failed")?;
-
-    info!(
-        "TLS handshake with upstream server completed for {}",
-        dest_host
-    );
-    let _ = status_tx.send(format!(
-        "[INFO] Upstream TLS handshake complete for {}",
-        dest_host
-    ));
-
     // Step 8: Proxy HTTP traffic through LLM
-    // Now we have two TLS streams: client_tls_stream (client) and upstream_tls_stream (upstream)
+    // client_tls_stream is established; the upstream is dialled only after the model decides.
     // We read HTTP requests from client, optionally modify via LLM, forward to upstream
     // We read HTTP responses from upstream, optionally modify via LLM, send to client
 
@@ -268,53 +232,67 @@ pub async fn perform_mitm(
             }
         });
 
-        match action {
-            RequestAction::Pass => {
-                // Forward request to upstream as-is
-                upstream_tls_stream
-                    .write_all(request_data)
-                    .await
-                    .context("Failed to forward request to upstream")?;
+        // The upstream is dialled only once the model has let the request through. Dialling
+        // first (a TCP connection and a TLS ClientHello carrying the peer's SNI) would let any
+        // proxy client make NetGet connect to an arbitrary host:port — a reachability oracle
+        // for internal addresses — and would cost a blocked request's destination a handshake.
+        if let RequestAction::Block { status, body } = action {
+            // Return error response to client. `body` is either the model's own reason or
+            // one of the two `WireFailure` categories - never an error string. A 503
+            // carries `Retry-After` (see `failure_response`) so a client backs off rather
+            // than recording a permanent fault, which is the whole point of keeping
+            // Overloaded distinct from Unavailable.
+            let response = failure_response(status, &body);
 
-                trace!("Forwarded request to upstream server");
-            }
-            RequestAction::Block { status, body } => {
-                // Return error response to client. `body` is either the model's own reason or
-                // one of the two `WireFailure` categories - never an error string. A 503
-                // carries `Retry-After` (see `failure_response`) so a client backs off rather
-                // than recording a permanent fault, which is the whole point of keeping
-                // Overloaded distinct from Unavailable.
-                let response = failure_response(status, &body);
+            client_tls_stream
+                .write_all(&response)
+                .await
+                .context("Failed to send blocked response to client")?;
 
-                client_tls_stream
-                    .write_all(&response)
-                    .await
-                    .context("Failed to send blocked response to client")?;
+            info!(
+                "Blocked MITM request with status {} (upstream {}:{} never dialled)",
+                status, dest_host, dest_port
+            );
+            return Ok(());
+        }
 
-                info!("Blocked MITM request with status {}", status);
-                return Ok(());
-            }
+        // Build the outbound request before dialling, so a modification that cannot be
+        // applied is refused without the upstream ever being contacted.
+        let outbound: std::borrow::Cow<'_, [u8]> = match action {
+            RequestAction::Block { .. } => unreachable!("answered above"),
+            RequestAction::Pass => std::borrow::Cow::Borrowed(request_data),
             ref modify_action @ RequestAction::Modify { .. } => {
                 // Reuse the same modification routine as the plaintext HTTP path so
-                // headers/path/query_params/body behave identically over TLS.
-                let modified = crate::server::proxy::ProxyServer::apply_request_modifications(
+                // headers/path/query_params/body behave identically over TLS. A request it
+                // cannot rebuild (a malformed or incomplete chunked body, an undecodable
+                // transfer coding) is refused rather than forwarded unmodified.
+                match crate::server::proxy::ProxyServer::apply_request_modifications(
                     request_data,
                     modify_action,
-                )
-                .unwrap_or_else(|e| {
-                    error!("Failed to apply MITM request modifications: {}", e);
-                    let _ = status_tx.send(format!("✗ MITM modification error: {}", e));
-                    request_data.to_vec()
-                });
-
-                upstream_tls_stream
-                    .write_all(&modified)
-                    .await
-                    .context("Failed to forward modified request to upstream")?;
-
-                trace!("Forwarded modified request to upstream server");
+                ) {
+                    Ok(modified) => std::borrow::Cow::Owned(modified),
+                    Err(e) => {
+                        error!("Refusing MITM request: cannot apply modification: {:#}", e);
+                        let _ = status_tx.send(format!(
+                            "[WARN] MITM refusing {} {} with 400: cannot apply modification: {:#}",
+                            request_info.method, request_info.url, e
+                        ));
+                        client_tls_stream
+                            .write_all(&crate::server::proxy::modification_refused_response())
+                            .await
+                            .context("Failed to send refusal to client")?;
+                        return Ok(());
+                    }
+                }
             }
-        }
+        };
+
+        let mut upstream_tls_stream = connect_upstream(dest_host, dest_port, &status_tx).await?;
+        upstream_tls_stream
+            .write_all(&outbound)
+            .await
+            .context("Failed to forward request to upstream")?;
+        trace!("Forwarded request to upstream server");
 
         // Read response from upstream
         let mut response_buffer = vec![0u8; 16384]; // Larger buffer for responses
@@ -411,32 +389,6 @@ pub async fn perform_mitm(
                     body_replacements,
                 }) => {
                     info!("LLM decision: Modify response");
-                    // Apply modifications
-                    let mut modified_response = String::new();
-
-                    // Status line
-                    let final_status = new_status.unwrap_or(status_code);
-                    modified_response.push_str(&format!("HTTP/1.1 {} OK\r\n", final_status));
-
-                    // Headers
-                    let remove_set: std::collections::HashSet<String> = remove_headers
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|h| h.to_lowercase())
-                        .collect();
-
-                    for (name, value) in &response_headers {
-                        if !remove_set.contains(&name.to_lowercase()) {
-                            modified_response.push_str(&format!("{}: {}\r\n", name, value));
-                        }
-                    }
-
-                    // Add new headers
-                    if let Some(headers) = add_headers {
-                        for (name, value) in headers {
-                            modified_response.push_str(&format!("{}: {}\r\n", name, value));
-                        }
-                    }
 
                     // Body: full replacement first, then regex replacements over
                     // whatever body results. body_replacements was previously
@@ -467,12 +419,13 @@ pub async fn perform_mitm(
                         }
                     }
 
-                    // Update Content-Length
-                    modified_response
-                        .push_str(&format!("Content-Length: {}\r\n\r\n", final_body.len()));
-                    modified_response.push_str(&final_body);
-
-                    Some(modified_response.into_bytes())
+                    Some(rebuild_modified_response(
+                        new_status.unwrap_or(status_code),
+                        &response_headers,
+                        add_headers.as_ref(),
+                        remove_headers.as_deref().unwrap_or(&[]),
+                        final_body.as_bytes(),
+                    ))
                 }
                 Err(e) => {
                     // Fail closed, same reasoning as the request side. Returning `None` here
@@ -762,6 +715,124 @@ fn failure_response(status: u16, body: &str) -> Vec<u8> {
         body
     )
     .into_bytes()
+}
+
+/// Rebuild a modified upstream response as one HTTP/1.1 message the proxy frames itself.
+///
+/// The upstream's `Content-Length` and `Transfer-Encoding` are dropped: the body is written
+/// whole after a single `Content-Length` the proxy computes, so re-emitting the upstream's
+/// framing produced two `Content-Length` values, or `chunked` over an unchunked body — the
+/// ambiguity response-desync attacks exploit. Model-added headers go through the same
+/// checks as the executor (token name, no CR/LF, no framing header), so a value that still
+/// carries a line break is dropped rather than written.
+pub fn rebuild_modified_response(
+    status: u16,
+    upstream_headers: &HashMap<String, String>,
+    add_headers: Option<&HashMap<String, String>>,
+    remove_headers: &[String],
+    body: &[u8],
+) -> Vec<u8> {
+    use crate::server::proxy::filter::{check_header_name, check_header_value, FRAMING_HEADERS};
+
+    let remove_set: std::collections::HashSet<String> =
+        remove_headers.iter().map(|h| h.to_lowercase()).collect();
+    let added: std::collections::HashSet<String> = add_headers
+        .map(|h| h.keys().map(|k| k.to_lowercase()).collect())
+        .unwrap_or_default();
+
+    // The reason phrase matches the status, so a 404 is not sent as "404 OK".
+    let reason = http::StatusCode::from_u16(status)
+        .ok()
+        .and_then(|s| s.canonical_reason())
+        .unwrap_or("OK");
+    let mut out = format!("HTTP/1.1 {} {}\r\n", status, reason);
+
+    // Upstream headers, minus removed, minus framing, minus any the model replaces.
+    let mut upstream: Vec<(&String, &String)> = upstream_headers.iter().collect();
+    upstream.sort();
+    for (name, value) in upstream {
+        let key = name.to_lowercase();
+        if remove_set.contains(&key)
+            || added.contains(&key)
+            || FRAMING_HEADERS.contains(&key.as_str())
+        {
+            continue;
+        }
+        if check_header_name(name)
+            .and_then(|_| check_header_value(name, value))
+            .is_err()
+        {
+            continue;
+        }
+        out.push_str(&format!("{}: {}\r\n", name, value));
+    }
+
+    if let Some(add) = add_headers {
+        let mut add: Vec<(&String, &String)> = add.iter().collect();
+        add.sort();
+        for (name, value) in add {
+            let key = name.to_lowercase();
+            if FRAMING_HEADERS.contains(&key.as_str()) {
+                warn!("Dropping response header {name:?}: the proxy frames the body itself");
+                continue;
+            }
+            if let Err(e) = check_header_name(name).and_then(|_| check_header_value(name, value)) {
+                warn!("Dropping response header modification: {}", e);
+                continue;
+            }
+            out.push_str(&format!("{}: {}\r\n", name, value));
+        }
+    }
+
+    out.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
+    let mut bytes = out.into_bytes();
+    bytes.extend_from_slice(body);
+    bytes
+}
+
+/// Dial the destination and complete the upstream TLS handshake.
+///
+/// Called only after the model has let the client's first request through: see the
+/// comment at the call site. The upstream certificate is verified against the webpki
+/// roots; there is no bypass.
+async fn connect_upstream(
+    dest_host: &str,
+    dest_port: u16,
+    status_tx: &mpsc::UnboundedSender<String>,
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    let dest_addr = format!("{}:{}", dest_host, dest_port);
+    let upstream_tcp = TcpStream::connect(&dest_addr)
+        .await
+        .context(format!("Failed to connect to upstream {}", dest_addr))?;
+
+    debug!("Connected to upstream server {}", dest_addr);
+
+    let root_store =
+        rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+    let client_config = ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+
+    let tls_connector = TlsConnector::from(Arc::new(client_config));
+
+    let server_name =
+        ServerName::try_from(dest_host.to_string()).context("Invalid server name for TLS")?;
+
+    let upstream_tls_stream = tls_connector
+        .connect(server_name, upstream_tcp)
+        .await
+        .context("TLS handshake with upstream server failed")?;
+
+    info!(
+        "TLS handshake with upstream server completed for {}",
+        dest_host
+    );
+    let _ = status_tx.send(format!(
+        "[INFO] Upstream TLS handshake complete for {}",
+        dest_host
+    ));
+    Ok(upstream_tls_stream)
 }
 
 /// Extract HTTP status code from response line

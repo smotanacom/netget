@@ -1326,6 +1326,8 @@ pub mod wamp;
 
 #[cfg(feature = "a2s")]
 pub mod a2s;
+#[cfg(feature = "activitypub")]
+pub mod activitypub;
 #[cfg(feature = "anthropic")]
 pub mod anthropic;
 #[cfg(feature = "bfd")]
@@ -1342,12 +1344,16 @@ pub mod dbus;
 pub mod diameter;
 #[cfg(feature = "epp")]
 pub mod epp;
+#[cfg(feature = "guacamole")]
+pub mod guacamole;
 #[cfg(feature = "inetd")]
 pub mod inetd;
 #[cfg(feature = "jmap")]
 pub mod jmap;
 #[cfg(feature = "knx")]
 pub mod knx;
+#[cfg(feature = "libp2p")]
+pub mod libp2p;
 #[cfg(feature = "lmtp")]
 pub mod lmtp;
 #[cfg(feature = "lpd")]
@@ -1376,6 +1382,8 @@ pub mod restconf;
 pub mod rsync;
 #[cfg(feature = "smpp")]
 pub mod smpp;
+#[cfg(feature = "sunrpc")]
+pub mod sunrpc;
 #[cfg(feature = "tr069")]
 pub mod tr069;
 #[cfg(feature = "vxlan")]

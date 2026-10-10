@@ -852,12 +852,19 @@ fn intercept_lines<'a>(
         ]),
         Line::from(vec![
             Span::styled("what       ", app.styles.dimmed),
-            Span::styled(model.description.clone(), app.styles.normal),
+            Span::styled(
+                crate::utils::sanitize::line_field(&model.description),
+                app.styles.normal,
+            ),
         ]),
     ];
     if let Some(data) = &model.event_data {
         lines.push(Line::from(Span::styled("payload", app.styles.dimmed)));
-        let pretty = serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string());
+        // The peer's own bytes: `serde_json` escapes C0 inside a string but writes DEL and C1
+        // (U+009B is an 8-bit CSI) raw, and a `Paragraph` hands them to the terminal.
+        let pretty = crate::utils::sanitize::json_text(
+            &serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string()),
+        );
         for line in pretty.lines().take(20) {
             lines.push(Line::from(Span::styled(
                 format!("  {line}"),
@@ -1062,14 +1069,21 @@ fn band_detail_lines<'a>(app: &DashboardApp, key: crate::tui::app::UiKey) -> Vec
                 push(String::new(), app.styles.normal);
                 push("instruction".to_string(), app.styles.title);
                 for line in row.instruction.lines() {
-                    push(format!("  {line}"), app.styles.dimmed);
+                    push(
+                        format!("  {}", crate::utils::sanitize::line_field(line)),
+                        app.styles.dimmed,
+                    );
                 }
                 push(String::new(), app.styles.normal);
                 push("startup_params".to_string(), app.styles.title);
                 let params = row
                     .startup_params
                     .as_ref()
-                    .map(|p| serde_json::to_string_pretty(p).unwrap_or_default())
+                    .map(|p| {
+                        crate::utils::sanitize::json_text(
+                            &serde_json::to_string_pretty(p).unwrap_or_default(),
+                        )
+                    })
                     .unwrap_or_else(|| "(none)".to_string());
                 for line in params.lines() {
                     push(format!("  {line}"), app.styles.dimmed);
@@ -1079,7 +1093,11 @@ fn band_detail_lines<'a>(app: &DashboardApp, key: crate::tui::app::UiKey) -> Vec
                 let routing = row
                     .routing
                     .as_ref()
-                    .map(|r| serde_json::to_string_pretty(&r.handlers).unwrap_or_default())
+                    .map(|r| {
+                        crate::utils::sanitize::json_text(
+                            &serde_json::to_string_pretty(&r.handlers).unwrap_or_default(),
+                        )
+                    })
                     .unwrap_or_else(|| "(none — every event goes to the LLM)".to_string());
                 for line in routing.lines() {
                     push(format!("  {line}"), app.styles.dimmed);
@@ -1106,14 +1124,21 @@ fn band_detail_lines<'a>(app: &DashboardApp, key: crate::tui::app::UiKey) -> Vec
                 push(String::new(), app.styles.normal);
                 push("instruction".to_string(), app.styles.title);
                 for line in row.instruction.lines() {
-                    push(format!("  {line}"), app.styles.dimmed);
+                    push(
+                        format!("  {}", crate::utils::sanitize::line_field(line)),
+                        app.styles.dimmed,
+                    );
                 }
                 push(String::new(), app.styles.normal);
                 push("routing".to_string(), app.styles.title);
                 let routing = row
                     .routing
                     .as_ref()
-                    .map(|r| serde_json::to_string_pretty(&r.handlers).unwrap_or_default())
+                    .map(|r| {
+                        crate::utils::sanitize::json_text(
+                            &serde_json::to_string_pretty(&r.handlers).unwrap_or_default(),
+                        )
+                    })
                     .unwrap_or_else(|| "(none — every event goes to the LLM)".to_string());
                 for line in routing.lines() {
                     push(format!("  {line}"), app.styles.dimmed);
