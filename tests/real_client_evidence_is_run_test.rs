@@ -223,19 +223,16 @@ fn evidence_loop() -> String {
 /// the note says what that decision costs:
 ///
 /// * `git::e2e_test` — drives the real `git` binary, which is **preinstalled on every runner**.
-///   This is the cheapest of the five: adding `git::e2e_test` to the evidence loop needs no
+///   This is the cheapest of the four: adding `git::e2e_test` to the evidence loop needs no
 ///   package at all. `git`'s Beta rating rests on it.
 /// * `whois::e2e_test` — drives `whois(1)` (package `whois`) and also uses the pcap oracle, so
 ///   the `registry-audit` job would need `tshark` as well, which it does not install today.
 ///   `whois`'s Beta rating rests on it.
-/// * `snmp::test` — drives net-snmp's `snmpget`/`snmpgetnext` (package `snmp`). `snmp`'s Beta
-///   rating rests on it.
 /// * `tor_integration::tor_client` and `wireguard::e2e_test` — both `#[ignore]`d, so CI could
 ///   name them and still run nothing. CLAUDE.md treats unreachable evidence as disqualifying
 ///   for a rating rather than as something the loop must carry; `wireguard` is Experimental for
 ///   exactly that reason, and `tor_relay` is named in the same passage.
 const NOT_RUN_ANYWHERE: &[&str] = &[
-    "snmp::test",
     "tor_integration::tor_client",
     "whois::e2e_test",
     "wireguard::e2e_test",
