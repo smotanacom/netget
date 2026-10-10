@@ -1,0 +1,2 @@
+# nats-py (Apache-2.0), the Python NATS client with JetStream; pure Python, no dependencies.
+nats-py==2.16.0 --hash=sha256:aeb1ff123966c05833d26c7df7e1d54c1c6d32b612428b21677a2e921f1fecae

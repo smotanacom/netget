@@ -504,10 +504,14 @@ impl AppStateInner {
     /// `stop_all` tools called `remove_server` without the scheduled-task cleanup the
     /// TUI does, and every orphaned recurring task then kept firing on its interval,
     /// each tick producing an LLM prompt for a server that no longer existed.
-    fn teardown_server(&mut self, server_id: ServerId) {
+    /// Abort everything the server owns. Returns the aborted listener and connection tasks:
+    /// an abort only *requests* cancellation, and the socket a task holds is closed when the
+    /// runtime next polls it, so a caller that needs the port free awaits these.
+    fn teardown_server(&mut self, server_id: ServerId) -> Vec<tokio::task::JoinHandle<()>> {
         // Dropping a JoinHandle only DETACHES the task in Tokio, so the abort is what
         // actually releases the listening socket.
-        for handle in self.server_tasks.remove(&server_id).unwrap_or_default() {
+        let aborted = self.server_tasks.remove(&server_id).unwrap_or_default();
+        for handle in &aborted {
             handle.abort();
         }
         // A live-instance handle must never outlive the server it points at.
@@ -535,6 +539,7 @@ impl AppStateInner {
         for pid in doomed {
             self.pipes.remove(&pid);
         }
+        aborted
     }
 
     /// Remove the scheduled tasks scoped to a server, including the tasks scoped to
@@ -712,16 +717,22 @@ impl AppState {
     /// `stop_all` did the removal without it, so every server- and connection-scoped
     /// scheduled task survived its server and kept firing on its interval.
     pub async fn remove_server(&self, id: ServerId) -> Option<ServerInstance> {
-        let mut inner = self.inner.write().await;
-        let server = inner.servers.remove(&id);
-
-        inner.teardown_server(id);
-
-        // Set mode to Idle if no more servers and no clients
-        if inner.servers.is_empty() && inner.clients.is_empty() {
-            inner.mode = Mode::Idle;
+        let (server, aborted) = {
+            let mut inner = self.inner.write().await;
+            let server = inner.servers.remove(&id);
+            let aborted = inner.teardown_server(id);
+            // Set mode to Idle if no more servers and no clients
+            if inner.servers.is_empty() && inner.clients.is_empty() {
+                inner.mode = Mode::Idle;
+            }
+            (server, aborted)
+        };
+        // Outside the lock: wait for the aborted tasks to be dropped, so the listening socket
+        // is closed when this returns. A stop followed by a start on the same port otherwise
+        // races the runtime. Bounded, because a task stuck in blocking code never yields.
+        for handle in aborted {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
         }
-
         server
     }
 
@@ -1810,7 +1821,8 @@ impl AppState {
 
         for id in to_remove {
             inner.servers.remove(&id);
-            inner.teardown_server(id);
+            // Detached on purpose: this sweep holds the state lock and must not wait.
+            drop(inner.teardown_server(id));
         }
 
         // Set mode to Idle if no more servers and no clients

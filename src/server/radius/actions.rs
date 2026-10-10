@@ -95,7 +95,15 @@ impl RadiusProtocol {
     /// through an LLM action.
     pub fn encode_reply(&self, code: u8, attributes: &[Attribute]) -> Result<Vec<u8>> {
         let ctx = self.ctx()?;
-        packet::encode_response(
+        let encode = if matches!(
+            code,
+            packet::CODE_ACCESS_ACCEPT | packet::CODE_ACCESS_REJECT | packet::CODE_ACCESS_CHALLENGE
+        ) {
+            packet::encode_signed_response
+        } else {
+            packet::encode_response
+        };
+        encode(
             code,
             ctx.identifier,
             attributes,
@@ -544,7 +552,9 @@ fn send_access_accept_action() -> ActionDefinition {
             "session_timeout": 3600,
             "service_type": "Framed-User"
         }),
-        log_template: None,
+        log_template: Some(
+            crate::protocol::log_template::LogTemplate::new().with_info("-> RADIUS Access-Accept"),
+        ),
     }
 }
 
@@ -565,7 +575,9 @@ fn send_access_reject_action() -> ActionDefinition {
             "type": "send_access_reject",
             "reply_message": "Invalid credentials"
         }),
-        log_template: None,
+        log_template: Some(
+            crate::protocol::log_template::LogTemplate::new().with_info("-> RADIUS Access-Reject"),
+        ),
     }
 }
 
@@ -599,7 +611,10 @@ fn send_access_challenge_action() -> ActionDefinition {
             "state": "otp-round-1",
             "reply_message": "Enter your one-time code"
         }),
-        log_template: None,
+        log_template: Some(
+            crate::protocol::log_template::LogTemplate::new()
+                .with_info("-> RADIUS Access-Challenge"),
+        ),
     }
 }
 
@@ -612,7 +627,10 @@ fn send_accounting_response_action() -> ActionDefinition {
             .to_string(),
         parameters: vec![],
         example: json!({ "type": "send_accounting_response" }),
-        log_template: None,
+        log_template: Some(
+            crate::protocol::log_template::LogTemplate::new()
+                .with_info("-> RADIUS Accounting-Response"),
+        ),
     }
 }
 
@@ -681,8 +699,9 @@ impl Protocol for RadiusProtocol {
                 "Hand-rolled RFC 2865/2866 codec (src/server/radius/packet.rs) over a tokio \
                  UdpSocket. Implements the Response Authenticator MD5, the Accounting-Request \
                  Authenticator (verified, not just computed), User-Password unhiding per \
-                 §5.2, TLV attributes and Proxy-State echo. Does NOT implement \
-                 Message-Authenticator (RFC 3579 §3.2 HMAC-MD5), CHAP, MS-CHAP or EAP: \
+                 §5.2, TLV attributes, Proxy-State echo and the RFC 3579 §3.2 \
+                 Message-Authenticator (first in every Access reply; verified on a request \
+                 that carries one). Does NOT implement CHAP, MS-CHAP or EAP: \
                  CHAP-Password and EAP-Message are handed to the model as opaque hex and no \
                  challenge is validated.",
             )
@@ -709,11 +728,8 @@ impl Protocol for RadiusProtocol {
                  `apt-get install -y freeradius-utils`); it is not in CI's CI_FEATURES, so \
                  the CI gate neither compiles nor runs these tests. The codec is \
                  additionally pinned to RFC 2865 §7.1/§7.2 literal example bytes, checked \
-                 with a separate MD5 implementation. NOT covered: radclient sends a \
-                 Message-Authenticator (attr 80) which NetGet neither verifies nor returns \
-                 — radclient 3.2.x does not require one, but a NAS configured to demand it \
-                 would reject our replies. CHAP, MS-CHAP and EAP are unimplemented and \
-                 untested.",
+                 with a separate MD5 implementation. CHAP, MS-CHAP and EAP are \
+                 unimplemented and untested.",
             )
             .notes(
                 "FAILS CLOSED: no LLM answer, an unusable answer, or an LLM error all \

@@ -1,0 +1,4 @@
+# aiosmtpd 1.4.6 (its LMTP server class) and its dependencies, pinned by hash.
+aiosmtpd==1.4.6 --hash=sha256:72c99179ba5aa9ae0abbda6994668239b64a5ce054471955fe75f581d2592475
+atpublic==8.0.1 --hash=sha256:8696fe5b26ec7c8ea521cc8e5487495ba1d3530a9b9a9dc350c8f4f82848f77c
+attrs==26.1.0 --hash=sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309

@@ -546,6 +546,146 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::epp::actions::EppClientProtocol::new(),
         ));
+        #[cfg(feature = "lmtp")]
+        self.register(Arc::new(
+            crate::client::lmtp::actions::LmtpClientProtocol::new(),
+        ));
+        #[cfg(feature = "lpd")]
+        self.register(Arc::new(
+            crate::client::lpd::actions::LpdClientProtocol::new(),
+        ));
+        #[cfg(feature = "inetd")]
+        self.register(Arc::new(
+            crate::client::inetd::actions::EchoClientProtocol::new(),
+        ));
+        #[cfg(feature = "inetd")]
+        self.register(Arc::new(
+            crate::client::inetd::actions::DiscardClientProtocol::new(),
+        ));
+        #[cfg(feature = "inetd")]
+        self.register(Arc::new(
+            crate::client::inetd::actions::DaytimeClientProtocol::new(),
+        ));
+        #[cfg(feature = "inetd")]
+        self.register(Arc::new(
+            crate::client::inetd::actions::QotdClientProtocol::new(),
+        ));
+        #[cfg(feature = "inetd")]
+        self.register(Arc::new(
+            crate::client::inetd::actions::ChargenClientProtocol::new(),
+        ));
+        #[cfg(feature = "inetd")]
+        self.register(Arc::new(
+            crate::client::inetd::actions::TimeClientProtocol::new(),
+        ));
+        #[cfg(feature = "rcon")]
+        self.register(Arc::new(
+            crate::client::rcon::actions::RconClientProtocol::new(),
+        ));
+        #[cfg(feature = "a2s")]
+        self.register(Arc::new(
+            crate::client::a2s::actions::A2sClientProtocol::new(),
+        ));
+        #[cfg(feature = "minecraft")]
+        self.register(Arc::new(
+            crate::client::minecraft::actions::MinecraftClientProtocol::new(),
+        ));
+        #[cfg(feature = "ninep")]
+        self.register(Arc::new(
+            crate::client::ninep::actions::NinepClientProtocol::new(),
+        ));
+        #[cfg(feature = "zeromq")]
+        self.register(Arc::new(
+            crate::client::zeromq::actions::ZeromqClientProtocol::new(),
+        ));
+        #[cfg(feature = "smpp")]
+        self.register(Arc::new(
+            crate::client::smpp::actions::SmppClientProtocol::new(),
+        ));
+        #[cfg(feature = "clickhouse")]
+        self.register(Arc::new(
+            crate::client::clickhouse::actions::ClickhouseClientProtocol::new(),
+        ));
+        #[cfg(feature = "msgpack-rpc")]
+        self.register(Arc::new(
+            crate::client::msgpack_rpc::actions::MsgpackRpcClientProtocol::new(),
+        ));
+        #[cfg(feature = "zipkin")]
+        self.register(Arc::new(
+            crate::client::zipkin::actions::ZipkinClientProtocol::new(),
+        ));
+        #[cfg(feature = "capnp-rpc")]
+        self.register(Arc::new(
+            crate::client::capnp_rpc::actions::CapnpRpcClientProtocol::new(),
+        ));
+        #[cfg(feature = "knx")]
+        self.register(Arc::new(
+            crate::client::knx::actions::KnxClientProtocol::new(),
+        ));
+        #[cfg(feature = "consul")]
+        self.register(Arc::new(
+            crate::client::consul::actions::ConsulClientProtocol::new(),
+        ));
+        #[cfg(feature = "milter")]
+        self.register(Arc::new(
+            crate::client::milter::actions::MilterClientProtocol::new(),
+        ));
+        #[cfg(feature = "anthropic")]
+        self.register(Arc::new(
+            crate::client::anthropic::actions::AnthropicClientProtocol::new(),
+        ));
+        #[cfg(feature = "radsec")]
+        self.register(Arc::new(
+            crate::client::radsec::actions::RadsecClientProtocol::new(),
+        ));
+        #[cfg(feature = "dbus")]
+        self.register(Arc::new(
+            crate::client::dbus::actions::DbusClientProtocol::new(),
+        ));
+        #[cfg(feature = "bfd")]
+        self.register(Arc::new(
+            crate::client::bfd::actions::BfdClientProtocol::new(),
+        ));
+        #[cfg(feature = "vxlan")]
+        self.register(Arc::new(
+            crate::client::vxlan::actions::VxlanClientProtocol::new(),
+        ));
+        #[cfg(feature = "rsync")]
+        self.register(Arc::new(
+            crate::client::rsync::actions::RsyncClientProtocol::new(),
+        ));
+        #[cfg(feature = "pfcp")]
+        self.register(Arc::new(
+            crate::client::pfcp::actions::PfcpClientProtocol::new(),
+        ));
+        #[cfg(feature = "matrix")]
+        self.register(Arc::new(
+            crate::client::matrix::actions::MatrixClientProtocol::new(),
+        ));
+        #[cfg(feature = "libp2p")]
+        self.register(Arc::new(
+            crate::client::libp2p::actions::Libp2pClientProtocol::new(),
+        ));
+        #[cfg(feature = "sunrpc")]
+        self.register(Arc::new(
+            crate::client::sunrpc::actions::SunRpcClientProtocol::new(),
+        ));
+        #[cfg(feature = "guacamole")]
+        self.register(Arc::new(
+            crate::client::guacamole::actions::GuacamoleClientProtocol::new(),
+        ));
+        #[cfg(feature = "activitypub")]
+        self.register(Arc::new(
+            crate::client::activitypub::actions::ActivityPubClientProtocol::new(),
+        ));
+        #[cfg(feature = "wsdiscovery")]
+        self.register(Arc::new(
+            crate::client::wsdiscovery::actions::WsDiscoveryClientProtocol::new(),
+        ));
+        #[cfg(feature = "x11")]
+        self.register(Arc::new(
+            crate::client::x11::actions::X11ClientProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1067,6 +1207,41 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("WebTransport", "webtransport"),
     ("JMAP", "jmap"),
     ("EPP", "epp"),
+    ("LMTP", "lmtp"),
+    ("LPD", "lpd"),
+    ("Echo", "inetd"),
+    ("Discard", "inetd"),
+    ("Daytime", "inetd"),
+    ("QOTD", "inetd"),
+    ("Chargen", "inetd"),
+    ("Time", "inetd"),
+    ("RCON", "rcon"),
+    ("A2S", "a2s"),
+    ("Minecraft", "minecraft"),
+    ("9P", "ninep"),
+    ("ZeroMQ", "zeromq"),
+    ("SMPP", "smpp"),
+    ("ClickHouse", "clickhouse"),
+    ("MessagePack-RPC", "msgpack-rpc"),
+    ("Zipkin", "zipkin"),
+    ("Cap'n Proto RPC", "capnp-rpc"),
+    ("KNX/IP", "knx"),
+    ("Consul", "consul"),
+    ("Milter", "milter"),
+    ("Anthropic", "anthropic"),
+    ("RadSec", "radsec"),
+    ("D-Bus", "dbus"),
+    ("BFD", "bfd"),
+    ("VXLAN", "vxlan"),
+    ("rsync", "rsync"),
+    ("PFCP", "pfcp"),
+    ("Matrix", "matrix"),
+    ("libp2p", "libp2p"),
+    ("SunRPC", "sunrpc"),
+    ("Guacamole", "guacamole"),
+    ("ActivityPub", "activitypub"),
+    ("WS-Discovery", "wsdiscovery"),
+    ("X11", "x11"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),

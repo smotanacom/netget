@@ -75,12 +75,18 @@ The list below is exhaustive in both directions.
   nonce, unverifiable), this one is keyed, so the server **verifies** it and drops the packet
   on mismatch. Comparison is constant-time.
 
+- **Message-Authenticator (attribute 80)**, the HMAC-MD5 of RFC 3579 §3.2
+  (`packet::encode_signed_response`): the **first** attribute of every Access-Accept, -Reject
+  and -Challenge, computed over the reply with the Request Authenticator in place before the
+  Response Authenticator, which then covers it. A request that carries one has it verified
+  (`packet::verify_request_message_authenticator`) and is silently discarded when it does not
+  match; a request without one is still answered. Until October 2026 replies carried none, so
+  a BlastRADIUS-patched (CVE-2024-3596) client — NetGet's own among them — refused every
+  Access reply this server sent. The fail-closed test pins the signed packet byte for byte
+  against a literal computed with Python's `hmac` and `hashlib`.
+
 **Not implemented, and claimed nowhere:**
 
-- **Message-Authenticator (attribute 80)**, the HMAC-MD5 of RFC 3579 §3.2. Neither computed
-  nor verified. A request carrying one is accepted; replies do not carry one. FreeRADIUS
-  3.2.x `radclient` does not require it by default, but a NAS configured to demand it will
-  reject our replies.
 - **CHAP (§5.3), MS-CHAP, EAP (RFC 3579).** CHAP-Password, CHAP-Challenge and EAP-Message are
   decoded to hex and handed to the model as opaque. No challenge is validated, no EAP state
   machine exists. The event's `auth_method` says `"chap"` or `"eap"` precisely so the model
@@ -145,18 +151,22 @@ FreeRADIUS is therefore required wherever the `radius` feature's suite runs
 CI's `CI_FEATURES`, so the CI gate neither compiles nor runs those tests — see
 `tests/server/radius/AGENTS.md` for the per-job derivation.
 
-What Beta does **not** claim: Message-Authenticator, CHAP, MS-CHAP and EAP are unimplemented
+What Beta does **not** claim: CHAP, MS-CHAP and EAP are unimplemented
 (above), and the tests cover neither, deliberately.
 
 ## NetGet's RADIUS client shares `packet.rs`
 
 `src/client/radius/` builds its packets with this module's header, TLV, User-Password and
-authenticator functions. What only a client needs — CHAP-Password, and the Message-Authenticator
-HMAC-MD5 on requests and on the replies it verifies — lives in `src/client/radius/wire.rs`, so
-the statement above that *this server* neither computes nor verifies a Message-Authenticator
-stays true. Pointed at this server, the client refuses every Access-Accept/Reject it gets,
-because they carry no Message-Authenticator (`radius_error {kind:
-missing_message_authenticator}`); its evidence is FreeRADIUS, not this server.
+authenticator functions, and `hmac_md5` now lives here for both. What only a client needs —
+CHAP-Password, and signing requests and verifying replies — lives in
+`src/client/radius/wire.rs`. Pointed at this server the client used to refuse every Access
+reply for want of a Message-Authenticator; it no longer does, and `tests/client/radsec`
+drives the client against this server's decision path over TLS to show it. The client's
+independent evidence is still FreeRADIUS.
+
+`RadiusServer::answer` is the decision path with the fail-closed rule, returning the bytes
+to send; the UDP loop sends them, and RadSec (`src/server/radsec/`) writes them to its TLS
+stream.
 
 ## Known limitations
 

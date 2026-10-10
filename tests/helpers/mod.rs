@@ -18,6 +18,8 @@ pub mod mock_config;
 pub mod mock_matcher;
 pub mod mock_ollama;
 pub mod netget;
+#[cfg(all(any(feature = "vxlan", feature = "sunrpc"), target_os = "linux"))]
+pub mod netns;
 pub mod ollama_test_builder;
 pub mod pcap_oracle;
 pub mod real_server;
@@ -149,6 +151,8 @@ pub mod lwm2m;
 
 #[cfg(feature = "epp")]
 pub mod epp;
+#[cfg(feature = "inetd")]
+pub mod inetd;
 #[cfg(feature = "jmap")]
 pub mod jmap;
 #[cfg(feature = "restconf")]
@@ -174,3 +178,5 @@ pub mod ics;
     feature = "nntp"
 ))]
 pub mod p2p;
+#[cfg(feature = "radsec")]
+pub mod radsec_pki;

@@ -37,6 +37,7 @@
 
 pub mod actions;
 
+pub mod jetstream;
 pub use actions::NatsClientProtocol;
 
 use anyhow::{Context, Result};
@@ -360,7 +361,22 @@ pub fn parse_headers(block: &[u8]) -> BTreeMap<String, String> {
     let text = String::from_utf8_lossy(block);
     for (index, line) in text.split('\n').enumerate() {
         let line = line.trim_end_matches('\r');
-        if index == 0 || line.trim().is_empty() {
+        if index == 0 {
+            // `NATS/1.0 404 No Messages`: a status, exposed the way nats.go exposes it.
+            let mut parts = line.splitn(3, ' ');
+            parts.next();
+            if let Some(code) = parts
+                .next()
+                .filter(|c| c.len() == 3 && c.bytes().all(|b| b.is_ascii_digit()))
+            {
+                out.insert("Status".to_string(), code.to_string());
+                if let Some(text) = parts.next().map(str::trim).filter(|t| !t.is_empty()) {
+                    out.insert("Description".to_string(), text.to_string());
+                }
+            }
+            continue;
+        }
+        if line.trim().is_empty() {
             continue;
         }
         if let Some((name, value)) = line.split_once(':') {
@@ -540,6 +556,17 @@ impl NatsClient {
             handshake.extend_from_slice(format!("SUB {} {}\r\n", subject, sid).as_bytes());
             subscriptions.push(serde_json::json!({"subject": subject, "sid": sid}));
         }
+        // JetStream replies come back under one inbox, subscribed once.
+        let jetstream = info
+            .get("jetstream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let js_inbox = jetstream::inbox_for(client_id);
+        if jetstream {
+            handshake.extend_from_slice(
+                format!("SUB {js_inbox}.> {}\r\n", jetstream::INBOX_SID).as_bytes(),
+            );
+        }
         handshake.extend_from_slice(b"PING\r\n");
         {
             let mut guard = write_half.lock().await;
@@ -608,6 +635,7 @@ impl NatsClient {
                 "auth_required": info.get("auth_required").and_then(|v| v.as_bool()).unwrap_or(false),
                 "tls_required": info.get("tls_required").and_then(|v| v.as_bool()).unwrap_or(false),
                 "subscriptions": subscriptions,
+                "jetstream": jetstream,
                 "info": info,
             }),
         );
@@ -624,6 +652,7 @@ impl NatsClient {
                 dispatcher_state,
                 status_tx,
                 reader_abort,
+                js_inbox,
             )
             .await;
         });
@@ -802,8 +831,9 @@ impl NatsClient {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         reader_abort: tokio::task::AbortHandle,
+        js_inbox: String,
     ) {
-        let protocol = Proto::new();
+        let protocol = Proto::with_inbox(js_inbox.clone());
         let mut memory = String::new();
 
         // The connected event runs first, and the reader is already up — so a manual handler
@@ -824,7 +854,7 @@ impl NatsClient {
             tokio::select! {
                 frame = frame_rx.recv() => {
                     let Some(frame) = frame else { break };
-                    let Some(event) = Self::event_for(frame, client_id) else { continue };
+                    let Some(event) = Self::event_for(frame, client_id, &js_inbox) else { continue };
                     flow = Self::ask_and_execute(
                         &protocol,
                         &write_half,
@@ -878,7 +908,7 @@ impl NatsClient {
     ///
     /// Returns `None` for frames the reader should have handled; that is a programming error
     /// rather than a peer error, so it is logged rather than raised.
-    fn event_for(frame: ServerFrame, client_id: ClientId) -> Option<Event> {
+    fn event_for(frame: ServerFrame, client_id: ClientId, js_inbox: &str) -> Option<Event> {
         match frame {
             ServerFrame::Message {
                 subject,
@@ -887,6 +917,17 @@ impl NatsClient {
                 headers,
                 payload,
             } => {
+                if sid == jetstream::INBOX_SID {
+                    if let Some(event) = jetstream::event_for(
+                        js_inbox,
+                        &subject,
+                        reply_to.as_deref(),
+                        &headers,
+                        &payload,
+                    ) {
+                        return Some(event);
+                    }
+                }
                 let (payload, encoding) = payload_for_event(&payload);
                 Some(Event::new(
                     &NATS_CLIENT_MESSAGE_RECEIVED_EVENT,

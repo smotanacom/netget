@@ -1,0 +1,2 @@
+# python-a2s 1.4.2 (Yepoleb, MIT): an A2S client. No dependencies.
+python-a2s==1.4.2 --hash=sha256:c0ff89b978147db62ed102789bf6cf4693c18b328e96edc6575e6b17edf826be

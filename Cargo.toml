@@ -123,6 +123,36 @@ portable-base = [
     "webtransport",
     "jmap",
     "epp",
+    "lmtp",
+    "lpd",
+    "inetd",
+    "rcon",
+    "a2s",
+    "minecraft",
+    "ninep",
+    "zeromq",
+    "smpp",
+    "clickhouse",
+    "msgpack-rpc",
+    "zipkin",
+    "capnp-rpc",
+    "knx",
+    "consul",
+    "milter",
+    "anthropic",
+    "radsec",
+    "dbus",
+    "bfd",
+    "vxlan",
+    "rsync",
+    "pfcp",
+    "matrix",
+    "libp2p",
+    "sunrpc",
+    "guacamole",
+    "activitypub",
+    "wsdiscovery",
+    "x11",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -348,6 +378,36 @@ zenoh = ["dep:zenoh"] # Zenoh router/peer and client over the zenoh runtime (TCP
 lwm2m = ["coap"] # LwM2M 1.1 server and device over the coap feature's CoAP codec
 restconf = ["urlencoding"] # RESTCONF (RFC 8040) server and client
 epp = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots", "quick-xml"] # EPP (RFC 5730/5734) registry server and registrar client
+lmtp = [] # LMTP (RFC 2033) local delivery server and client
+lpd = [] # LPD (RFC 1179) line printer daemon server and client
+inetd = [] # Classic inetd services: Echo, Discard, Daytime, QOTD, Chargen and Time (RFC 862-868), servers and clients
+rcon = [] # Source/Minecraft RCON server and client
+a2s = [] # Steam/Source server query (A2S) server and client
+minecraft = ["dep:flate2"] # Minecraft Java Edition server-list ping and login probe, server and client
+ninep = [] # 9P2000 file server and client
+zeromq = [] # ZeroMQ (ZMTP 3.1) server and client sockets
+smpp = [] # SMPP 3.4 SMSC server and ESME client
+clickhouse = ["dep:lz4_flex", "dep:naive-cityhash"] # ClickHouse native TCP server and client
+msgpack-rpc = [] # MessagePack-RPC server and client (Neovim's RPC)
+zipkin = ["dep:flate2"] # Zipkin collector/read API and span reporter
+capnp-rpc = ["dep:tempfile"] # Cap'n Proto RPC server and client, schema-typed
+knx = [] # KNXnet/IP tunnelling gateway and client
+consul = ["urlencoding"] # Consul agent HTTP API server and client
+milter = [] # Mail filter (milter) protocol server and MTA-side client
+anthropic = [] # Anthropic Messages API server and client
+radsec = ["radius", "tls"] # RADIUS over TLS (RFC 6614) server and client
+dbus = [] # D-Bus server (a small message bus) and client, hand-rolled wire protocol
+bfd = ["dep:md-5", "dep:sha1"] # BFD (RFC 5880/5881/5883) speaker and client, hand-rolled; md-5/sha1 for keyed authentication
+vxlan = [] # VXLAN (RFC 7348) and Geneve (RFC 8926) tunnel endpoint and overlay host, hand-rolled
+rsync = ["dep:md4"] # rsync daemon (rsync://, protocol 29) and client, hand-rolled; md4 for its checksums
+pfcp = [] # PFCP (3GPP TS 29.244, the 5G N4 interface) UPF and SMF, hand-rolled
+matrix = ["urlencoding"] # Matrix homeserver (client-server API v3) and client, hyper HTTP/1.1
+libp2p = ["dep:x25519-dalek", "x25519-dalek/static_secrets", "dep:ed25519-dalek", "dep:sha2", "dep:hkdf", "ring"] # libp2p host and dialler over TCP (multistream-select, Noise XX, yamux, identify, ping), hand-rolled
+sunrpc = [] # ONC RPC portmapper/rpcbind (PMAP v2, RPCBIND v3-v4) server and client, hand-rolled
+guacamole = ["dep:font8x8"] # Apache Guacamole protocol server (in guacd's place) and client of guacd, hand-rolled
+activitypub = ["dep:rsa", "dep:sha2", "urlencoding"] # ActivityPub instance and actor (WebFinger, HTTP Signatures rsa-sha256, signed delivery), hyper + reqwest
+wsdiscovery = ["quick-xml"] # WS-Discovery (SOAP-over-UDP 3702) target service and discovery client, 2005/04 and 2009/01
+x11 = [] # X11 client (X Window System core protocol): windows, properties and events against an X server
 jmap = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"] # JMAP (RFC 8620/8621) server and client
 webtransport = ["dep:rustls", "dep:wtransport", "dep:wtransport-proto", "dep:sha2"] # WebTransport over HTTP/3 (draft-02) server and client
 graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
@@ -653,6 +713,36 @@ dist-windows = [
     "webtransport",
     "jmap",
     "epp",
+    "lmtp",
+    "lpd",
+    "inetd",
+    "rcon",
+    "a2s",
+    "minecraft",
+    "ninep",
+    "zeromq",
+    "smpp",
+    "clickhouse",
+    "msgpack-rpc",
+    "zipkin",
+    "capnp-rpc",
+    "knx",
+    "consul",
+    "milter",
+    "anthropic",
+    "radsec",
+    "dbus",
+    "bfd",
+    "vxlan",
+    "rsync",
+    "pfcp",
+    "matrix",
+    "libp2p",
+    "sunrpc",
+    "guacamole",
+    "activitypub",
+    "wsdiscovery",
+    "x11",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -856,6 +946,36 @@ all-protocols = [
     "webtransport",
     "jmap",
     "epp",
+    "lmtp",
+    "lpd",
+    "inetd",
+    "rcon",
+    "a2s",
+    "minecraft",
+    "ninep",
+    "zeromq",
+    "smpp",
+    "clickhouse",
+    "msgpack-rpc",
+    "zipkin",
+    "capnp-rpc",
+    "knx",
+    "consul",
+    "milter",
+    "anthropic",
+    "radsec",
+    "dbus",
+    "bfd",
+    "vxlan",
+    "rsync",
+    "pfcp",
+    "matrix",
+    "libp2p",
+    "sunrpc",
+    "guacamole",
+    "activitypub",
+    "wsdiscovery",
+    "x11",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -1231,6 +1351,8 @@ xmlrpc = { version = "0.15", optional = true }  # XML-RPC client library
 
 # SAML client (compression for HTTP-Redirect binding)
 flate2 = { version = "1.0", optional = true }
+lz4_flex = { version = "0.11", optional = true }  # ClickHouse native compressed frames (pure Rust)
+naive-cityhash = { version = "0.2", optional = true }  # CityHash128 v1.0.2, the ClickHouse frame checksum (pure Rust)
 
 # OTLP/HTTP receiver: the OpenTelemetry project's generated protobuf message types, without
 # tonic's transport or the serde layer (JSON is walked as serde_json::Value instead).
@@ -1246,7 +1368,9 @@ tor-cert = { version = "0.36", optional = true }  # Tor certificate handling
 tor-cell = { version = "0.36", optional = true }  # Tor cell encoding/decoding (RELAY, CREATE, etc.)
 ed25519-dalek = { version = "2.1", optional = true }  # Ed25519 signatures for relay identity
 sha2 = { version = "0.10", optional = true }  # SHA-256 for ntor handshake
+rsa = { version = "0.9", optional = true, features = ["sha2"] }  # ActivityPub: HTTP signatures (rsa-sha256)
 md-5 = { version = "0.10", optional = true }  # MD5 for the RADIUS authenticators (RFC 2865 §3, §5.2) - already in the tree transitively
+md4 = { version = "0.10", optional = true }  # MD4: rsync protocol 29 file and block checksums, and its daemon auth response
 aes = { version = "0.8", optional = true }  # AES for relay cell encryption
 ctr = { version = "0.9", optional = true }  # CTR mode for AES
 hmac = { version = "0.12", optional = true }  # HMAC for ntor authentication
@@ -1259,6 +1383,7 @@ hkdf = { version = "0.12", optional = true }  # HKDF for key derivation in ntor
 tiny-skia = "0.11"  # 2D graphics rendering
 cosmic-text = "0.12"  # Text rendering with font support
 image = "0.25"  # Image buffer manipulation
+font8x8 = { version = "0.3", optional = true }  # Guacamole: the model's text, rendered to PNG
 sys-locale = "0.3"  # System locale detection for text rendering
 
 # VNC server (Remote Frame Buffer protocol)

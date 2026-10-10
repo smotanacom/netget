@@ -1,0 +1,2 @@
+# The rcon package 2.4.9 (conqp, GPL-3.0): Source and BattlEye RCON clients. No dependencies.
+rcon==2.4.9 --hash=sha256:c0d2477070f189a6b49774133c412473ece40bb452473f160c7373b162dc8929

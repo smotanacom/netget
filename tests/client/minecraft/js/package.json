@@ -1,0 +1,8 @@
+{
+  "name": "netget-minecraft-peer",
+  "private": true,
+  "description": "Unchanged node-minecraft-protocol, a third-party Minecraft Java Edition implementation, as client and as server against NetGet",
+  "dependencies": {
+    "minecraft-protocol": "1.68.0"
+  }
+}

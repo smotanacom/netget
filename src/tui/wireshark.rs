@@ -206,6 +206,10 @@ pub fn wire_for(protocol: &str) -> Wire {
         // ---- transports --------------------------------------------------
         "tcp" | "reverse_shell" | "dc" | "zookeeper" | "svn" => PLAIN_TCP,
         "udp" | "statsd" | "dogstatsd" => PLAIN_UDP,
+        // Steam server query has no dissector in this build (`tshark -G protocols` lists none);
+        // it is UDP, so the TCP fallback would capture nothing.
+        "minecraft" => with_note(PLAIN_TCP, "Wireshark has no Minecraft Java Edition dissector (its mcpe is Bedrock over RakNet): each packet is a VarInt length, a VarInt id and the body; a legacy ping starts FE and is answered FF."),
+        "a2s" => with_note(PLAIN_UDP, "Wireshark has no A2S dissector: each datagram starts FF FF FF FF (FE FF FF FF for split answers), then T/U/V for a query and A/I/D/E for a challenge or answer."),
         "gelf" | "graylog" => Wire {
             transport: Transport::TcpOrUdp,
             decode_as: None,
@@ -335,6 +339,27 @@ pub fn wire_for(protocol: &str) -> Wire {
         ),
         // ---- mail / text -------------------------------------------------
         "smtp" => tcp("smtp"),
+        // LMTP (RFC 2033) has no dissector of its own; it shares SMTP's command and reply syntax,
+        // so the SMTP dissector reads it, apart from naming LHLO as an unknown command.
+        "lmtp" => with_note(tcp("smtp"), "Wireshark has no LMTP dissector; decoded as SMTP, which reads the shared command and reply syntax. Expect one reply per accepted recipient after the final dot."),
+        // Wireshark's `lpd` dissector reads RFC 1179 command codes and the receive-job subcommands.
+        "lpd" => tcp("lpd"),
+        // Wireshark's `9p` dissector decodes 9P2000 (and .u/.L) on TCP; checked with `tshark -d`.
+        "9p" => tcp("9p"),
+        // Wireshark's `msgpack` dissector decodes the values; the RPC envelope is the array
+        // [type, msgid, method, params] it shows.
+        "msgpack-rpc" => tcp("msgpack"),
+        "clickhouse" => with_note(PLAIN_TCP, "Wireshark has no ClickHouse native-protocol dissector: packets start with a VarUInt type (client 0 hello, 1 query, 2 data, 4 ping; server 0 hello, 1 data, 2 exception, 5 end of stream) followed by length-prefixed strings and column blocks."),
+        // Wireshark's `smpp` dissector decodes SMPP 3.4 PDUs, receipts and TLVs.
+        "smpp" => tcp("smpp"),
+        "zeromq" => with_note(PLAIN_TCP, "Wireshark ships no ZMTP dissector (the zeromq project publishes a Lua one): after a 64-byte greeting starting FF and ending the signature 7F, each frame is a flags byte (01 more, 02 long, 04 command) and a 1- or 8-byte size."),
+        // The classic inetd services: Wireshark ships `echo`, `discard`, `daytime`, `chargen`
+        // and `time` dissectors (checked with `tshark -G protocols`); qotd has none.
+        "echo" => tcp("echo"),
+        "discard" => tcp("discard"),
+        "daytime" => tcp("daytime"),
+        "chargen" => tcp("chargen"),
+        "time" => tcp("time"),
         "pop3" => tcp("pop"),
         "imap" => tcp("imap"),
         "nntp" => tcp("nntp"),
@@ -427,6 +452,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         // `nbss`; `smb2` has no `tcp.port` entry of its own, so it cannot be the decode-as.
         "smb" => with_display(tcp("nbss"), "smb2 || smb"),
         "nfs" => with_display(tcp("rpc"), "nfs"),
+        // The portmapper is ONC RPC on TCP and UDP; rpc decodes it and portmap names its calls.
+        "sunrpc" => with_display(either("rpc"), "portmap"),
         "modbus" => tcp("mbtcp"),
         // IPP is an HTTP payload; Wireshark reaches it through the http
         // dissector, which picks ipp by media type.
@@ -453,6 +480,10 @@ pub fn wire_for(protocol: &str) -> Wire {
         "turn" => with_display(udp("stun"), "stun || turnchannel"),
         "coap" => udp("coap"),
         "rip" => udp("rip"),
+        "vxlan" => udp("vxlan"),
+        "pfcp" => udp("pfcp"),
+        "geneve" => udp("geneve"),
+        "bfd" => udp("bfd"),
         "sip" => either("sip"),
         "rtp" => udp("rtp"),
         "rtsp" => tcp("rtsp"),

@@ -5,7 +5,11 @@
 //! `JoinHandle` only detaches the task — the loop kept running and held the
 //! socket, so the port leaked until process exit. These tests start a real
 //! server (TCP via Telnet, UDP via the UDP protocol), stop it, and assert the
-//! port can be rebound.
+//! port can be rebound **as soon as `remove_server` returns**. An abort only
+//! requests cancellation; `remove_server` now waits for the aborted tasks, so a
+//! stop followed by a start on the same port cannot race the runtime. (These
+//! tests used to poll for a second, and two ICS suites that rebound at once
+//! failed on loaded CI runners.)
 //!
 //! No Ollama required — no client ever connects, so no LLM call is made.
 //!
@@ -17,7 +21,6 @@ use netget::state::server::ServerInstance;
 use netget::state::ServerId;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// True if a plain (non-reuse) TCP bind on `addr` succeeds — i.e. the port is free.
 #[cfg(feature = "telnet")]
@@ -35,17 +38,6 @@ fn udp_port_is_free(addr: SocketAddr) -> bool {
 async fn add_placeholder(state: &Arc<AppState>, proto: &str) -> ServerId {
     let server = ServerInstance::new(ServerId::new(0), 0, proto.to_string(), String::new());
     state.add_server(server).await
-}
-
-/// Poll (up to ~1s) for `is_free(addr)` to become true after an async abort.
-async fn wait_until_free(addr: SocketAddr, is_free: impl Fn(SocketAddr) -> bool) -> bool {
-    for _ in 0..50 {
-        if is_free(addr) {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    false
 }
 
 #[cfg(feature = "telnet")]
@@ -85,8 +77,8 @@ async fn stopping_telnet_server_releases_tcp_port() {
     assert!(state.remove_server(server_id).await.is_some());
 
     assert!(
-        wait_until_free(bound, tcp_port_is_free).await,
-        "TCP port {} was not released within 1s after stop — listener leaked",
+        tcp_port_is_free(bound),
+        "TCP port {} was still held when remove_server returned — listener leaked or released late",
         bound.port()
     );
 }
@@ -122,8 +114,8 @@ async fn stopping_udp_server_releases_udp_port() {
     assert!(state.remove_server(server_id).await.is_some());
 
     assert!(
-        wait_until_free(bound, udp_port_is_free).await,
-        "UDP port {} was not released within 1s after stop — recv loop leaked",
+        udp_port_is_free(bound),
+        "UDP port {} was still held when remove_server returned — recv loop leaked or released late",
         bound.port()
     );
 }

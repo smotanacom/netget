@@ -56,6 +56,16 @@ const CONNECTIONLESS_EXCEPTIONS: &[&str] = &[
     // 802.1X is a session machine — EAP identity, challenge, then the admission decision.
     // The gap between request and response is exactly where the model sits.
     "EAPOL",
+    // A BFD session is exactly a connection: discriminators, a state machine, timers, and an
+    // entry that lives as long as the session and is closed when it ends (Down and silent for
+    // a minute). Each packet is interpreted against the last; a quiet spell is the Detection
+    // Time's to judge, never a 10-second sweep's.
+    "BFD",
+    // A KNXnet/IP tunnel is a connection: CONNECT_REQUEST assigns a channel, every tunnelling
+    // request carries a sequence number checked against the last, and the specification's
+    // heartbeat (CONNECTIONSTATE_REQUEST) keeps it alive; a tunnel silent for 120 s is dropped
+    // by the server itself. A 10-second sweep would cut a tunnel that is behaving correctly.
+    "KNX/IP",
     // GELF also serves live TCP sessions, which must survive a slow handler. Its UDP
     // path creates only a temporary entry for one decoded message and explicitly
     // removes it after dispatch on success or error. Chunk reassembly is bounded and
@@ -76,6 +86,12 @@ const CONNECTIONLESS_EXCEPTIONS: &[&str] = &[
     // request visible; its template/session cache expires on a separate owned timer.
     #[cfg(feature = "netflow-v9")]
     "NetFlowV9",
+    // The portmapper serves TCP connections (tracked, and closed when they end) and UDP calls
+    // on the same port. A UDP call creates no per-remote row at all — each datagram is one
+    // call, answered and forgotten — so the idle sweep has nothing to reap there, and must not
+    // reap the TCP rows a slow handler is answering on.
+    #[cfg(feature = "sunrpc")]
+    "SunRPC",
     // SRT is a connection protocol over UDP: a handshake, then ARQ and timestamped delivery
     // owned by srt-tokio. Its row is closed when that connection ends; a quiet publisher
     // between frames is still a live session.

@@ -43,6 +43,22 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
         "raw UDP carries whatever the operator says it does; there is no protocol to register",
     ),
     (
+        "msgpack_rpc",
+        "MessagePack-RPC registers no port: each application picks its own (Neovim listens wherever --listen says)",
+    ),
+    (
+        "capnp_rpc",
+        "Cap'n Proto RPC registers no port: each application's schema and deployment choose one",
+    ),
+    (
+        "dbus",
+        "D-Bus registers no port: buses listen on Unix sockets, and a TCP address names whatever port its bus config chose",
+    ),
+    (
+        "zeromq",
+        "ZeroMQ registers no port: every endpoint is chosen by its application (the guide's examples use 5555)",
+    ),
+    (
         "tls",
         "generic TLS termination; 443 belongs to HTTPS, which this server does not speak",
     ),
@@ -146,6 +162,7 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
     ("carddav", "CardDAV is WebDAV over HTTP(S) on the web server's port, found through /.well-known/carddav or DNS SRV (RFC 6764); no port is assigned"),
     ("srt", "SRT has no assigned port; each deployment picks one (srt-live-transmit and OBS examples use 9000, MediaMTX 8890)"),
     ("wamp", "WAMP runs over WebSocket on the web server's port; no port is assigned (Crossbar.io's 8080 is a convention)"),
+    ("activitypub", "ActivityPub is served over HTTP(S) at the instance's own origin (its ids are URLs); W3C assigns no port, and real instances sit behind 443"),
     ("restconf", "RESTCONF is carried on HTTP(S) at whatever port the web server uses; RFC 8040 assigns none (443 for HTTPS by convention)"),
     ("jmap", "JMAP is served on an HTTPS server's port and found through /.well-known/jmap; RFC 8620 assigns no port of its own"),
     ("webtransport", "WebTransport sessions are extended CONNECT requests on an HTTP/3 server's port; the draft assigns none (443/UDP by convention)"),
@@ -185,6 +202,16 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
     (
         "webrtc",
         "WebRTC media and data ride ICE-negotiated ephemeral UDP ports; there is no fixed one",
+    ),
+    (
+        "anthropic",
+        "the Anthropic API is served over HTTPS 443, which this plain-HTTP server does not speak; \
+         compatible servers pick their own (llama.cpp 8080, LiteLLM 4000)",
+    ),
+    (
+        "milter",
+        "no registry or specification assigns a milter port; each filter's socket is local MTA \
+         configuration and the filters disagree (OpenDKIM 8891, OpenDMARC 8893, rspamd 11332)",
     ),
 ];
 

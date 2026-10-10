@@ -5183,6 +5183,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "font8x8"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "875488b8711a968268c7cf5d139578713097ca4635a76044e8fe8eedf831d07e"
+
+[[package]]
 name = "fontconfig-parser"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7986,6 +7992,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "md4"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7da5ac363534dce5fabf69949225e174fbf111a498bf0ff794c8ea1fba9f3dda"
+dependencies = [
+ "digest 0.10.7",
+]
+
+[[package]]
 name = "md5"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8381,6 +8396,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "naive-cityhash"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fce7b49e1e6d8aa67232ef1c4c936c0af58756eb2db6f65c40bacb39035e7f42"
+
+[[package]]
 name = "nanorand"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8559,6 +8580,7 @@ dependencies = [
  "etcd-client",
  "feed-rs",
  "flate2",
+ "font8x8",
  "form_urlencoded",
  "fs2",
  "futures",
@@ -8596,12 +8618,15 @@ dependencies = [
  "lettre",
  "libc",
  "llama-cpp-2",
+ "lz4_flex 0.11.5",
  "matchit 0.8.6",
  "md-5 0.10.6",
+ "md4",
  "mdns-sd",
  "memmap2",
  "mongodb",
  "mysql_async",
+ "naive-cityhash",
  "native-tls",
  "nectar",
  "netgauze-bgp-pkt",
@@ -8647,6 +8672,7 @@ dependencies = [
  "rfb",
  "ring 0.17.14",
  "rmcp",
+ "rsa",
  "rsntp",
  "rss",
  "rumqttc",

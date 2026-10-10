@@ -72,10 +72,8 @@ desc/param/client:HTTP Proxy/send_http_request/method
 desc/param/client:HTTP Proxy/send_http_request/path
 desc/param/client:HTTP/send_http_request/body
 desc/param/client:HTTP/send_http_request/method
-desc/param/client:HTTP/send_http_request/path
 desc/param/client:HTTP2/send_http2_request/body
 desc/param/client:HTTP2/send_http2_request/method
-desc/param/client:HTTP2/send_http2_request/path
 desc/param/client:ICMP/icmp_connected/event_data/local_addr
 desc/param/client:JSON-RPC/send_jsonrpc_request/id
 desc/param/client:Kafka/commit_offset/topic
@@ -175,7 +173,6 @@ desc/param/client:VNC/send_pointer_event/button_mask
 desc/param/client:VNC/send_pointer_event/x
 desc/param/client:VNC/send_pointer_event/y
 desc/param/client:WebDAV/propfind/depth
-desc/param/client:WebDAV/propfind/path
 desc/param/client:WebDAV/put/content
 desc/param/client:XMPP/send_presence/status
 desc/param/client:ZooKeeper/create_znode/data
@@ -1090,16 +1087,6 @@ log_template/server:Memcached/send_memcached_stats
 log_template/server:Memcached/send_memcached_status
 log_template/server:Memcached/send_memcached_values
 log_template/server:Memcached/send_memcached_version
-log_template/server:RADIUS/radius_access_request/action/send_access_accept
-log_template/server:RADIUS/radius_access_request/action/send_access_challenge
-log_template/server:RADIUS/radius_access_request/action/send_access_reject
-log_template/server:RADIUS/radius_accounting_request/action/send_accounting_response
-log_template/server:RADIUS/radius_status_server/action/send_access_accept
-log_template/server:RADIUS/radius_status_server/action/send_access_reject
-log_template/server:RADIUS/send_access_accept
-log_template/server:RADIUS/send_access_challenge
-log_template/server:RADIUS/send_access_reject
-log_template/server:RADIUS/send_accounting_response
 log_template/server:SSDP/no_response
 log_template/server:SSDP/send_ssdp_notify
 log_template/server:SSDP/send_ssdp_response

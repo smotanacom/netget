@@ -1,0 +1,8 @@
+{
+  "name": "netget-anthropic-ts-peer",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.129.0"
+  }
+}
