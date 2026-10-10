@@ -147,8 +147,9 @@ fn load_actions_file(path: &str) -> Result<Vec<serde_json::Value>> {
                       netget --env javascript -- start http server\n\
                       netget --env llm show version\n\
                   \n\
-                  Server configuration:\n\
-                      netget --listen-addr 0.0.0.0 listen on port 8080\n\
+                  MCP over HTTP (loopback by default; any other bind address needs a token):\n\
+                      netget --mcp-http 8080\n\
+                      NETGET_MCP_TOKEN=$(openssl rand -hex 32) netget --mcp-http 8080 --listen-addr 0.0.0.0\n\
                   \n\
                   Connect a client without a model round-trip:\n\
                       netget --client redis --connect 127.0.0.1:6379\n\

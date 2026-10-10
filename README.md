@@ -359,7 +359,16 @@ Claude Desktop config (`claude_desktop_config.json`):
 
 # Serve MCP over HTTP/SSE (bind address from --listen-addr, default 127.0.0.1)
 netget --mcp-http 8080          # endpoint: http://127.0.0.1:8080/mcp
+
+# Any non-loopback bind requires a bearer token
+NETGET_MCP_TOKEN=$(openssl rand -hex 32) netget --mcp-http 8080 --listen-addr 0.0.0.0
 ```
+
+With a token set — `NETGET_MCP_TOKEN`, or `--mcp-token <TOKEN>` — every request must carry
+`Authorization: Bearer <TOKEN>`. Binding `--listen-addr` to anything but a loopback address
+is refused without one; without a token the endpoint admits loopback `Host`/`Origin` only.
+Prefer the environment variable: a `--mcp-token` argument is visible to every local user in
+the process table.
 
 ### Exposed tools
 
