@@ -802,6 +802,8 @@ pub mod ninep;
 pub mod oci_registry;
 #[cfg(feature = "pfcp")]
 pub mod pfcp;
+#[cfg(feature = "pulsar")]
+pub mod pulsar;
 #[cfg(feature = "radsec")]
 pub mod radsec;
 #[cfg(feature = "rcon")]

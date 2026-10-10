@@ -1366,6 +1366,8 @@ pub mod msgpack_rpc;
 pub mod ninep;
 #[cfg(feature = "pfcp")]
 pub mod pfcp;
+#[cfg(feature = "pulsar")]
+pub mod pulsar;
 #[cfg(feature = "radsec")]
 pub mod radsec;
 #[cfg(feature = "rcon")]
