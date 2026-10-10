@@ -444,6 +444,10 @@ impl ServerRegistry {
         ));
         #[cfg(feature = "knx")]
         self.register(Arc::new(crate::server::knx::actions::KnxProtocol::new()));
+        #[cfg(feature = "consul")]
+        self.register(Arc::new(
+            crate::server::consul::actions::ConsulProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1670,6 +1674,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("Zipkin", "zipkin"),
     ("Cap'n Proto RPC", "capnp-rpc"),
     ("KNX/IP", "knx"),
+    ("Consul", "consul"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),
