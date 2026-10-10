@@ -28,6 +28,21 @@ queries with proper OID values and data types. Tests both basic system OIDs and 
   (two of them duplicated back to back in `test_snmp_basic_get`) waited for something that had
   already happened
 
+### `notification_test.rs`
+
+Net-SNMP both ways, no mock model (a python handler answers):
+
+- `netget_receives_traps_and_informs_from_net_snmp`: `snmptrap` sends a v2c linkDown trap with
+  an integer and a string binding and a v1 enterprise-specific trap (agent 192.0.2.7, specific
+  17); each is asserted field by field as the `snmp_notification` event. `snmpinform` exits 0
+  when the handler acknowledges and times out when it ignores (community `deny`).
+  Mutation-checked: an empty acknowledgement fails it.
+- `net_snmp_trapd_receives_what_netget_sends`: `snmpget` asks the agent for sysName; the handler
+  answers it and sends a v2c trap (uptime 4200, integer, string and Counter32 bindings), a v2c
+  inform (an IpAddress binding) and a v1 trap to `snmptrapd`, whose log is asserted line by
+  line with numeric OIDs (`-On -m ''`); the inform's `snmp_notification_sent` entry reports it
+  acknowledged.
+
 ### `ber_depth_test.rs`
 
 Four unit tests over `SnmpServer::parse_snmp_message`, no server and no mock model. They cover the
@@ -302,13 +317,11 @@ If scripting were enabled:
 
 ### Test Coverage Gaps
 
-0. **Nothing runs these tests in CI.** The blocking `test` job compiles
-   `tcp,http,dns,udp,redis,mcp-stdio`; `registry-audit` is `continue-on-error` and does not run
-   e2e suites. SNMP's Beta rating is therefore only ever re-checked by someone running the suite
-   locally.
+0. **CI**: the `snmp` job in `protocol-pairs.yml` installs Net-SNMP (`snmp`, `snmptrapd`) and
+   runs every `server::snmp` test on each PR.
 1. **SET requests**: No tests for SetRequest (write operations)
 2. **GETBULK**: No tests for GetBulkRequest (SNMPv2c bulk retrieval)
-3. **Traps**: No tests for SNMP traps (proactive notifications)
+3. **Traps**: covered by `notification_test.rs` (v1/v2c traps and v2c informs, both ways)
 4. **Table walking**: No tests for iterative GETNEXT (walking entire table)
 5. **Error responses**: No tests for noSuchName, genErr error responses
 6. **Community string validation**: No tests for wrong community string

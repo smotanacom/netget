@@ -87,11 +87,26 @@ Single integration point:
 - Returns JSON with variables array: `[{oid, type, value}, ...]`
 - Server encodes JSON to BER format and sends to client
 
-**No Traps (Yet)**:
+**Notifications (`notify.rs`)**:
 
-- Async action `send_trap` defined but not fully implemented
-- Would require LLM-initiated UDP send to trap receiver
-- Future enhancement for proactive notifications
+- **Received**: a v1 Trap-PDU, a v2c SNMPv2-Trap or a v2c InformRequest on the agent's socket is
+  not a request. It is decoded (rasn) into one `snmp_notification` event: `kind` (trap/inform),
+  `version`, `community`, `client_ip`, v2c `trap_oid` (snmpTrapOID.0) and `uptime`
+  (sysUpTime.0), v1 `enterprise`, `agent_addr`, `generic_trap`, `specific_trap` and `uptime`,
+  and every other binding as `{oid, type, value}` (integer, string — `encoding: hex` when not
+  printable text — oid, ipaddress, counter, gauge, timeticks, counter64, opaque, null and the
+  v2 exceptions). The handler answers `acknowledge_notification` or `ignore_notification`
+  (or forwards with `send_trap`). An inform gets its Response — request-id and bindings echoed —
+  only on `acknowledge_notification`; ignored, silent or a failed model call
+  (`decision=fail_closed_llm_error`) sends nothing, so the sender retries and gives up.
+- **Sent** by `send_trap` (offered as an async action and on both events): a v2c trap (default),
+  a v2c inform (`inform: true`, resent up to 3 times at 2 s until a Response with its
+  request-id arrives) or a v1 trap (`version: v1`, with `enterprise`, `agent_addr`,
+  `generic_trap`, `specific_trap`). v2c adds sysUpTime.0 (`uptime`, default the time since
+  NetGet started) and snmpTrapOID.0 (`trap_oid`) in front of the model's bindings; at most 64
+  bindings. The send runs as a registered server task beside the request that asked for it,
+  and its outcome — acknowledged or not — is an `snmp_notification_sent` access-log entry.
+  `target` is host or host:port, port 162 when omitted. No SNMPv3.
 
 ### 3. JSON to BER Translation
 
@@ -289,8 +304,8 @@ need to (and cannot) set them.
 - `send_snmp_response` - Send SNMP response with variable bindings
 - `send_snmp_error` - Send error response with a chosen error-status
 - `ignore_request` - Don't respond (client will timeout and retry)
-- `send_trap` - **not implemented**: the executor validates its arguments and returns JSON that the
-  server drops. No datagram is sent. Its description says so
+- `send_trap` - send a v1/v2c trap or a v2c inform (see Notifications above)
+- `acknowledge_notification` / `ignore_notification` - answer an `snmp_notification`
 - Common actions: `show_message`, `update_instruction`, etc.
 
 ### Example LLM Responses
@@ -340,7 +355,7 @@ need to (and cannot) set them.
 }
 ```
 
-**Trap (Future)**:
+**Trap**:
 
 ```json
 {
@@ -348,8 +363,9 @@ need to (and cannot) set them.
     {
       "type": "send_trap",
       "target": "192.168.1.100:162",
+      "trap_oid": "1.3.6.1.6.3.1.1.5.3",
       "variables": [
-        {"oid": "1.3.6.1.4.1.99999.1.0", "type": "string", "value": "Alert: Service down"}
+        {"oid": "1.3.6.1.2.1.2.2.1.1.3", "type": "integer", "value": 3}
       ]
     }
   ]
@@ -404,13 +420,12 @@ exchange).
 
 **Workaround**: LLM can acknowledge SET but won't persist changes. Useful for honeypot scenarios (log SET attempts).
 
-### 3. No Trap Sending
+### 3. Notifications are v1/v2c only
 
-- `send_trap` is advertised as an async action, parses `target` and `variables`, and then returns
-  JSON that nobody sends anywhere. Nothing reaches the network
-- Implementing it means encoding a Trap/Trap-v2 PDU (a different PDU shape from GetResponse) and
-  opening an outbound socket, plus a decision about where traps may be sent
-- Until then the action's own description says NOT IMPLEMENTED, so the LLM is not misled
+- Traps and informs both ways (see Notifications above), but no SNMPv3 notifications and no
+  `snmpTrapAddress`/`snmpTrapCommunity` proxy bindings. A trap is sent from an ephemeral port,
+  not the agent's own socket, and `target` may be any host — the operator's instruction is the
+  only thing deciding where traps go
 
 ### 4. No MIB Loading
 
