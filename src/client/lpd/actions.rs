@@ -243,7 +243,9 @@ impl Command {
                 );
                 let job_name = match v.get("job_name") {
                     None | Some(Value::Null) => None,
-                    Some(Value::String(s)) if s.len() <= 99 && !s.chars().any(char::is_control) => {
+                    Some(Value::String(s))
+                        if s.len() <= 99 && !crate::utils::sanitize::has_controls(s) =>
+                    {
                         Some(s.clone())
                     }
                     _ => bail!("job_name must be a single line of at most 99 characters"),

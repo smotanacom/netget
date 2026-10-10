@@ -26,7 +26,8 @@ pub fn unb64(s: &str) -> Result<Vec<u8>> {
 /// A value as the handler sees it: text when it is UTF-8, otherwise hex, with which one.
 pub fn shown(bytes: &[u8]) -> (String, &'static str) {
     match std::str::from_utf8(bytes) {
-        Ok(s) if !s.chars().any(|c| c.is_control() && c != '\n' && c != '\t') => {
+        // Text is shown as text when its only control characters are line breaks and tabs.
+        Ok(s) if !crate::utils::sanitize::has_controls(&s.replace(['\n', '\t'], "")) => {
             (s.to_string(), "utf8")
         }
         _ => (hex::encode(bytes), "hex"),

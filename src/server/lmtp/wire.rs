@@ -102,10 +102,7 @@ pub fn render_multi(code: u16, lines: &[String]) -> String {
 
 /// Strip control characters so handler text cannot inject a second reply line.
 pub fn sanitize(text: &str) -> String {
-    let cleaned: String = text
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
+    let cleaned = crate::utils::sanitize::line_field(text);
     let trimmed = cleaned.trim();
     let mut out = String::new();
     for c in trimmed.chars() {
@@ -181,7 +178,10 @@ pub fn parse_path(argument: &str, keyword: &str) -> Option<(String, Vec<String>)
     let rest = rest.strip_prefix('<')?;
     let end = rest.find('>')?;
     let address = rest[..end].trim().to_string();
-    if address.len() > 256 || address.chars().any(|c| c.is_control() || c == ' ') {
+    if address.len() > 256
+        || crate::utils::sanitize::has_controls(&address)
+        || address.contains(' ')
+    {
         return None;
     }
     let params = rest[end + 1..]
@@ -195,9 +195,8 @@ pub fn parse_path(argument: &str, keyword: &str) -> Option<(String, Vec<String>)
 pub fn valid_mailbox(address: &str, allow_empty: bool) -> bool {
     (allow_empty || !address.is_empty())
         && address.len() <= 256
-        && !address
-            .chars()
-            .any(|c| c.is_control() || matches!(c, ' ' | '<' | '>'))
+        && !crate::utils::sanitize::has_controls(address)
+        && !address.contains([' ', '<', '>'])
 }
 
 /// Summary of a received message for a handler: headers as fields, the body as text.

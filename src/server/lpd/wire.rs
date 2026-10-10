@@ -144,7 +144,7 @@ impl ControlFile {
             let Some(code) = chars.next() else { continue };
             let value = chars.as_str().to_string();
             ensure!(
-                !value.chars().any(char::is_control),
+                !crate::utils::sanitize::has_controls(&value),
                 "LPD control line contains control characters"
             );
             match code {
@@ -199,9 +199,9 @@ pub fn preview(bytes: &[u8]) -> (Value, bool) {
         }
         Err(_) => return (Value::Null, true),
     };
-    let binary = text
-        .chars()
-        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t' | '\x0c'));
+    // Binary when it holds a control character other than line breaks, tabs and form feeds.
+    let binary =
+        crate::utils::sanitize::has_controls(&text.replace(['\n', '\r', '\t', '\x0c'], ""));
     if binary {
         (Value::Null, true)
     } else {
@@ -212,7 +212,7 @@ pub fn preview(bytes: &[u8]) -> (Value, bool) {
 /// One line of a queue listing, kept free of control characters.
 pub fn clean(text: &str, limit: usize) -> String {
     let mut out = String::new();
-    for c in text.chars().map(|c| if c.is_control() { ' ' } else { c }) {
+    for c in crate::utils::sanitize::line_field(text).chars() {
         if out.len() + c.len_utf8() > limit {
             break;
         }
