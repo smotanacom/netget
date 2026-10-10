@@ -474,6 +474,10 @@ impl ServerRegistry {
         self.register(Arc::new(
             crate::server::matrix::actions::MatrixProtocol::new(),
         ));
+        #[cfg(feature = "sunrpc")]
+        self.register(Arc::new(
+            crate::server::sunrpc::actions::SunRpcProtocol::new(),
+        ));
         #[cfg(feature = "wsdiscovery")]
         self.register(Arc::new(
             crate::server::wsdiscovery::actions::WsDiscoveryProtocol::new(),
@@ -1714,6 +1718,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("rsync", "rsync"),
     ("PFCP", "pfcp"),
     ("Matrix", "matrix"),
+    ("SunRPC", "sunrpc"),
     ("WS-Discovery", "wsdiscovery"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),

@@ -412,6 +412,8 @@ pub mod restconf;
 pub mod rsync;
 #[cfg(feature = "smpp")]
 pub mod smpp;
+#[cfg(feature = "sunrpc")]
+pub mod sunrpc;
 #[cfg(feature = "vxlan")]
 pub mod vxlan;
 #[cfg(feature = "webtransport")]
