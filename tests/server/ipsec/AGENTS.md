@@ -225,6 +225,13 @@ assert!(output_str.contains("IPSec") || output_str.contains("IKE") || output_str
 
 **Expected behavior**: All handshakes logged, no packet loss.
 
+### Log line (`log_template_test.rs`, 0 LLM calls)
+
+`the_info_line_names_the_peer_without_a_registered_connection` drives
+`EventLogContext::log_complete` with the real `ipsec_handshake` event type and no client
+address (the honeypot registers no connection, so `call_llm` has none) and asserts the `[INFO]`
+and `[DEBUG]` lines contain the event's `peer_addr`.
+
 ## Known Issues
 
 ### LLM Stack Selection

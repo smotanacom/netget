@@ -23,7 +23,10 @@ use crate::state::{ClientId, ClientStatus};
 
 use crate::console_error;
 use futures::StreamExt;
+use std::time::Duration;
+use tokio_xmpp::connect::DnsConfig;
 use tokio_xmpp::jid::Jid;
+use tokio_xmpp::xmlstream::Timeouts;
 use tokio_xmpp::{Client as XmppClient, Event as XmppEvent};
 use xmpp_parsers::{
     message::{Lang, Message, MessageType},
@@ -45,11 +48,78 @@ struct ClientData {
     memory: String,
 }
 
+/// How long `connect()` waits for the server to accept the session when the
+/// `session_timeout_secs` startup parameter is not given.
+pub const SESSION_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Largest accepted `session_timeout_secs`.
+pub const MAX_SESSION_TIMEOUT_SECS: u64 = 600;
+
+/// XMPP's client-to-server port (RFC 6120 §14.7), used when `remote_addr` names no port.
+pub const XMPP_CLIENT_PORT: u16 = 5222;
+
+/// The socket address the XMPP client connects to, taken from `remote_addr` alone.
+///
+/// Accepts `IP:port`, `[IPv6]:port`, a bare IP, `host:port` or a bare host; a missing port
+/// is [`XMPP_CLIENT_PORT`]. A host name is resolved by the system resolver as an ordinary
+/// address lookup. The JID plays no part: no SRV record is queried and the JID's domain is
+/// never resolved, so the client connects where it was pointed or not at all.
+///
+/// An empty `remote_addr` is refused, and so is one containing `@`, which is an account
+/// rather than an address; that error does not echo the value, since it may hold a password.
+pub async fn resolve_target(remote_addr: &str) -> Result<SocketAddr> {
+    let addr = remote_addr.trim();
+    if addr.is_empty() {
+        anyhow::bail!(
+            "the XMPP client needs the server's address as remote_addr (\"host:port\", e.g. \
+             \"127.0.0.1:5222\"); it does not look a server up from the JID's domain"
+        );
+    }
+    if addr.contains('@') {
+        anyhow::bail!(
+            "remote_addr must be the XMPP server's address (\"host:port\"), not an account: \
+             pass the account as the 'jid' and 'password' startup parameters"
+        );
+    }
+    if let Ok(socket) = addr.parse::<SocketAddr>() {
+        return Ok(socket);
+    }
+    if let Ok(ip) = addr.parse::<std::net::IpAddr>() {
+        return Ok(SocketAddr::new(ip, XMPP_CLIENT_PORT));
+    }
+    let (host, port) = match addr.rsplit_once(':') {
+        Some((host, port)) => {
+            let port: u16 = port
+                .parse()
+                .with_context(|| format!("remote_addr {:?} has an unusable port", addr))?;
+            (host, port)
+        }
+        None => (addr, XMPP_CLIENT_PORT),
+    };
+    if host.is_empty() || host.contains(':') {
+        anyhow::bail!(
+            "remote_addr {:?} is not \"host:port\" (e.g. \"127.0.0.1:5222\")",
+            addr
+        );
+    }
+    tokio::net::lookup_host((host, port))
+        .await
+        .with_context(|| format!("could not resolve XMPP server host {:?}", host))?
+        .next()
+        .with_context(|| format!("XMPP server host {:?} resolved to no address", host))
+}
+
 /// XMPP client that connects to an XMPP/Jabber server
 pub struct XmppClientConnection;
 
 impl XmppClientConnection {
-    /// Connect to an XMPP server with integrated LLM actions
+    /// Connect to the XMPP server at `remote_addr` and run the session until it ends.
+    ///
+    /// Returns only once the server has accepted the session - tokio-xmpp's `Online` event,
+    /// which follows the TCP connect, STARTTLS, SASL authentication and resource binding - or
+    /// with `Err` when that does not happen within the session timeout. The generic startup
+    /// path marks a client `Connected` as soon as this returns `Ok`, so returning earlier
+    /// would report a session that does not exist.
     pub async fn connect_with_llm_actions(
         remote_addr: String,
         llm_client: OllamaClient,
@@ -58,20 +128,28 @@ impl XmppClientConnection {
         client_id: ClientId,
         startup_params: Option<StartupParams>,
     ) -> Result<SocketAddr> {
-        // Parse JID and password from remote_addr or get from startup params
-        let (jid, password, _server_addr) = Self::parse_connection_info(
-            &remote_addr,
-            startup_params.as_ref(),
-            &app_state,
-            client_id,
-        )
-        .await?;
+        let (jid, password) = Self::credentials(startup_params.as_ref())?;
+        let session_timeout = Self::session_timeout(startup_params.as_ref())?;
+        let target = resolve_target(&remote_addr).await?;
 
-        info!("XMPP client {} connecting as {}", client_id, jid);
-        let _ = status_tx.send(format!("[CLIENT] XMPP client {} connecting...", client_id));
+        info!(
+            "XMPP client {} connecting as {} to {}",
+            client_id, jid, target
+        );
+        let _ = status_tx.send(format!(
+            "[CLIENT] XMPP client {} connecting to {} as {}...",
+            client_id, target, jid
+        ));
 
-        // Create XMPP client
-        let mut xmpp_client = XmppClient::new(jid.clone(), password);
+        // `DnsConfig::Addr` is a plain TCP connect to exactly this socket address: no SRV
+        // lookup and no resolution of the JID's domain, which only names the account and the
+        // stream's `to`.
+        let mut xmpp_client = XmppClient::new_starttls(
+            jid.clone(),
+            password,
+            DnsConfig::addr(&target.to_string()),
+            Timeouts::default(),
+        );
 
         // Store JID in app state
         app_state
@@ -79,16 +157,6 @@ impl XmppClientConnection {
                 client.set_protocol_field("jid".to_string(), serde_json::json!(jid.to_string()));
             })
             .await;
-
-        // Update status
-        app_state
-            .update_client_status(client_id, ClientStatus::Connected)
-            .await;
-        let _ = status_tx.send(format!(
-            "[CLIENT] XMPP client {} connected as {}",
-            client_id, jid
-        ));
-        let _ = status_tx.send("__UPDATE_UI__".to_string());
 
         // Initialize client data
         let client_data = Arc::new(Mutex::new(ClientData {
@@ -103,22 +171,29 @@ impl XmppClientConnection {
         let (stanza_tx, mut stanza_rx) = mpsc::unbounded_channel::<StanzaRequest>();
         let stanza_tx = Arc::new(stanza_tx);
 
-        // Signals the event loop to shut the stream down cleanly (an injected `disconnect`).
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        // Tells the event loop to close the stream: an injected `disconnect`, or this function
+        // giving up on the session. `Notify` keeps the request if the loop is not waiting yet.
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+
+        // The event loop answers this exactly once: the bound JID on the first `Online`, or
+        // why the stream ended before one.
+        let (session_tx, session_rx) =
+            tokio::sync::oneshot::channel::<std::result::Result<Jid, String>>();
 
         // Command channel for injected actions (the dashboard's [ send ]). Registered before
-        // the connected-event LLM call is even started, because a manual `*` rule parks that
-        // call until a human answers it and [ send ] must work throughout.
+        // the session is up, so [ send ] and `disconnect` are reachable while it is pending,
+        // and before the connected-event LLM call, which a manual `*` rule can park.
         let command_rx =
             crate::client::command_support::register_command_channel(&app_state, client_id).await;
         let cmd_stanza_tx = stanza_tx.clone();
         let cmd_state = app_state.clone();
         let cmd_status_tx = status_tx.clone();
+        let cmd_shutdown = shutdown.clone();
         let cmd_task = tokio::spawn(async move {
             Self::command_loop(
                 command_rx,
                 cmd_stanza_tx,
-                shutdown_tx,
+                cmd_shutdown,
                 client_id,
                 cmd_state,
                 cmd_status_tx,
@@ -127,81 +202,31 @@ impl XmppClientConnection {
         });
         app_state.register_client_task(client_id, cmd_task).await;
 
-        // Call the LLM with the connected event in its **own** task rather than inline.
-        // Inline, a parked (manual-rule) or slow call held up `connect()` itself, and - worse
-        // for this feature - nothing would have been draining `stanza_rx` while it waited, so
-        // an injected stanza could not have been written until the call finished.
-        let connect_llm = llm_client.clone();
-        let connect_state = app_state.clone();
-        let connect_status_tx = status_tx.clone();
-        let connect_protocol = protocol.clone();
-        let connect_stanza_tx = stanza_tx.clone();
-        let connect_data = client_data.clone();
-        let connect_jid = jid.to_string();
-        let connect_task = tokio::spawn(async move {
-            let Some(instruction) = connect_state.get_instruction_for_client(client_id).await
-            else {
-                return;
-            };
-            let event = Event::new(
-                &XMPP_CLIENT_CONNECTED_EVENT,
-                serde_json::json!({
-                    "jid": connect_jid,
-                }),
-            );
-            let memory = { connect_data.lock().await.memory.clone() };
-            match call_llm_for_client(
-                &connect_llm,
-                &connect_state,
-                client_id.to_string(),
-                &instruction,
-                &memory,
-                Some(&event),
-                connect_protocol.as_ref(),
-                &connect_status_tx,
-            )
-            .await
-            {
-                Ok(ClientLlmResult {
-                    actions,
-                    memory_updates,
-                }) => {
-                    if let Some(mem) = memory_updates {
-                        connect_data.lock().await.memory = mem;
-                    }
-
-                    // Execute initial actions
-                    for action in actions {
-                        Self::execute_action_result(
-                            action,
-                            connect_protocol.clone(),
-                            connect_stanza_tx.clone(),
-                            client_id,
-                            &connect_status_tx,
-                        )
-                        .await;
-                    }
-                }
-                Err(e) => {
-                    error!("LLM error on XMPP connect for client {}: {}", client_id, e);
-                }
-            }
-        });
-        app_state
-            .register_client_task(client_id, connect_task)
-            .await;
-
         // Spawn event loop that handles both sending and receiving
         // Registered with AppState so stop_client can abort this task —
         // dropping a JoinHandle only detaches it in Tokio.
         let task_registrar = app_state.clone();
+        let loop_llm = llm_client.clone();
+        let loop_state = app_state.clone();
+        let loop_status_tx = status_tx.clone();
+        let loop_protocol = protocol.clone();
+        let loop_stanza_tx = stanza_tx.clone();
+        let loop_data = client_data.clone();
+        let loop_shutdown = shutdown.clone();
         let task_handle = tokio::spawn(async move {
-            loop {
+            let llm_client = loop_llm;
+            let app_state = loop_state;
+            let status_tx = loop_status_tx;
+            let protocol = loop_protocol;
+            let stanza_tx = loop_stanza_tx;
+            let client_data = loop_data;
+            let mut session_tx = Some(session_tx);
+            let end_reason: &'static str = loop {
                 tokio::select! {
-                    // Shut the stream down cleanly on an injected `disconnect`.
-                    _ = &mut shutdown_rx => {
+                    // Close the stream on request.
+                    _ = loop_shutdown.notified() => {
                         info!("XMPP client {} closing the stream on request", client_id);
-                        break;
+                        break "the client was closed";
                     }
                     // Handle outgoing stanzas
                     Some(request) = stanza_rx.recv() => {
@@ -223,6 +248,43 @@ impl XmppClientConnection {
                     // Handle incoming events
                     Some(xmpp_event) = xmpp_client.next() => {
                 trace!("XMPP client {} received event: {:?}", client_id, xmpp_event);
+
+                // `Online` is stream lifecycle, not a stanza: it is acted on here, at once,
+                // rather than queued behind an LLM call.
+                let xmpp_event = match xmpp_event {
+                    XmppEvent::Online { bound_jid, resumed } => {
+                        info!(
+                            "XMPP client {} online as {} (resumed={})",
+                            client_id, bound_jid, resumed
+                        );
+                        let bound = bound_jid.to_string();
+                        app_state
+                            .with_client_mut(client_id, |client| {
+                                client.set_protocol_field(
+                                    "bound_jid".to_string(),
+                                    serde_json::json!(bound),
+                                );
+                            })
+                            .await;
+                        // Neither the first `Online` nor a later one (tokio-xmpp's own
+                        // reconnect to the same address) comes before the server has accepted
+                        // the session, which is what `Connected` means.
+                        app_state
+                            .update_client_status(client_id, ClientStatus::Connected)
+                            .await;
+                        let _ = status_tx.send(format!(
+                            "[CLIENT] XMPP client {} online as {}",
+                            client_id, bound_jid
+                        ));
+                        let _ = status_tx.send("__UPDATE_UI__".to_string());
+                        // The first `Online` releases `connect()`.
+                        if let Some(tx) = session_tx.take() {
+                            let _ = tx.send(Ok(bound_jid));
+                        }
+                        continue;
+                    }
+                    other => other,
+                };
 
                 // Handle event with LLM
                 let mut client_data_lock = client_data.lock().await;
@@ -277,19 +339,33 @@ impl XmppClientConnection {
                     // No more events - connection closed
                     else => {
                         info!("XMPP client {} connection closed", client_id);
-                        break;
+                        break "the XMPP stream ended";
                     }
                 }
-            }
+            };
 
-            info!("XMPP client {} disconnected", client_id);
-            app_state
-                .update_client_status(client_id, ClientStatus::Disconnected)
-                .await;
             // Every exit path lands here: drop the command handle so the dashboard stops
             // offering [ send ] on a dead connection, which also ends `command_loop`. Done
             // before the stream shutdown below, which waits on a peer that may be gone.
             app_state.remove_client_handle(client_id).await;
+            match session_tx.take() {
+                // The session was never established. `connect()` is still waiting and turns
+                // this into its `Err`, which is what sets the client's status, so the status
+                // is left alone here.
+                Some(tx) => {
+                    info!(
+                        "XMPP client {} stopped before the session was established: {}",
+                        client_id, end_reason
+                    );
+                    let _ = tx.send(Err(end_reason.to_string()));
+                }
+                None => {
+                    info!("XMPP client {} disconnected", client_id);
+                    app_state
+                        .update_client_status(client_id, ClientStatus::Disconnected)
+                        .await;
+                }
+            }
             // Orderly stream shutdown; harmless if the peer already went away, and bounded
             // because `close()` waits for a peer that never answers when the stream was never
             // established.
@@ -307,89 +383,146 @@ impl XmppClientConnection {
             .register_client_task(client_id, task_handle)
             .await;
 
-        // Return dummy local address (XMPP handles this internally)
+        // Wait for the server to accept the session.
+        let bound_jid = match tokio::time::timeout(session_timeout, session_rx).await {
+            Ok(Ok(Ok(bound_jid))) => bound_jid,
+            Ok(Ok(Err(reason))) => {
+                return Err(anyhow::anyhow!(
+                    "XMPP client could not establish a session with {}: {}",
+                    target,
+                    reason
+                ));
+            }
+            Ok(Err(_)) => {
+                return Err(anyhow::anyhow!(
+                    "XMPP client's event loop ended before a session with {} was established",
+                    target
+                ));
+            }
+            Err(_) => {
+                shutdown.notify_one();
+                return Err(anyhow::anyhow!(
+                    "XMPP server at {} did not establish a session within {}s (TCP connect, \
+                     STARTTLS, SASL authentication and resource binding all have to succeed; \
+                     tokio-xmpp's reason for a failed attempt is in netget.log)",
+                    target,
+                    session_timeout.as_secs()
+                ));
+            }
+        };
+
+        // The connected-event LLM call runs in its own task, so a parked (manual-rule) or
+        // slow call holds up neither `connect()` nor the event loop that writes stanzas.
+        let connect_llm = llm_client.clone();
+        let connect_state = app_state.clone();
+        let connect_status_tx = status_tx.clone();
+        let connect_protocol = protocol.clone();
+        let connect_stanza_tx = stanza_tx.clone();
+        let connect_data = client_data.clone();
+        let connect_jid = bound_jid.to_string();
+        let connect_task = tokio::spawn(async move {
+            let Some(instruction) = connect_state.get_instruction_for_client(client_id).await
+            else {
+                return;
+            };
+            let event = Event::new(
+                &XMPP_CLIENT_CONNECTED_EVENT,
+                serde_json::json!({
+                    "jid": connect_jid,
+                }),
+            );
+            let memory = { connect_data.lock().await.memory.clone() };
+            match call_llm_for_client(
+                &connect_llm,
+                &connect_state,
+                client_id.to_string(),
+                &instruction,
+                &memory,
+                Some(&event),
+                connect_protocol.as_ref(),
+                &connect_status_tx,
+            )
+            .await
+            {
+                Ok(ClientLlmResult {
+                    actions,
+                    memory_updates,
+                }) => {
+                    if let Some(mem) = memory_updates {
+                        connect_data.lock().await.memory = mem;
+                    }
+
+                    // Execute initial actions
+                    for action in actions {
+                        Self::execute_action_result(
+                            action,
+                            connect_protocol.clone(),
+                            connect_stanza_tx.clone(),
+                            client_id,
+                            &connect_status_tx,
+                        )
+                        .await;
+                    }
+                }
+                Err(e) => {
+                    error!("LLM error on XMPP connect for client {}: {}", client_id, e);
+                }
+            }
+        });
+        app_state
+            .register_client_task(client_id, connect_task)
+            .await;
+
+        // tokio-xmpp owns the socket and does not expose its local address.
         Ok("0.0.0.0:0".parse().unwrap())
     }
 
-    /// Parse connection information from the startup parameters, falling back to
-    /// `remote_addr`.
+    /// The session timeout: the `session_timeout_secs` startup parameter, or
+    /// [`SESSION_TIMEOUT`].
+    fn session_timeout(startup_params: Option<&StartupParams>) -> Result<Duration> {
+        let secs = match startup_params {
+            Some(params) => params.get_optional_u64("session_timeout_secs")?,
+            None => None,
+        };
+        match secs {
+            None => Ok(SESSION_TIMEOUT),
+            Some(secs) if (1..=MAX_SESSION_TIMEOUT_SECS).contains(&secs) => {
+                Ok(Duration::from_secs(secs))
+            }
+            Some(secs) => Err(anyhow::anyhow!(
+                "session_timeout_secs must be between 1 and {}, got {}",
+                MAX_SESSION_TIMEOUT_SECS,
+                secs
+            )),
+        }
+    }
+
+    /// The JID and password to authenticate with, from the `jid` and `password` startup
+    /// parameters.
     ///
-    /// `jid` and `password` are declared startup parameters, so the authoritative source is
-    /// [`ConnectContext::startup_params`](crate::protocol::ConnectContext) — what the caller
-    /// actually supplied. This used to read them off `ClientInstance::protocol_data`, which
-    /// `cli/client_startup.rs` leaves as `Value::Null` and only a client that writes to it
-    /// ever populates; this client writes `jid` there, but not until after it has connected,
-    /// so both were permanently `None` at the one moment they were wanted. Every connection
-    /// therefore fell through to parsing `remote_addr` as `user@domain@password`, and a
-    /// caller who supplied the declared parameters instead was rejected outright.
-    ///
-    /// The `protocol_data` lookup is kept as a second chance, and either source can supply
-    /// one half: whatever is still missing is taken from `remote_addr`.
-    async fn parse_connection_info(
-        remote_addr: &str,
-        startup_params: Option<&StartupParams>,
-        app_state: &Arc<AppState>,
-        client_id: ClientId,
-    ) -> Result<(Jid, String, String)> {
-        // What the caller passed at connect. Propagated, never unwrapped: a wrong-typed value
-        // must name itself in the client's Error status, not kill the task that started it.
-        let (mut jid_str, mut password) = match startup_params {
+    /// `remote_addr` is never a source: it is the server's address and nothing else. Both
+    /// parameters are declared required, so the startup path normally refuses their absence
+    /// before `connect()` runs; the check here covers a direct call.
+    fn credentials(startup_params: Option<&StartupParams>) -> Result<(Jid, String)> {
+        // Propagated, never unwrapped: a wrong-typed value must name itself in the client's
+        // Error status, not kill the task that started it.
+        let (jid_str, password) = match startup_params {
             Some(params) => (
                 params.get_optional_string("jid")?,
                 params.get_optional_string("password")?,
             ),
             None => (None, None),
         };
+        let jid_str = jid_str.context(
+            "the XMPP client needs the 'jid' startup parameter (e.g. \"alice@example.com\")",
+        )?;
+        let password =
+            password.context("the XMPP client needs the 'password' startup parameter")?;
 
-        let stored = app_state
-            .with_client_mut(client_id, |client| {
-                let jid = client
-                    .get_protocol_field("jid")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let pass = client
-                    .get_protocol_field("password")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                (jid, pass)
-            })
-            .await
-            .unwrap_or((None, None));
-        jid_str = jid_str.or(stored.0);
-        password = password.or(stored.1);
-
-        let (jid_str, password) = match (jid_str, password) {
-            (Some(j), Some(p)) => (j, p),
-            (have_jid, have_password) => {
-                // Parse from remote_addr: "user@domain@password"
-                let parts: Vec<&str> = remote_addr.split('@').collect();
-                if parts.len() < 3 {
-                    return Err(anyhow::anyhow!(
-                        "Invalid XMPP address format. Expected: user@domain@password or set jid/password in startup params"
-                    ));
-                }
-                let user = parts[0];
-                let domain = parts[1];
-                let addr_password = parts[2..].join("@"); // In case password contains @
-
-                (
-                    have_jid.unwrap_or_else(|| format!("{}@{}", user, domain)),
-                    have_password.unwrap_or(addr_password),
-                )
-            }
-        };
-
-        let jid: Jid = jid_str.parse().context("Invalid JID format")?;
-
-        // Server address is typically the domain from JID
-        let server_addr = remote_addr
-            .split('@')
-            .nth(1)
-            .and_then(|s| s.split(':').next())
-            .unwrap_or("localhost")
-            .to_string();
-
-        Ok((jid, password, server_addr))
+        let jid: Jid = jid_str
+            .parse()
+            .with_context(|| format!("Invalid JID {:?}", jid_str))?;
+        Ok((jid, password))
     }
 
     /// Handle an XMPP event with LLM
@@ -404,12 +537,10 @@ impl XmppClientConnection {
         status_tx: &mpsc::UnboundedSender<String>,
     ) {
         let event_opt = match xmpp_event {
-            XmppEvent::Online { .. } => {
-                debug!("XMPP client {} online", client_id);
-                None // Already handled in connect
-            }
-            XmppEvent::Disconnected(_e) => {
-                warn!("XMPP client {} disconnected", client_id);
+            // Acted on by the event loop before an event gets here.
+            XmppEvent::Online { .. } => None,
+            XmppEvent::Disconnected(e) => {
+                warn!("XMPP client {} disconnected: {}", client_id, e);
                 None
             }
             XmppEvent::Stanza(stanza) => {
@@ -696,7 +827,7 @@ impl XmppClientConnection {
     async fn command_loop(
         mut command_rx: mpsc::Receiver<crate::state::client_handles::ClientCommand>,
         stanza_tx: Arc<mpsc::UnboundedSender<StanzaRequest>>,
-        shutdown_tx: tokio::sync::oneshot::Sender<()>,
+        shutdown: Arc<tokio::sync::Notify>,
         client_id: ClientId,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
@@ -707,7 +838,6 @@ impl XmppClientConnection {
         use crate::state::AccessLogOwner;
 
         let protocol = XmppClientProtocol::new();
-        let mut shutdown_tx = Some(shutdown_tx);
 
         while let Some(command) = command_rx.recv().await {
             let action = command.action.clone();
@@ -758,9 +888,7 @@ impl XmppClientConnection {
                 // disconnect path (status, handle removal, status_tx). The handle is dropped
                 // here as well so [ send ] disappears immediately rather than after the
                 // stream shutdown.
-                if let Some(tx) = shutdown_tx.take() {
-                    let _ = tx.send(());
-                }
+                shutdown.notify_one();
                 app_state.remove_client_handle(client_id).await;
                 break;
             }

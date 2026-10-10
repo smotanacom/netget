@@ -120,6 +120,35 @@ enum Applied {
 pub struct SyslogClient;
 
 impl SyslogClient {
+    /// Resolve the collector's `host:port` for the UDP transport.
+    ///
+    /// A literal `IP:port` is used as given, with no name lookup. A hostname is resolved and
+    /// its first IPv4 address is taken when it has one, otherwise its first address. UDP has
+    /// no handshake that would reveal an unreachable address and move on to the next, and
+    /// `localhost` commonly resolves to `::1` ahead of `127.0.0.1`, where a collector
+    /// listening on IPv4 alone never receives the message. (The TCP transport resolves
+    /// through `TcpStream::connect`, which tries each address in turn.)
+    async fn resolve_udp_target(remote_addr: &str) -> Result<SocketAddr> {
+        if let Ok(addr) = remote_addr.parse::<SocketAddr>() {
+            return Ok(addr);
+        }
+        let candidates: Vec<SocketAddr> = tokio::net::lookup_host(remote_addr)
+            .await
+            .with_context(|| {
+                format!(
+                    "Could not resolve syslog address {remote_addr:?} (expected host:port, \
+                     e.g. 127.0.0.1:514 or localhost:514)"
+                )
+            })?
+            .collect();
+        candidates
+            .iter()
+            .find(|addr| addr.is_ipv4())
+            .or_else(|| candidates.first())
+            .copied()
+            .with_context(|| format!("Syslog address {remote_addr:?} resolved to no address"))
+    }
+
     /// Connect to a syslog server with integrated LLM actions
     pub async fn connect_with_llm_actions(
         remote_addr: String,
@@ -162,10 +191,7 @@ impl SyslogClient {
             "udp" => {
                 info!("Syslog client {} using UDP to {}", client_id, remote_addr);
 
-                // Parse remote address
-                let remote_sock_addr: SocketAddr = remote_addr
-                    .parse()
-                    .context(format!("Invalid address: {}", remote_addr))?;
+                let remote_sock_addr = Self::resolve_udp_target(&remote_addr).await?;
 
                 // Bind to local port (ephemeral)
                 let local_bind = if remote_sock_addr.is_ipv6() {

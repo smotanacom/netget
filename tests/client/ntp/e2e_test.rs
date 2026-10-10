@@ -1,183 +1,173 @@
-//! E2E tests for NTP client
+//! E2E tests for the NTP client.
 //!
-//! These tests verify NTP client functionality by spawning the actual NetGet binary
-//! and testing client behavior as a black-box.
-//! Test strategy: Use public NTP servers, < 3 LLM calls per test.
+//! These tests spawn the NetGet binary and drive its NTP client as a black box against a local
+//! responder: a plain `tokio::net::UdpSocket` on 127.0.0.1 that answers every 48-byte client
+//! request (mode 3) with a minimal valid server reply (mode 4) carrying a fixed stratum and a
+//! fixed transmit timestamp. Nothing here leaves the machine.
+//!
+//! Each test makes three mocked LLM calls: the startup prompt (`open_client`), the
+//! `ntp_connected` event (answered with `query_time`) and the `ntp_response_received` event.
+//! The response rule matches on the stratum and transmit timestamp the responder sent, so a
+//! reply that did not come from the responder, or was misparsed, leaves it uncalled and fails
+//! `verify_mocks`.
 
 #[cfg(all(test, feature = "ntp"))]
 mod ntp_client_tests {
     use crate::helpers::*;
-    use std::time::Duration;
+    use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::net::UdpSocket;
 
-    /// Test NTP client queries public time server
-    /// LLM calls: 2 (client startup, response processing)
-    #[tokio::test]
-    async fn test_ntp_client_query_time_server() -> E2EResult<()> {
-        // Use Google's public NTP server
-        let client_config = NetGetConfig::new(
-            "Query time.google.com:123 for current time and show the server time.",
-        )
-        .with_mock(|mock| {
-            mock
-                // Mock 1: Client startup
-                .on_instruction_containing("Query time.google.com")
-                .respond_with_actions(serde_json::json!([
-                    {
-                        "type": "open_client",
-                        "remote_addr": "time.google.com:123",
-                        "protocol": "NTP",
-                        "instruction": "Query time server"
-                    }
-                ]))
-                .expect_calls(1)
-                .and()
-                // Mock 2: NTP response received
-                .on_event("ntp_response_received")
-                .respond_with_actions(serde_json::json!([
-                    {
-                        "type": "analyze_response"
-                    }
-                ]))
-                .expect_at_most(1)
-                .and()
-        });
+    /// 2024-01-01T00:00:00Z in NTP seconds (Unix seconds + 2 208 988 800).
+    const RESPONDER_TRANSMIT_NTP_SECS: u32 = 3_913_056_000;
+    /// The same instant in Unix seconds, which is what the client reports to the model.
+    const RESPONDER_TRANSMIT_UNIX_SECS: &str = "1704067200";
 
-        let mut client = start_netget_client(client_config).await?;
-
-        // Give client time to query and process response
-
-        // Verify client output shows NTP response
-        client.wait_for_any(&["ntp", "time"], 30).await;
-        assert!(
-            client.output_contains("ntp").await || client.output_contains("time").await,
-            "Client should show NTP response. Output: {:?}",
-            client.get_output().await
-        );
-
-        println!("✅ NTP client queried time server successfully");
-
-        // Verify mock expectations were met
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
-        client.wait_for_mocks(30).await;
-        client.verify_mocks().await?;
-
-        // Cleanup
-        client.stop().await?;
-
-        Ok(())
+    /// A local NTP server: answers client requests on 127.0.0.1 and counts them.
+    struct NtpResponder {
+        addr: SocketAddr,
+        queries: Arc<AtomicUsize>,
+        task: tokio::task::JoinHandle<()>,
     }
 
-    /// Test NTP client reports stratum level
-    /// LLM calls: 2 (client startup, response processing)
-    #[tokio::test]
-    async fn test_ntp_client_stratum_analysis() -> E2EResult<()> {
-        // Use pool.ntp.org which should return stratum 2-3
-        let client_config = NetGetConfig::new(
-            "Query pool.ntp.org:123 and report the stratum level.",
-        )
-        .with_mock(|mock| {
+    impl Drop for NtpResponder {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    /// The server reply to one client request (RFC 5905 §7.3): LI 0, VN 4, mode 4, the given
+    /// stratum, the request's transmit timestamp echoed as the origin timestamp, and
+    /// `RESPONDER_TRANSMIT_NTP_SECS` as the reference, receive and transmit timestamps.
+    fn ntp_server_reply(request: &[u8], stratum: u8) -> [u8; 48] {
+        let mut reply = [0u8; 48];
+        reply[0] = 0x24; // LI=0, VN=4, Mode=4 (server)
+        reply[1] = stratum;
+        reply[2] = 6; // poll: 64s
+        reply[3] = (-20i8) as u8; // precision: ~1us
+        reply[12..16].copy_from_slice(&[127, 0, 0, 1]); // reference id
+        let ts = RESPONDER_TRANSMIT_NTP_SECS.to_be_bytes();
+        reply[16..20].copy_from_slice(&ts); // reference timestamp
+        reply[24..32].copy_from_slice(&request[40..48]); // origin = client's transmit
+        reply[32..36].copy_from_slice(&ts); // receive timestamp
+        reply[40..44].copy_from_slice(&ts); // transmit timestamp
+        reply
+    }
+
+    async fn start_ntp_responder(stratum: u8) -> E2EResult<NtpResponder> {
+        let socket = UdpSocket::bind("127.0.0.1:0").await?;
+        let addr = socket.local_addr()?;
+        let queries = Arc::new(AtomicUsize::new(0));
+        let counter = queries.clone();
+        let task = tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            loop {
+                let Ok((n, from)) = socket.recv_from(&mut buf).await else {
+                    return;
+                };
+                // Only a 48-byte client-mode (3) request gets an answer.
+                if n != 48 || buf[0] & 0x07 != 3 {
+                    continue;
+                }
+                counter.fetch_add(1, Ordering::SeqCst);
+                let reply = ntp_server_reply(&buf[..48], stratum);
+                let _ = socket.send_to(&reply, from).await;
+            }
+        });
+        Ok(NtpResponder {
+            addr,
+            queries,
+            task,
+        })
+    }
+
+    /// Start a client against `remote_addr` with the three-call mock, wait for the exchange,
+    /// verify the mocks, and return how many requests the responder answered.
+    async fn query_through_client(
+        remote_addr: String,
+        responder: &NtpResponder,
+        stratum: u8,
+    ) -> E2EResult<usize> {
+        let prompt = format!("Query the NTP server at {remote_addr} and report its time.");
+        let open_client_addr = remote_addr.clone();
+        let client_config = NetGetConfig::new(prompt).with_mock(move |mock| {
             mock
-                // Mock 1: Client startup
-                .on_instruction_containing("Query pool.ntp.org")
-                .respond_with_actions(serde_json::json!([
-                    {
-                        "type": "open_client",
-                        "remote_addr": "pool.ntp.org:123",
-                        "protocol": "NTP",
-                        "instruction": "Query NTP server and report stratum"
-                    }
-                ]))
+                // Event rules first: they never match the startup call, which carries no event.
+                .on_event("ntp_connected")
+                .respond_with_actions(serde_json::json!([{"type": "query_time"}]))
                 .expect_calls(1)
                 .and()
-                // Mock 2: NTP response received
                 .on_event("ntp_response_received")
-                .respond_with_actions(serde_json::json!([
-                    {
-                        "type": "analyze_response"
-                    }
-                ]))
-                .expect_at_most(1)
+                .and_event_data_contains("stratum", stratum.to_string())
+                .and_event_data_contains("transmit_timestamp", RESPONDER_TRANSMIT_UNIX_SECS)
+                .respond_with_actions(serde_json::json!([{"type": "analyze_response"}]))
+                .expect_calls(1)
+                .and()
+                .on_instruction_containing("Query the NTP server at")
+                .respond_with_actions(serde_json::json!([{
+                    "type": "open_client",
+                    "remote_addr": open_client_addr,
+                    "protocol": "NTP",
+                    "instruction": "Ask for the time once and report the reply"
+                }]))
+                .expect_calls(1)
                 .and()
         });
 
-        let mut client = start_netget_client(client_config).await?;
-
-        // Give client time to query and process response
-        client.wait_for_mocks(30).await;
-
-        // Verify protocol is NTP
+        let client = start_netget_client(client_config).await?;
         assert_eq!(client.protocol, "NTP", "Client should be NTP protocol");
 
-        println!("✅ NTP client analyzed stratum level");
-
-        // Verify mock expectations were met
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
         client.wait_for_mocks(30).await;
-        client.verify_mocks().await?;
-
-        // Cleanup
+        let verified = client.verify_mocks().await;
+        let answered = responder.queries.load(Ordering::SeqCst);
+        if verified.is_err() {
+            println!(
+                "NTP client output ({} queries answered): {:?}",
+                answered,
+                client.get_output().await
+            );
+        }
         client.stop().await?;
+        verified?;
+        Ok(answered)
+    }
 
+    /// The client queries a literal-IP server, reads the reply, and hands its timestamps to
+    /// the model. One `query_time` puts exactly one request on the wire.
+    #[tokio::test]
+    async fn test_ntp_client_query_time_server() -> E2EResult<()> {
+        let responder = start_ntp_responder(2).await?;
+        let answered = query_through_client(responder.addr.to_string(), &responder, 2).await?;
+        assert_eq!(
+            answered, 1,
+            "one query_time must send exactly one request to the responder"
+        );
         Ok(())
     }
 
-    /// Test NTP client handles multiple queries
-    /// LLM calls: 2 (initial query) - tests single-query limitation
+    /// The stratum in the server's reply reaches the model unchanged.
     #[tokio::test]
-    async fn test_ntp_client_single_query_model() -> E2EResult<()> {
-        // Request time from NTP server
-        let client_config = NetGetConfig::new("Query time.google.com:123 for the current time.")
-            .with_mock(|mock| {
-                mock
-                    // Mock 1: Client startup
-                    .on_instruction_containing("Query time.google.com")
-                    .respond_with_actions(serde_json::json!([
-                        {
-                            "type": "open_client",
-                            "remote_addr": "time.google.com:123",
-                            "protocol": "NTP",
-                            "instruction": "Query time server"
-                        }
-                    ]))
-                    .expect_calls(1)
-                    .and()
-                    // Mock 2: NTP response received
-                    .on_event("ntp_response_received")
-                    .respond_with_actions(serde_json::json!([
-                        {
-                            "type": "analyze_response"
-                        }
-                    ]))
-                    .expect_at_most(1)
-                    .and()
-            });
+    async fn test_ntp_client_stratum_analysis() -> E2EResult<()> {
+        let responder = start_ntp_responder(3).await?;
+        let answered = query_through_client(responder.addr.to_string(), &responder, 3).await?;
+        assert!(answered >= 1, "the responder never received a query");
+        Ok(())
+    }
 
-        let mut client = start_netget_client(client_config).await?;
-
-        // Give client time to complete
-        client.wait_for_mocks(30).await;
-
-        // Verify client is disconnected after single query
-        // (This validates the single-query design documented in CLAUDE.md)
-        let output = client.get_output().await;
-        println!("NTP client output: {:?}", output);
-
-        println!("✅ NTP client completed single query");
-
-        // Verify mock expectations were met
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
-        client.wait_for_mocks(30).await;
-        client.verify_mocks().await?;
-
-        // Cleanup
-        client.stop().await?;
-
+    /// A `host:port` target is resolved: `localhost:<port>` reaches the responder on
+    /// 127.0.0.1, even where `localhost` resolves to `::1` first.
+    #[tokio::test]
+    async fn test_ntp_client_resolves_hostname_target() -> E2EResult<()> {
+        let responder = start_ntp_responder(2).await?;
+        let target = format!("localhost:{}", responder.addr.port());
+        let answered = query_through_client(target, &responder, 2).await?;
+        assert_eq!(
+            answered,
+            1,
+            "the query for localhost:{} never reached the responder on 127.0.0.1",
+            responder.addr.port()
+        );
         Ok(())
     }
 }
