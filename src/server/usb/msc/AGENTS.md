@@ -93,7 +93,15 @@ Now:
   `usb_msc_attached` with `serve_files`.
 - **Opt-in (`startup_params.disk_image`, or `mount_disk`)**: a memory-mapped file the caller
   **named**. That is host state the model refers to — the same shape as `proxy`'s
-  `ca_export_path` — rather than storage the protocol invented.
+  `ca_export_path` — rather than storage the protocol invented. **Named under `image_dir`
+  only** (`image_dir.rs`): `mount_disk` is a sync action, offered on every event the USB/IP
+  peer provokes, and the peer then reads the image as sectors and, with write protection
+  off, writes it in place — so until October 2026 a peer that talked the model into
+  `{"disk_image": "/home/op/.ssh/authorized_keys"}` read that file and could rewrite it.
+  `ImageDir` canonicalises the parent, requires it under the root (the `image_dir` startup
+  parameter, defaulting to NetGet's `usb-images` directory under the platform's local-data
+  dir), requires a plain file name, refuses a symlink, and `DiskImage::open_or_create` opens
+  with `O_NOFOLLOW` for the race it cannot see. `tests/server/usb_msc/image_dir_test.rs`.
 
 `DiskImage::open_or_create` **keeps the size of an image that already exists**; `default_size_mb`
 (10) applies only when creating one. It used to `set_len` to 10 MB unconditionally, which
@@ -143,8 +151,11 @@ created (`size_mb`, default 10). `write_protect` defaults to **true**, matching 
 starts up; a model that wants writes must say so.
 
 ```json
-{"type": "mount_disk", "disk_image": "/path/to/disk.img", "write_protect": false}
+{"type": "mount_disk", "disk_image": "prepared.img", "write_protect": false}
 ```
+
+`disk_image` is resolved against the server's `image_dir`; a path outside it is refused by
+name, before anything is opened.
 
 **eject_disk** — take the medium away. **set_write_protect** — toggle DATA PROTECT on WRITE(10).
 **wait_for_more** — do nothing.
