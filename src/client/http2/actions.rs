@@ -110,7 +110,7 @@ impl Protocol for Http2ClientProtocol {
                     Parameter {
                         name: "path".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Request path (e.g., /api/users)".to_string(),
+                        description: "Request path (e.g., /api/users), resolved against the client's base URL. An absolute URL is accepted only on that same origin; another host needs its own client".to_string(),
                         required: true,
                     },
                     Parameter {
@@ -172,7 +172,7 @@ impl Protocol for Http2ClientProtocol {
                     Parameter {
                         name: "path".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Request path".to_string(),
+                        description: "Request path, resolved against the client's base URL. An absolute URL is accepted only on that same origin; another host needs its own client".to_string(),
                         required: true,
                     },
                     Parameter {

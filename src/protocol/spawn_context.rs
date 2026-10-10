@@ -556,8 +556,11 @@ impl StartupParams {
     }
 }
 
+/// A parameter's value as an error message may show it: masked by the same rule the
+/// redactor applies to a key/value pair (`is_shown_redacted`, which also hides a string
+/// `auth`), and otherwise with any credential nested inside it masked.
 fn diagnostic_value(key: &str, value: &serde_json::Value) -> serde_json::Value {
-    if crate::utils::redact::is_sensitive_key(key) && !value.is_null() {
+    if crate::utils::redact::is_shown_redacted(key, value) {
         serde_json::Value::String(crate::utils::redact::REDACTED.into())
     } else {
         crate::utils::redact::redact_sensitive(value)

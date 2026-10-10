@@ -154,6 +154,11 @@ async fn injected_list_buckets_reaches_the_endpoint() {
         // operation is pointed at the loopback stub and never at AWS.
         remote_addr: Some(format!("http://127.0.0.1:{}", stub.port)),
         instruction: Some("test client".to_string()),
+        // A custom endpoint needs explicit credentials; the stub never checks them.
+        startup_params: Some(serde_json::json!({
+            "access_key_id": "NETGETTESTKEYID",
+            "secret_access_key": "netget-test-secret",
+        })),
         ..Default::default()
     }
     .create(

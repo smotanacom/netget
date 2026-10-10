@@ -101,6 +101,14 @@ impl ActivityFeed {
     }
 
     pub fn push(&mut self, event: Activity) {
+        // Everything in the stream ends up as cells on the operator's real terminal, and
+        // ratatui's `Paragraph` writes ESC, C1 and BEL through verbatim (only `set_string`
+        // filters controls). Peer text reaches here as `[LEVEL]` lines, error strings,
+        // the model's replies quoting a peer, and command output, so this is the one
+        // place to make a `\x1b]52;…\x07` clipboard write or a DSR query into plain text.
+        let mut event = event;
+        event.text = crate::utils::sanitize::multiline(&event.text);
+        event.tag = crate::utils::sanitize::line_field(&event.tag);
         let time = event.at_unix_ms.map(clock).unwrap_or_else(clock_now);
         self.entries.push_back(ActivityEntry {
             seq: self.next_seq,

@@ -127,6 +127,32 @@ The LLM receives events for each message type and can respond with actions:
 - `send_dc_raw_command` - Send raw NMDC command
 - `disconnect` - Disconnect from hub
 
+**Executing the model's answer** (`execute_dc_actions`, used for every event that has an
+open connection, including the `$Lock` and `$Hello` handshake events):
+
+- The memory the event's caller read is copied out of `DcClientState` in its own statement
+  before `call_llm_for_client`, so no guard on the state mutex is held across the model call
+  and the answer can be applied through the same mutex.
+- Actions run in order and each stands alone. One that `execute_action` rejects (unknown
+  name, missing field) or that `apply_dc_action` refuses or cannot write is logged at ERROR,
+  reported as `[WARN] DC client N action '<type>' failed: …` on the status channel, and the
+  rest of the batch still runs.
+- `disconnect` writes `$Quit|`, shuts the write half, sets `DcClientState::quit_requested`
+  and stops the batch; nothing after it is sent. The read loop checks the flag after every
+  message and before processing the next one, so it stops, marks the client `Disconnected`
+  and removes its command handle without waiting for the hub to close. A `disconnect`
+  answered at `$Lock` ends the session before `$Key` is sent.
+- `apply_dc_action` raises no event, so executing an answer never calls the model again.
+
+**Outbound escaping**: free text from an action or startup parameter — chat lines,
+private-message bodies, search queries, `$MyINFO` description and email — goes through
+`escape_nmdc_text`, the DC++ convention: `$` → `&#36;`, `|` → `&#124;`, and a `&` that
+would read as one of those entities or `&amp;` → `&amp;`. Nicknames have no escape in NMDC,
+so `validate_nmdc_nickname` refuses an empty nickname or one containing whitespace, a control
+character, `$`, `|`, `<` or `>` (non-ASCII is fine): the client's own `nickname` at startup,
+before any connection is made, and a `send_dc_private_message` target per action.
+`send_dc_raw_command` is written as given; sending an arbitrary frame is its purpose.
+
 ### 7. Dual Logging
 
 - **DEBUG**: Connection events, authentication flow ("DC client 1 authenticated as 'alice'")
@@ -138,7 +164,7 @@ The LLM receives events for each message type and can respond with actions:
 
 The client requires configuration via startup parameters:
 
-- `nickname` (required) - Nickname to use on the hub
+- `nickname` (required) - Nickname to use on the hub; refused at startup if empty or containing whitespace, a control character, `$`, `|`, `<` or `>`
 - `description` (optional) - Client description (default: "NetGet DC Client")
 - `email` (optional) - Email address
 - `share_size` (optional) - Total bytes shared (fake for testing, default: 0)
@@ -170,9 +196,10 @@ rule can park. `read_until` is not cancellation-safe, so commands are drained by
 Every `send_dc_*` verb yields `ClientActionResult::Custom`, so the generic arm cannot run them;
 `command_loop` routes the result through `apply_dc_action` - the same function the LLM path
 uses - records an `injected_action` access-log entry and replies with `Sent{n}` /
-`Executed` (`send_dc_filelist` writes nothing) / `Disconnected` (writes `$Quit|` and half-closes).
-The read loop removes the client handle on EOF and on read error. Test:
-`tests/client/dc/command_channel_test.rs` (zero LLM calls).
+`Executed` (`send_dc_filelist` writes nothing) / `Disconnected` (writes `$Quit|`, sets
+`quit_requested` and half-closes; the read loop stops at the next frame or at EOF).
+The read loop removes the client handle on EOF, on read error and when a `disconnect` ended
+the session. Test: `tests/client/dc/command_channel_test.rs` (zero LLM calls).
 
 ## LLM Integration
 
@@ -331,16 +358,14 @@ See `actions.rs` for complete action list with examples.
 **Feature**: ✅ **IMPROVED** - Robust message parsing with better error handling
 
 **Implementation**:
-- Proper NMDC private message parsing (`$To: <target> From: <source> $<<source>> <message>`)
+- `parse_private_message` (public) parses `$To: <target> From: <source> $<<source>> <message>`,
+  strips the `<source> ` prefix from the body, and takes every range with `str::get`: an
+  inverted range (`$To: From: bob $<bob> hi`) or one starting inside a multi-byte character
+  is an `Err`, never a panic. A parse error is logged at DEBUG and the message is skipped
+  without a model call.
 - Unicode-aware chat message parsing using char indices
-- Graceful error handling for malformed messages
 - Support for common NMDC commands (Lock, Hello, chat, private messages, search results, user lists, hub info, kick, redirect)
-
-**Improvements**:
-- Private messages now correctly extract target, source, and message fields
-- Chat messages use char-based indexing to support Unicode nicknames and messages
-- Parse errors are logged but don't crash the client
-- Better handling of edge cases (missing delimiters, empty messages, etc.)
+- Inbound text is passed to the model as received; `&#36;`/`&#124;` entities are not decoded
 
 **Remaining Limitations**:
 - Some less common NMDC commands not yet implemented ($GetINFO, $MyINFO, $ConnectToMe, etc.)
@@ -384,12 +409,17 @@ See `actions.rs` for complete action list with examples.
 ```
 
 **Details**:
-- Reconnects automatically if connection drops or initial connection fails
-- Exponential backoff (2s, 4s, 8s, 16s, ..., max 60s)
+- Retries when the **initial** connection fails. A session that drops after it was
+  established is not reconnected: `connect_once` returns as soon as the read loop is spawned,
+  so the retry loop has already returned
+- Exponential backoff from `reconnect_delay_secs` (public): `initial_reconnect_delay_secs`
+  doubled per attempt (2s, 4s, 8s, 16s, ...), capped at `MAX_RECONNECT_DELAY_SECS` (60s). The
+  power and the product saturate, so unlimited attempts and large initial delays reach the
+  cap instead of overflowing
 - Configurable max attempts (0 = unlimited)
-- Emits `dc_client_disconnected` event before each reconnection
-- LLM can observe reconnection progress through events
-- Maintains all connection state (nickname, description, TLS settings)
+- Emits `dc_client_disconnected` before each retry; the model's memory update is kept and
+  any actions it returns are reported as unsent (there is no connection)
+- Each attempt re-uses the nickname, description, email, share size and TLS setting
 
 ### 7. No Hub State Caching
 
@@ -503,3 +533,12 @@ pipe-delimited frames, enforces a 64 KiB frame cap before allocation and a 600 s
 whole-frame deadline, and refuses partial EOF. `tests/client/dc/key_test.rs`
 checks the standard DC++ lock, reserved octets, short challenges and fragmented,
 coalesced, truncated and oversized framing.
+
+`tests/client/dc/session_test.rs` drives the client against a loopback fake hub with the
+in-process mock model and asserts from the hub's side: an action answered at `$Lock` is sent
+and the handshake completes; a failing action does not stop the rest of its batch; model text
+containing `|`/`$` arrives escaped and an invalid private-message target is refused; malformed
+`$To:` frames do not stop the read loop; `disconnect` sends `$Quit|`, closes the client's side
+and ends the read loop while the hub keeps its end open; a nickname containing `|` is refused
+before connecting. It also covers `parse_private_message`, `reconnect_delay_secs`,
+`escape_nmdc_text` and `validate_nmdc_nickname` directly.

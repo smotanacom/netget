@@ -4,3 +4,5 @@ mod command_channel_test;
 mod e2e_test;
 #[cfg(all(test, feature = "xmpp"))]
 mod startup_params_test;
+#[cfg(all(test, feature = "xmpp"))]
+mod target_test;

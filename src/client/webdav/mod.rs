@@ -52,7 +52,14 @@ async fn http_client_for(base_url: &str) -> reqwest::Client {
 
     let owned = base_url.to_string();
     let built = tokio::task::spawn_blocking(move || {
-        crate::llm::ollama_client::client_for_endpoint_with_timeout(&owned, REQUEST_TIMEOUT)
+        crate::llm::ollama_client::configured_for_endpoint(
+            reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .redirect(crate::client::http_fetch::same_origin_redirects()),
+            &owned,
+        )
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
     })
     .await
     .unwrap_or_else(|_| reqwest::Client::new());
@@ -367,11 +374,9 @@ impl WebdavClient {
                         .flatten()
                         .unwrap_or_default();
 
-                    let dest_url = if destination.starts_with("http") {
-                        destination.to_string()
-                    } else {
-                        format!("{}{}", base_url, destination)
-                    };
+                    // On the client's own origin or refused, like the request URL itself.
+                    let dest_url =
+                        crate::client::http_fetch::resolve_same_origin(&base_url, destination)?;
                     headers.push(("Destination".to_string(), dest_url));
                 }
 
@@ -663,11 +668,10 @@ impl WebdavClient {
             .unwrap_or((None, None));
         let base_url = base_url.context("No base URL found")?;
 
-        let url = if path.starts_with("http://") || path.starts_with("https://") {
-            path.clone()
-        } else {
-            format!("{}{}", base_url, path)
-        };
+        // Same origin as `remote_addr` or refused: see `resolve_same_origin`. The `auth`
+        // credential rides on every request as `Authorization: Basic`, so a request to
+        // another host would hand the share password to it.
+        let url = crate::client::http_fetch::resolve_same_origin(&base_url, &path)?;
 
         info!(
             "WebDAV client {} making request: {} {}",

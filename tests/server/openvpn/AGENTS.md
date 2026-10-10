@@ -98,6 +98,14 @@ The reliability layer retransmits, so a specific reply is **not** necessarily th
 UDP tests filter by opcode rather than asserting on whatever arrives first; a test that assumed otherwise would fail for
 a reason that has nothing to do with what it is checking.
 
+### `log_template_test.rs` — the event log lines name the peer, 0 LLM calls
+
+Drives `EventLogContext::log_complete` with the real `openvpn_peer_reset` and
+`openvpn_client_key_exchange` event types and no client address — what `call_llm` has before a
+peer is registered, which for the reset event is always — and asserts the `[INFO]` and
+`[DEBUG]` lines contain the event's `peer_addr`. The key-exchange test also asserts the INFO
+line does not carry the password.
+
 ## Privileges
 
 **No test requires root.** The server has no TUN device, so there is nothing to elevate for. `--dev null` on the client

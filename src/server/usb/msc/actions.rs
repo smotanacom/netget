@@ -190,6 +190,9 @@ type SharedHandler = Arc<std::sync::Mutex<Box<dyn usbip::UsbInterfaceHandler + S
 #[cfg(feature = "usb-msc")]
 pub struct UsbMscProtocol {
     handlers: Arc<std::sync::Mutex<HashMap<ConnectionId, SharedHandler>>>,
+    /// The directory `mount_disk` images must live in. `None` on the registry's instance,
+    /// which only describes the protocol; a spawned server always carries one.
+    image_dir: Option<super::image_dir::ImageDir>,
 }
 
 #[cfg(feature = "usb-msc")]
@@ -204,6 +207,24 @@ impl UsbMscProtocol {
     pub fn new() -> Self {
         Self {
             handlers: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            image_dir: None,
+        }
+    }
+
+    /// The instance a spawned server executes actions on, bound to its image directory.
+    pub fn with_image_dir(image_dir: super::image_dir::ImageDir) -> Self {
+        Self {
+            handlers: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            image_dir: Some(image_dir),
+        }
+    }
+
+    /// The boundary a `disk_image` is checked against: the server's, or the default
+    /// directory for an instance that was never spawned.
+    fn image_dir(&self) -> Result<super::image_dir::ImageDir> {
+        match &self.image_dir {
+            Some(dir) => Ok(dir.clone()),
+            None => super::image_dir::ImageDir::new(None),
         }
     }
 
@@ -333,14 +354,29 @@ impl Protocol for UsbMscProtocol {
             crate::llm::actions::ParameterDefinition {
                 name: "disk_image".to_string(),
                 type_hint: "string".to_string(),
-                description: "OPTIONAL path to a disk image file to serve instead of an \
-                              LLM-supplied volume. Leave it out for the normal case: the device \
-                              then starts with an empty in-memory FAT16 volume and the model \
-                              fills it with serve_files. Naming a path here is host state you \
-                              are choosing to expose; it is created if it does not exist."
+                description: "OPTIONAL disk image file to serve instead of an LLM-supplied \
+                              volume, under image_dir (a relative path is resolved against it). \
+                              Leave it out for the normal case: the device then starts with an \
+                              empty in-memory FAT16 volume and the model fills it with \
+                              serve_files. Naming a file here is host state you are choosing to \
+                              expose; it is created if it does not exist."
                     .to_string(),
                 required: false,
-                example: serde_json::json!("/tmp/prepared.img"),
+                example: serde_json::json!("prepared.img"),
+                default: None,
+            },
+            crate::llm::actions::ParameterDefinition {
+                name: super::image_dir::IMAGE_DIR_PARAM.to_string(),
+                type_hint: "string".to_string(),
+                description: "Directory the startup disk_image and every mount_disk image must \
+                              live in; nothing outside it is opened. The USB/IP peer reads a \
+                              mounted image as sectors and, with write protection off, writes \
+                              it in place, so this is the boundary on what a peer-influenced \
+                              model can expose. Defaults to NetGet's own usb-images directory \
+                              under the platform's local-data dir."
+                    .to_string(),
+                required: false,
+                example: serde_json::json!("/var/lib/netget/usb-images"),
                 default: None,
             },
             crate::llm::actions::ParameterDefinition {
@@ -529,13 +565,24 @@ impl Server for UsbMscProtocol {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<std::net::SocketAddr>> + Send>>
     {
         Box::pin(async move {
+            let image_dir = super::image_dir::ImageDir::new(
+                ctx.startup_params
+                    .as_ref()
+                    .map(|p| p.get_optional_string(super::image_dir::IMAGE_DIR_PARAM))
+                    .transpose()?
+                    .flatten()
+                    .as_deref(),
+            )?;
+            // Confined like a `mount_disk` image: the parameter is model-settable through
+            // `open_server` and the peer reads (and may write) whatever it names.
             let disk_image = ctx
                 .startup_params
                 .as_ref()
                 .map(|p| p.get_optional_string("disk_image"))
                 .transpose()?
                 .flatten()
-                .map(std::path::PathBuf::from);
+                .map(|raw| image_dir.resolve(&raw, "the `disk_image` startup parameter"))
+                .transpose()?;
 
             // Read here rather than through a shared helper so the parameter names appear
             // in this protocol's own source: `tests/startup_param_drift_test.rs` proves a
@@ -559,6 +606,7 @@ impl Server for UsbMscProtocol {
                 ctx.state,
                 ctx.status_tx,
                 ctx.server_id,
+                image_dir,
                 disk_image,
                 first_byte_timeout_secs,
                 idle_timeout_secs,
@@ -655,11 +703,17 @@ impl Server for UsbMscProtocol {
                 }
                 let size_mb = size_mb as u32;
 
-                // Open the image before touching the device: a bad path must not leave the
-                // handler half-remounted.
-                let path = std::path::Path::new(disk_image_path);
-                let disk = super::disk::DiskImage::open_or_create(path, size_mb)
-                    .with_context(|| format!("Failed to open disk image '{}'", disk_image_path))?;
+                // Confined first: the model that chose this path is driven by the peer that
+                // will read the file as sectors. See `image_dir`. Then open the image before
+                // touching the device: a bad path must not leave the handler half-remounted.
+                let path = self
+                    .image_dir()?
+                    .resolve(disk_image_path, "the mount_disk 'disk_image'")?;
+                // The device is looked up before the image is opened, so an action with no
+                // device to mount on creates no image file.
+                self.resolve_handler(&action)?;
+                let disk = super::disk::DiskImage::open_or_create(&path, size_mb)
+                    .with_context(|| format!("Failed to open disk image '{}'", path.display()))?;
                 let sectors = disk.total_sectors();
                 let disk = std::sync::Arc::new(std::sync::Mutex::new(disk));
 
@@ -785,7 +839,9 @@ fn mount_disk_action() -> ActionDefinition {
             Parameter {
                 name: "disk_image".to_string(),
                 type_hint: "string".to_string(),
-                description: "Path to disk image file".to_string(),
+                description: "Disk image file under the server's image_dir directory; a relative \
+                    path is resolved against it, and nothing outside it is opened"
+                    .to_string(),
                 required: true,
             },
             Parameter {
@@ -805,7 +861,7 @@ fn mount_disk_action() -> ActionDefinition {
         ],
         example: json!({
             "type": "mount_disk",
-            "disk_image": "/path/to/disk.img",
+            "disk_image": "prepared.img",
             "write_protect": true
         }),
         log_template: Some(

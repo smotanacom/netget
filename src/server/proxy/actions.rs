@@ -8,6 +8,7 @@
 //! Certificate mode and filter modes are configured through startup parameters,
 //! not actions: the configuration is read once when the server spawns.
 
+use super::filter;
 use super::filter::{HttpsConnectionAction, RequestAction, ResponseAction};
 use crate::llm::actions::{
     protocol_trait::{ActionResult, Protocol, Server},
@@ -352,9 +353,12 @@ impl ProxyProtocol {
 
     /// Modify request before forwarding
     fn execute_handle_request_modify(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let headers = action
+        let headers: Option<std::collections::HashMap<String, String>> = action
             .get("headers")
             .and_then(|v| serde_json::from_value(v.clone()).ok());
+        if let Some(headers) = &headers {
+            filter::check_modify_headers(headers)?;
+        }
 
         let remove_headers = action
             .get("remove_headers")
@@ -364,10 +368,16 @@ impl ProxyProtocol {
             .get("new_path")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        if let Some(path) = &new_path {
+            filter::check_request_target_part("new_path", path)?;
+        }
 
-        let query_params = action
+        let query_params: Option<std::collections::HashMap<String, String>> = action
             .get("query_params")
             .and_then(|v| serde_json::from_value(v.clone()).ok());
+        if let Some(params) = &query_params {
+            filter::check_query_params(params)?;
+        }
 
         let new_body = action
             .get("new_body")
@@ -430,9 +440,12 @@ impl ProxyProtocol {
             Some(_) => Some(parse_status(&action, 0)?),
         };
 
-        let headers = action
+        let headers: Option<std::collections::HashMap<String, String>> = action
             .get("headers")
             .and_then(|v| serde_json::from_value(v.clone()).ok());
+        if let Some(headers) = &headers {
+            filter::check_modify_headers(headers)?;
+        }
 
         let remove_headers = action
             .get("remove_headers")
