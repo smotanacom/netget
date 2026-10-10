@@ -1342,6 +1342,8 @@ pub mod dbus;
 pub mod diameter;
 #[cfg(feature = "epp")]
 pub mod epp;
+#[cfg(feature = "guacamole")]
+pub mod guacamole;
 #[cfg(feature = "inetd")]
 pub mod inetd;
 #[cfg(feature = "jmap")]

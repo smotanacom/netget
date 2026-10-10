@@ -147,6 +147,7 @@ portable-base = [
     "rsync",
     "pfcp",
     "matrix",
+    "guacamole",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -398,6 +399,7 @@ vxlan = [] # VXLAN (RFC 7348) and Geneve (RFC 8926) tunnel endpoint and overlay 
 rsync = ["dep:md4"] # rsync daemon (rsync://, protocol 29) and client, hand-rolled; md4 for its checksums
 pfcp = [] # PFCP (3GPP TS 29.244, the 5G N4 interface) UPF and SMF, hand-rolled
 matrix = ["urlencoding"] # Matrix homeserver (client-server API v3) and client, hyper HTTP/1.1
+guacamole = ["dep:font8x8"] # Apache Guacamole protocol server (in guacd's place) and client of guacd, hand-rolled
 wsdiscovery = ["quick-xml"] # WS-Discovery (SOAP-over-UDP 3702) target service and discovery client, 2005/04 and 2009/01
 x11 = [] # X11 client (X Window System core protocol): windows, properties and events against an X server
 jmap = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"] # JMAP (RFC 8620/8621) server and client
@@ -729,6 +731,7 @@ dist-windows = [
     "rsync",
     "pfcp",
     "matrix",
+    "guacamole",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -958,6 +961,7 @@ all-protocols = [
     "rsync",
     "pfcp",
     "matrix",
+    "guacamole",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -1366,6 +1370,7 @@ hkdf = { version = "0.12", optional = true }  # HKDF for key derivation in ntor
 tiny-skia = "0.11"  # 2D graphics rendering
 cosmic-text = "0.12"  # Text rendering with font support
 image = "0.25"  # Image buffer manipulation
+font8x8 = { version = "0.3", optional = true }  # Guacamole: the model's text, rendered to PNG
 sys-locale = "0.3"  # System locale detection for text rendering
 
 # VNC server (Remote Frame Buffer protocol)
