@@ -1450,9 +1450,24 @@ impl ProxyServer {
             if (new_path.is_some() || query_params.is_some()) && original_parts.len() >= 3 {
                 let method = original_parts[0];
                 let version = original_parts[2];
-                let target = new_path.as_deref().unwrap_or(original_parts[1]);
-                let target = apply_query_params(target, query_params.as_ref());
-                request_line = format!("{} {} {}", method, target, version);
+                // The executor refused these already; a target that still carries
+                // whitespace or a control character keeps the original line rather than
+                // becoming a second request.
+                let target_ok = new_path
+                    .as_deref()
+                    .map(|p| filter::check_request_target_part("new_path", p).is_ok())
+                    .unwrap_or(true)
+                    && query_params
+                        .as_ref()
+                        .map(|q| filter::check_query_params(q).is_ok())
+                        .unwrap_or(true);
+                if target_ok {
+                    let target = new_path.as_deref().unwrap_or(original_parts[1]);
+                    let target = apply_query_params(target, query_params.as_ref());
+                    request_line = format!("{} {} {}", method, target, version);
+                } else {
+                    warn!("Request target modification contains whitespace or a control character; keeping the original request line");
+                }
             }
 
             // Build headers map.
@@ -1480,10 +1495,23 @@ impl ProxyServer {
                 }
             }
 
-            // Add/modify headers
+            // Add/modify headers. The executor refused names that are not tokens, values
+            // with CR/LF and the framing headers; dropping any that still arrive is what
+            // keeps one header from becoming a second request.
             if let Some(add_headers) = headers {
                 for (name, value) in add_headers {
-                    headers_map.insert(name.to_lowercase(), (name.clone(), value.clone()));
+                    if let Err(e) = filter::check_header_name(name)
+                        .and_then(|_| filter::check_header_value(name, value))
+                    {
+                        warn!("Dropping request header modification: {}", e);
+                        continue;
+                    }
+                    let key = name.to_lowercase();
+                    if filter::FRAMING_HEADERS.contains(&key.as_str()) {
+                        warn!("Dropping request header {name:?}: the proxy frames the body itself");
+                        continue;
+                    }
+                    headers_map.insert(key, (name.clone(), value.clone()));
                 }
             }
 
