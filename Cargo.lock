@@ -7988,6 +7988,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "md4"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7da5ac363534dce5fabf69949225e174fbf111a498bf0ff794c8ea1fba9f3dda"
+dependencies = [
+ "digest 0.10.7",
+]
+
+[[package]]
 name = "md5"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8607,6 +8616,7 @@ dependencies = [
  "lz4_flex 0.11.5",
  "matchit 0.8.6",
  "md-5 0.10.6",
+ "md4",
  "mdns-sd",
  "memmap2",
  "mongodb",

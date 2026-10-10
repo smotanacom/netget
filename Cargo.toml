@@ -144,6 +144,7 @@ portable-base = [
     "dbus",
     "bfd",
     "vxlan",
+    "rsync",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -392,6 +393,7 @@ radsec = ["radius", "tls"] # RADIUS over TLS (RFC 6614) server and client
 dbus = [] # D-Bus server (a small message bus) and client, hand-rolled wire protocol
 bfd = ["dep:md-5", "dep:sha1"] # BFD (RFC 5880/5881/5883) speaker and client, hand-rolled; md-5/sha1 for keyed authentication
 vxlan = [] # VXLAN (RFC 7348) and Geneve (RFC 8926) tunnel endpoint and overlay host, hand-rolled
+rsync = ["dep:md4"] # rsync daemon (rsync://, protocol 29) and client, hand-rolled; md4 for its checksums
 wsdiscovery = ["quick-xml"] # WS-Discovery (SOAP-over-UDP 3702) target service and discovery client, 2005/04 and 2009/01
 x11 = [] # X11 client (X Window System core protocol): windows, properties and events against an X server
 jmap = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"] # JMAP (RFC 8620/8621) server and client
@@ -720,6 +722,7 @@ dist-windows = [
     "dbus",
     "bfd",
     "vxlan",
+    "rsync",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -946,6 +949,7 @@ all-protocols = [
     "dbus",
     "bfd",
     "vxlan",
+    "rsync",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -1341,6 +1345,7 @@ tor-cell = { version = "0.36", optional = true }  # Tor cell encoding/decoding (
 ed25519-dalek = { version = "2.1", optional = true }  # Ed25519 signatures for relay identity
 sha2 = { version = "0.10", optional = true }  # SHA-256 for ntor handshake
 md-5 = { version = "0.10", optional = true }  # MD5 for the RADIUS authenticators (RFC 2865 §3, §5.2) - already in the tree transitively
+md4 = { version = "0.10", optional = true }  # MD4: rsync protocol 29 file and block checksums, and its daemon auth response
 aes = { version = "0.8", optional = true }  # AES for relay cell encryption
 ctr = { version = "0.9", optional = true }  # CTR mode for AES
 hmac = { version = "0.12", optional = true }  # HMAC for ntor authentication

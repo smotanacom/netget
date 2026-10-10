@@ -37,6 +37,11 @@ use std::path::{Path, PathBuf};
 /// The count is the number of occurrences allowed in that file. It may only go down.
 const ALLOWED: &[(&str, usize, &str)] = &[
     (
+        "src/server/rsync/wire.rs",
+        1,
+        "An encoding predicate: content_json reports file contents as utf8 only when they have no control characters other than line breaks and tabs, and as hex otherwise. Nothing is filtered.",
+    ),
+    (
         "src/server/vxlan/frame.rs",
         1,
         "An encoding predicate: data_json reports a payload as utf8 only when it has no control characters other than line breaks and tabs, and as hex otherwise. Nothing is filtered.",

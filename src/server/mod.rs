@@ -1368,6 +1368,8 @@ pub mod radsec;
 pub mod rcon;
 #[cfg(feature = "restconf")]
 pub mod restconf;
+#[cfg(feature = "rsync")]
+pub mod rsync;
 #[cfg(feature = "smpp")]
 pub mod smpp;
 #[cfg(feature = "vxlan")]
