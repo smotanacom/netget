@@ -6101,6 +6101,12 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bird2 tshark
           # The package starts a system BIRD; the tests run their own from a temp dir.
           sudo systemctl stop bird || true
+          # BIRD's BFD sockets ask for SO_PRIORITY 7, which needs CAP_NET_ADMIN. Run unprivileged
+          # without it, every BFD socket fails ("SO_PRIORITY: Operation not permitted") and no
+          # session ever leaves Down. The capability on the binary is all it needs; the tests
+          # still run BIRD as the runner user from a temp dir.
+          sudo setcap cap_net_admin+ep "$(command -v bird)"
+          getcap "$(command -v bird)"
           bird --version
           tshark --version | head -1
       - name: Compile bfd as a standalone Cargo feature
