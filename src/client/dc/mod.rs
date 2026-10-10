@@ -80,9 +80,10 @@ pub fn escape_nmdc_text(text: &str) -> String {
 pub fn validate_nmdc_nickname(nickname: &str) -> Result<&str> {
     anyhow::ensure!(
         !nickname.is_empty()
-            && !nickname.chars().any(|c| {
-                c.is_whitespace() || c.is_control() || matches!(c, '$' | '|' | '<' | '>')
-            }),
+            && !crate::utils::sanitize::has_controls(nickname)
+            && !nickname
+                .chars()
+                .any(|c| c.is_whitespace() || matches!(c, '$' | '|' | '<' | '>')),
         "invalid NMDC nickname {:?}: it must be non-empty and contain no whitespace, control \
          characters, '$', '|', '<' or '>'",
         nickname
