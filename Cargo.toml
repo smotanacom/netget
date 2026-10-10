@@ -137,6 +137,7 @@ portable-base = [
     "zipkin",
     "capnp-rpc",
     "knx",
+    "consul",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -376,6 +377,7 @@ msgpack-rpc = [] # MessagePack-RPC server and client (Neovim's RPC)
 zipkin = ["dep:flate2"] # Zipkin collector/read API and span reporter
 capnp-rpc = ["dep:tempfile"] # Cap'n Proto RPC server and client, schema-typed
 knx = [] # KNXnet/IP tunnelling gateway and client
+consul = ["urlencoding"] # Consul agent HTTP API server and client
 jmap = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"] # JMAP (RFC 8620/8621) server and client
 webtransport = ["dep:rustls", "dep:wtransport", "dep:wtransport-proto", "dep:sha2"] # WebTransport over HTTP/3 (draft-02) server and client
 graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
@@ -695,6 +697,7 @@ dist-windows = [
     "zipkin",
     "capnp-rpc",
     "knx",
+    "consul",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -912,6 +915,7 @@ all-protocols = [
     "zipkin",
     "capnp-rpc",
     "knx",
+    "consul",
     "sflow",
     "prometheus-remote-write",
     "ssh",

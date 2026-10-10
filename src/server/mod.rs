@@ -1330,6 +1330,8 @@ pub mod a2s;
 pub mod capnp_rpc;
 #[cfg(feature = "clickhouse")]
 pub mod clickhouse;
+#[cfg(feature = "consul")]
+pub mod consul;
 #[cfg(feature = "diameter")]
 pub mod diameter;
 #[cfg(feature = "epp")]
