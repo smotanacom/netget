@@ -40,10 +40,13 @@ pub static IPSEC_HANDSHAKE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         accept_connection_action(),
         reject_connection_action(),
     ])
+    // The sender is named from `peer_addr`, which the event data always carries. The
+    // `client_ip` enrichment comes from a registered connection, and IKE here is
+    // connectionless: `call_llm` is given no connection id for this event.
     .with_log_template(
         LogTemplate::new()
-            .with_info("{client_ip} IKE {exchange_type} ({duration_ms}ms)")
-            .with_debug("IKE handshake from {client_ip}: {ike_version} {exchange_type}")
+            .with_info("{peer_addr} IKE {exchange_type} ({duration_ms}ms)")
+            .with_debug("IKE handshake from {peer_addr}: {ike_version} {exchange_type}")
             .with_trace("IKE handshake: {json_pretty(.)}"),
     )
 });

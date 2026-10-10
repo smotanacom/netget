@@ -73,7 +73,12 @@ needed or started.
 the regression guard for "register the channel **before** the connected-event LLM call" — if
 registration moves after it, a parked connect event makes this poll time out.
 
-Two tests, one per transport, because the byte count differs: UDP reports the datagram, TCP
+Two of the tests, one per transport, because the byte count differs: UDP reports the datagram, TCP
 reports the message **plus** its framing newline. The collectors are a plain `UdpSocket` and a
 plain `TcpListener`; both compare the reported `Sent { bytes_sent }` against what actually
 arrived and check the RFC 5424 PRI (`local0`/`info` = 134) and the message text.
+
+`injected_syslog_message_reaches_a_hostname_target_over_udp` opens the client on
+`localhost:<port>` with the collector bound to 127.0.0.1 only. The UDP transport resolves a
+`host:port` and prefers its IPv4 address, so the datagram arrives even where `localhost`
+resolves to `::1` first.

@@ -62,11 +62,11 @@ impl Protocol for Socks5Protocol {
             .implementation("Manual SOCKS5 protocol (RFC 1928)")
             .llm_control("Auth allow/deny, connection allow/deny, MITM data forward/modify/close")
             // Not "curl --socks5", which this claimed and which no test does. The peer in
-            // tests/server/socks5/test.rs is a SOCKS5 client hand-written inside the test
+            // tests/server/socks5/e2e_test.rs is a SOCKS5 client hand-written inside the test
             // over a raw TcpStream -- an independent reading of RFC 1928, not an independent
             // implementation, so it does not clear the bar for Beta.
             .e2e_testing(
-                "A SOCKS5 client hand-written in tests/server/socks5/test.rs (raw TcpStream, \
+                "A SOCKS5 client hand-written in tests/server/socks5/e2e_test.rs (raw TcpStream, \
                  RFC 1928/1929 by hand): no-auth and username/password handshakes, CONNECT by \
                  IPv4 and by domain, a refusal, and an HTTP exchange through a MITM tunnel. No \
                  third-party SOCKS5 client has been run against it.",
