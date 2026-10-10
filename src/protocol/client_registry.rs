@@ -666,6 +666,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::rtp::actions::RtpClientProtocol::new(),
         ));
+        #[cfg(feature = "rtsp")]
+        self.register(Arc::new(
+            crate::client::rtsp::actions::RtspClientProtocol::new(),
+        ));
         #[cfg(feature = "wsdiscovery")]
         self.register(Arc::new(
             crate::client::wsdiscovery::actions::WsDiscoveryClientProtocol::new(),
@@ -1225,6 +1229,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("PFCP", "pfcp"),
     ("Matrix", "matrix"),
     ("RTP", "rtp"),
+    ("RTSP", "rtsp"),
     ("WS-Discovery", "wsdiscovery"),
     ("X11", "x11"),
     ("HTTP", "http"),

@@ -95,6 +95,100 @@ struct Stream {
     last_seen: crate::utils::clock::Instant,
 }
 
+/// Inbound RTP accounting per SSRC, shared with the RTSP client: a start event for a new
+/// stream, and an end event (loss, length, decoded tone and level) once it goes quiet.
+#[derive(Default)]
+pub struct Tracker {
+    streams: HashMap<u32, Stream>,
+}
+
+impl Tracker {
+    /// Account one RTP datagram; the `rtp_stream_started` data when it opens a stream.
+    pub fn on_rtp(&mut self, data: &[u8], from: SocketAddr) -> Option<Value> {
+        let h = media::parse_rtp(data)?;
+        let payload = &data[data.len() - h.payload_len..];
+        let now = crate::utils::clock::Instant::now();
+        let mut started = None;
+        if !self.streams.contains_key(&h.ssrc) {
+            if self.streams.len() >= MAX_STREAMS {
+                return None;
+            }
+            let codec = match h.payload_type {
+                0 => "pcmu",
+                8 => "pcma",
+                _ => "unknown",
+            };
+            started = Some(
+                json!({"ssrc": h.ssrc, "payload_type": h.payload_type, "codec": codec, "from": from.to_string()}),
+            );
+            self.streams.insert(
+                h.ssrc,
+                Stream {
+                    payload_type: h.payload_type,
+                    first_seq: h.sequence,
+                    last_seq: h.sequence,
+                    first_ts: h.timestamp,
+                    last_ts: h.timestamp,
+                    last_frame_len: 0,
+                    packets: 0,
+                    octets: 0,
+                    samples: Vec::new(),
+                    last_seen: now,
+                },
+            );
+        }
+        if let Some(s) = self.streams.get_mut(&h.ssrc) {
+            s.packets += 1;
+            s.octets += h.payload_len as u64;
+            s.last_seen = now;
+            // Sequence numbers wrap; a packet "after" the last within half the space is newer.
+            if h.sequence.wrapping_sub(s.last_seq) < 0x8000 {
+                s.last_seq = h.sequence;
+                s.last_ts = h.timestamp;
+                s.last_frame_len = h.payload_len;
+            }
+            if s.samples.len() < MAX_ANALYSED_SAMPLES {
+                let decode: Option<fn(u8) -> i16> = match s.payload_type {
+                    0 => Some(ulaw_to_linear),
+                    8 => Some(alaw_to_linear),
+                    _ => None,
+                };
+                if let Some(d) = decode {
+                    s.samples.extend(payload.iter().map(|b| d(*b)));
+                }
+            }
+        }
+        started
+    }
+
+    /// The `rtp_stream_ended` data of every stream quiet for `STREAM_IDLE`, which are dropped.
+    pub fn sweep(&mut self) -> Vec<Value> {
+        let now = crate::utils::clock::Instant::now();
+        let done: Vec<u32> = self
+            .streams
+            .iter()
+            .filter(|(_, s)| now.duration_since(s.last_seen) >= STREAM_IDLE)
+            .map(|(k, _)| *k)
+            .collect();
+        done.into_iter()
+            .filter_map(|ssrc| self.streams.remove(&ssrc).map(|s| ended(ssrc, &s)))
+            .collect()
+    }
+}
+
+fn ended(ssrc: u32, s: &Stream) -> Value {
+    let expected = u64::from(s.last_seq.wrapping_sub(s.first_seq)) + 1;
+    let samples = u64::from(s.last_ts.wrapping_sub(s.first_ts)) + s.last_frame_len as u64;
+    let mut data = json!({"ssrc": ssrc, "packets": s.packets, "lost": expected.saturating_sub(s.packets),
+                          "octets": s.octets, "duration_ms": samples * 1000 / u64::from(media::G711_CLOCK_HZ)});
+    if !s.samples.is_empty() {
+        let (tone, level) = analyse(&s.samples, f64::from(media::G711_CLOCK_HZ));
+        data["tone_hz"] = json!(tone.map(|t| t.round()));
+        data["level_dbfs"] = json!((level * 10.0).round() / 10.0);
+    }
+    data
+}
+
 pub async fn connect(ctx: ConnectContext) -> Result<SocketAddr> {
     let listen = ctx
         .startup_params
@@ -265,19 +359,6 @@ async fn send_stream(
     let _ = events.try_send((Event::new(&actions::SENT_EVENT, data), depth));
 }
 
-fn ended(ssrc: u32, s: &Stream) -> Value {
-    let expected = u64::from(s.last_seq.wrapping_sub(s.first_seq)) + 1;
-    let samples = u64::from(s.last_ts.wrapping_sub(s.first_ts)) + s.last_frame_len as u64;
-    let mut data = json!({"ssrc": ssrc, "packets": s.packets, "lost": expected.saturating_sub(s.packets),
-                          "octets": s.octets, "duration_ms": samples * 1000 / u64::from(media::G711_CLOCK_HZ)});
-    if !s.samples.is_empty() {
-        let (tone, level) = analyse(&s.samples, f64::from(media::G711_CLOCK_HZ));
-        data["tone_hz"] = json!(tone.map(|t| t.round()));
-        data["level_dbfs"] = json!((level * 10.0).round() / 10.0);
-    }
-    data
-}
-
 async fn session(
     ctx: &ConnectContext,
     socket: Arc<UdpSocket>,
@@ -287,7 +368,7 @@ async fn session(
     events: mpsc::Sender<(Event, usize)>,
 ) {
     let log = Log::new(Some(&ctx.status_tx));
-    let mut streams: HashMap<u32, Stream> = HashMap::new();
+    let mut tracker = Tracker::default();
     let mut buf = vec![0u8; 2048];
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     let (cut_tx, cut_rx) = tokio::sync::watch::channel(0u64);
@@ -302,45 +383,14 @@ async fn session(
                     let _ = events.try_send((Event::new(&actions::RTCP_EVENT, json!({"packet_type": data[1], "ssrc": ssrc, "from": from.to_string()})), 0));
                     continue;
                 }
-                let Some(h) = media::parse_rtp(data) else { continue };
-                let payload = &data[n - h.payload_len..];
-                let now = crate::utils::clock::Instant::now();
-                if !streams.contains_key(&h.ssrc) {
-                    if streams.len() >= MAX_STREAMS {
-                        continue;
-                    }
-                    let codec = match h.payload_type { 0 => "pcmu", 8 => "pcma", _ => "unknown" };
-                    let _ = events.try_send((Event::new(&actions::STREAM_STARTED_EVENT,
-                        json!({"ssrc": h.ssrc, "payload_type": h.payload_type, "codec": codec, "from": from.to_string()})), 0));
-                    streams.insert(h.ssrc, Stream { payload_type: h.payload_type, first_seq: h.sequence, last_seq: h.sequence, first_ts: h.timestamp,
-                        last_ts: h.timestamp, last_frame_len: 0, packets: 0, octets: 0, samples: Vec::new(), last_seen: now });
-                }
-                if let Some(s) = streams.get_mut(&h.ssrc) {
-                    s.packets += 1;
-                    s.octets += h.payload_len as u64;
-                    s.last_seen = now;
-                    // Sequence numbers wrap; a packet "after" the last within half the space is newer.
-                    if h.sequence.wrapping_sub(s.last_seq) < 0x8000 {
-                        s.last_seq = h.sequence;
-                        s.last_ts = h.timestamp;
-                        s.last_frame_len = h.payload_len;
-                    }
-                    if s.samples.len() < MAX_ANALYSED_SAMPLES {
-                        let decode: Option<fn(u8) -> i16> = match s.payload_type { 0 => Some(ulaw_to_linear), 8 => Some(alaw_to_linear), _ => None };
-                        if let Some(d) = decode {
-                            s.samples.extend(payload.iter().map(|b| d(*b)));
-                        }
-                    }
+                if let Some(started) = tracker.on_rtp(data, from) {
+                    let _ = events.try_send((Event::new(&actions::STREAM_STARTED_EVENT, started), 0));
                 }
                 continue;
             }
             _ = tick.tick() => {
-                let now = crate::utils::clock::Instant::now();
-                let done: Vec<u32> = streams.iter().filter(|(_, s)| now.duration_since(s.last_seen) >= STREAM_IDLE).map(|(k, _)| *k).collect();
-                for ssrc in done {
-                    if let Some(s) = streams.remove(&ssrc) {
-                        let _ = events.try_send((Event::new(&actions::STREAM_ENDED_EVENT, ended(ssrc, &s)), 0));
-                    }
+                for data in tracker.sweep() {
+                    let _ = events.try_send((Event::new(&actions::STREAM_ENDED_EVENT, data), 0));
                 }
                 continue;
             }

@@ -412,6 +412,8 @@ pub mod restconf;
 pub mod rsync;
 #[cfg(feature = "rtp")]
 pub mod rtp;
+#[cfg(feature = "rtsp")]
+pub mod rtsp;
 #[cfg(feature = "smpp")]
 pub mod smpp;
 #[cfg(feature = "vxlan")]
