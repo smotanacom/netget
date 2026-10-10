@@ -5,7 +5,7 @@
 //! Creating one needs root, so outside root every `ip` command goes through `sudo -n`, which
 //! is passwordless on CI runners. Neither available is a **failure** naming what to do, not a
 //! skip. Linux only.
-#![allow(dead_code)] // compiled into every test target with the feature; used by two
+#![allow(dead_code)] // compiled into every test target with the features; used by a few
 use std::net::Ipv4Addr;
 use std::process::{Command, Output};
 

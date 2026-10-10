@@ -478,6 +478,10 @@ impl ServerRegistry {
         self.register(Arc::new(
             crate::server::libp2p::actions::Libp2pProtocol::new(),
         ));
+        #[cfg(feature = "sunrpc")]
+        self.register(Arc::new(
+            crate::server::sunrpc::actions::SunRpcProtocol::new(),
+        ));
         #[cfg(feature = "wsdiscovery")]
         self.register(Arc::new(
             crate::server::wsdiscovery::actions::WsDiscoveryProtocol::new(),
@@ -1719,6 +1723,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("PFCP", "pfcp"),
     ("Matrix", "matrix"),
     ("libp2p", "libp2p"),
+    ("SunRPC", "sunrpc"),
     ("WS-Discovery", "wsdiscovery"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),

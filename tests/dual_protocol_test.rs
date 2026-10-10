@@ -136,6 +136,7 @@ fn golden_duals_map() {
         "PFCP",
         "Matrix",
         "libp2p",
+        "SunRPC",
         "WS-Discovery",
         "Nostr",
         "Vault",

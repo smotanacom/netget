@@ -666,6 +666,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::libp2p::actions::Libp2pClientProtocol::new(),
         ));
+        #[cfg(feature = "sunrpc")]
+        self.register(Arc::new(
+            crate::client::sunrpc::actions::SunRpcClientProtocol::new(),
+        ));
         #[cfg(feature = "wsdiscovery")]
         self.register(Arc::new(
             crate::client::wsdiscovery::actions::WsDiscoveryClientProtocol::new(),
@@ -1225,6 +1229,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("PFCP", "pfcp"),
     ("Matrix", "matrix"),
     ("libp2p", "libp2p"),
+    ("SunRPC", "sunrpc"),
     ("WS-Discovery", "wsdiscovery"),
     ("X11", "x11"),
     ("HTTP", "http"),

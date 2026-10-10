@@ -81,6 +81,12 @@ const CONNECTIONLESS_EXCEPTIONS: &[&str] = &[
     // request visible; its template/session cache expires on a separate owned timer.
     #[cfg(feature = "netflow-v9")]
     "NetFlowV9",
+    // The portmapper serves TCP connections (tracked, and closed when they end) and UDP calls
+    // on the same port. A UDP call creates no per-remote row at all — each datagram is one
+    // call, answered and forgotten — so the idle sweep has nothing to reap there, and must not
+    // reap the TCP rows a slow handler is answering on.
+    #[cfg(feature = "sunrpc")]
+    "SunRPC",
     // SRT is a connection protocol over UDP: a handshake, then ARQ and timestamped delivery
     // owned by srt-tokio. Its row is closed when that connection ends; a quiet publisher
     // between frames is still a live session.
