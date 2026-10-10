@@ -323,6 +323,14 @@ jobs:
     # Leave room for cold compilation, every evidence group, and artifact upload.
     timeout-minutes: 120
     continue-on-error: true
+    # At 273 protocol features the --all-features test build was killed mid-compile
+    # (SIGTERM from the runner's memory-pressure killer). Debug info is most of what
+    # rustc and the linker hold for it, and these audits never read a backtrace's line
+    # numbers; fewer parallel jobs bound the peak.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@v4
 
