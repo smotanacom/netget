@@ -495,6 +495,8 @@ pub mod lmtp;
 pub mod lpd;
 #[cfg(feature = "minecraft")]
 pub mod minecraft;
+#[cfg(feature = "msgpack-rpc")]
+pub mod msgpack_rpc;
 #[cfg(feature = "ninep")]
 pub mod ninep;
 #[cfg(feature = "rcon")]
