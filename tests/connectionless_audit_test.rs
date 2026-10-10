@@ -56,6 +56,11 @@ const CONNECTIONLESS_EXCEPTIONS: &[&str] = &[
     // 802.1X is a session machine — EAP identity, challenge, then the admission decision.
     // The gap between request and response is exactly where the model sits.
     "EAPOL",
+    // A BFD session is exactly a connection: discriminators, a state machine, timers, and an
+    // entry that lives as long as the session and is closed when it ends (Down and silent for
+    // a minute). Each packet is interpreted against the last; a quiet spell is the Detection
+    // Time's to judge, never a 10-second sweep's.
+    "BFD",
     // GELF also serves live TCP sessions, which must survive a slow handler. Its UDP
     // path creates only a temporary entry for one decoded message and explicitly
     // removes it after dispatch on success or error. Chunk reassembly is bounded and

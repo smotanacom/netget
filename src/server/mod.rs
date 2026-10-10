@@ -1328,6 +1328,8 @@ pub mod wamp;
 pub mod a2s;
 #[cfg(feature = "anthropic")]
 pub mod anthropic;
+#[cfg(feature = "bfd")]
+pub mod bfd;
 #[cfg(feature = "capnp-rpc")]
 pub mod capnp_rpc;
 #[cfg(feature = "clickhouse")]

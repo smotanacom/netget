@@ -477,6 +477,7 @@ pub fn wire_for(protocol: &str) -> Wire {
         "turn" => with_display(udp("stun"), "stun || turnchannel"),
         "coap" => udp("coap"),
         "rip" => udp("rip"),
+        "bfd" => udp("bfd"),
         "sip" => either("sip"),
         "rtp" => udp("rtp"),
         "rtsp" => tcp("rtsp"),
