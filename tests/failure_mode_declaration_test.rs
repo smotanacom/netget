@@ -92,6 +92,9 @@ const DOCUMENTED_SILENT: &[&str] = &[
     "knx",
     // sFlow v5 UDP collection has no application reply or negative acknowledgement.
     "sflow",
+    // BFD has no refusal: a session the model does not accept is one the speaker never
+    // answers, and any Control packet it sent would move the peer's session towards Up.
+    "bfd",
     // RFC 3954 UDP flow collection has no acknowledgement or refusal message.
     "netflow_v9",
     "ipsec",

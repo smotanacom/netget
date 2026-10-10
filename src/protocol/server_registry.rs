@@ -462,6 +462,8 @@ impl ServerRegistry {
         ));
         #[cfg(feature = "dbus")]
         self.register(Arc::new(crate::server::dbus::actions::DbusProtocol::new()));
+        #[cfg(feature = "bfd")]
+        self.register(Arc::new(crate::server::bfd::actions::BfdProtocol::new()));
         #[cfg(feature = "wsdiscovery")]
         self.register(Arc::new(
             crate::server::wsdiscovery::actions::WsDiscoveryProtocol::new(),
@@ -1697,6 +1699,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("Anthropic", "anthropic"),
     ("RadSec", "radsec"),
     ("D-Bus", "dbus"),
+    ("BFD", "bfd"),
     ("WS-Discovery", "wsdiscovery"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),

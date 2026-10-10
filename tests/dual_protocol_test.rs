@@ -130,6 +130,7 @@ fn golden_duals_map() {
         "Anthropic",
         "RadSec",
         "D-Bus",
+        "BFD",
         "WS-Discovery",
         "Nostr",
         "Vault",
