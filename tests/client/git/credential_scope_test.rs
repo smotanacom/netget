@@ -12,16 +12,26 @@
 //! produce one, which is what shows the credentials still work where they belong. Zero LLM
 //! calls: a zero-action rule answers every client event and the model URL is a closed port.
 //!
+//! libgit2 hands that callback the remote's *original* URL, so it cannot see a redirect: a
+//! bound forge answering 302 to another host would have the other host's 401 answered with
+//! the operator's credentials. The client therefore follows no redirect to another host.
+//! A redirector on 127.0.0.1 points at a forge on `localhost` (another host as libgit2
+//! compares them); with libgit2's default redirect policy the forge receives the
+//! credentials, which is the control, and with the client's options it is never contacted.
+//!
 //! Run with:
 //!   cargo test --no-default-features --features git --test client -- client::git::credential_scope
 
 #![cfg(feature = "git")]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use netget::cli::management::ClientForm;
-use netget::client::git::credentials::{remote_origin, CredentialScope};
+use netget::client::git::credentials::{
+    push_options, remote_callbacks, remote_origin, CredentialScope,
+};
 use netget::state::app_state::AppState;
 use netget::state::ClientId;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -97,27 +107,24 @@ async fn forge() -> (u16, Arc<Mutex<Vec<String>>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let log = seen.clone();
+    serve_forge(listener, seen.clone(), Arc::new(AtomicUsize::new(0)));
+    (port, seen)
+}
+
+/// Accept on `listener` forever, counting accepts, recording each request head and
+/// answering 401 with a Basic challenge.
+fn serve_forge(
+    listener: tokio::net::TcpListener,
+    log: Arc<Mutex<Vec<String>>>,
+    accepts: Arc<AtomicUsize>,
+) {
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
+            accepts.fetch_add(1, Ordering::SeqCst);
             let log = log.clone();
             tokio::spawn(async move {
-                let mut head = Vec::new();
-                let mut byte = [0u8; 1];
-                while tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut byte))
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .is_some()
-                {
-                    head.push(byte[0]);
-                    if head.ends_with(b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                log.lock()
-                    .await
-                    .push(String::from_utf8_lossy(&head).into_owned());
+                let head = read_head(&mut stream).await;
+                log.lock().await.push(head);
                 let _ = stream
                     .write_all(
                         b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"forge\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -126,7 +133,71 @@ async fn forge() -> (u16, Arc<Mutex<Vec<String>>>) {
             });
         }
     });
-    (port, seen)
+}
+
+async fn read_head(stream: &mut tokio::net::TcpStream) -> String {
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut byte))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .is_some()
+    {
+        head.push(byte[0]);
+        if head.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&head).into_owned()
+}
+
+/// A forge reached as `localhost`: 127.0.0.1 and, where it can be bound, ::1 on the same
+/// port, so whichever address the resolver puts first is this forge.
+struct LocalhostForge {
+    port: u16,
+    seen: Arc<Mutex<Vec<String>>>,
+    accepts: Arc<AtomicUsize>,
+}
+
+async fn localhost_forge() -> LocalhostForge {
+    let v4 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = v4.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let accepts = Arc::new(AtomicUsize::new(0));
+    serve_forge(v4, seen.clone(), accepts.clone());
+    if let Ok(v6) = tokio::net::TcpListener::bind(("::1", port)).await {
+        serve_forge(v6, seen.clone(), accepts.clone());
+    }
+    LocalhostForge {
+        port,
+        seen,
+        accepts,
+    }
+}
+
+/// A server on 127.0.0.1 that answers every request with a 302 to the same request target
+/// on `localhost:<target_port>`, counting its accepts.
+async fn redirector(target_port: u16) -> (u16, Arc<AtomicUsize>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let accepts = Arc::new(AtomicUsize::new(0));
+    let counter = accepts.clone();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            counter.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                let head = read_head(&mut stream).await;
+                let target = head.split(' ').nth(1).unwrap_or("/").to_string();
+                let response = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://localhost:{target_port}{target}\r\n\
+                     Content-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            });
+        }
+    });
+    (port, accepts)
 }
 
 fn saw_authorization(heads: &[String]) -> bool {
@@ -233,5 +304,141 @@ async fn credentials_are_offered_to_the_clients_own_forge_and_to_no_other_host()
     assert!(
         saw_authorization(&home),
         "the home forge's 401 should have been answered with Basic credentials: {home:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_redirect_to_another_host_is_refused_before_it_is_contacted() {
+    // Control: libgit2's default policy follows the redirect on the first request, and the
+    // scope check passes on the original URL, so the other host's 401 is answered with the
+    // operator's credentials. Without this the zero below could mean a redirector nobody
+    // followed for some other reason.
+    let control_forge = localhost_forge().await;
+    let (control_port, control_hits) = redirector(control_forge.port).await;
+    let control_url = format!("http://127.0.0.1:{control_port}/repo.git");
+    let scope = CredentialScope::bind(Some("operator"), Some("forge-token"), Some(&control_url))
+        .expect("bound");
+    let dir = tempfile::tempdir().unwrap();
+    let (control_scope, url, into) = (scope, control_url.clone(), dir.path().join("control"));
+    let control = tokio::task::spawn_blocking(move || {
+        let mut options = git2::FetchOptions::new();
+        options.remote_callbacks(remote_callbacks(Some(&control_scope)));
+        options.follow_redirects(git2::RemoteRedirect::Initial);
+        let mut builder = git2::build::RepoBuilder::new();
+        builder.fetch_options(options);
+        builder.clone(&url, &into).map(|_| ())
+    })
+    .await
+    .unwrap();
+    assert!(control.is_err(), "the control clone cannot succeed");
+    assert!(
+        control_hits.load(Ordering::SeqCst) > 0,
+        "control: redirector unused"
+    );
+    let leaked = control_forge.seen.lock().await.clone();
+    assert!(
+        saw_authorization(&leaked),
+        "control: libgit2's default should have followed the redirect and offered the \
+         credentials there, or this test proves nothing: {control:?} {leaked:?}"
+    );
+
+    // The client: same shape, its own options.
+    let forge = localhost_forge().await;
+    let (redirect_port, redirect_hits) = redirector(forge.port).await;
+    let home = format!("http://127.0.0.1:{redirect_port}/repo.git");
+    let root = tempfile::tempdir().unwrap();
+    let state = new_state().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let client_id = ClientForm {
+        protocol: "git".to_string(),
+        remote_addr: Some(home.clone()),
+        instruction: Some("test client".to_string()),
+        event_handlers: Some(vec![serde_json::json!({
+            "event_pattern": "*",
+            "handler": { "type": "static", "actions": [] }
+        })]),
+        startup_params: Some(serde_json::json!({
+            "username": "operator",
+            "password": "forge-token",
+            "allowed_root": root.path().to_string_lossy(),
+        })),
+        ..Default::default()
+    }
+    .create(
+        &state,
+        netget::llm::OllamaClient::new("http://127.0.0.1:1".to_string()),
+        tx,
+    )
+    .await
+    .expect("create git client");
+    wait_for_client_handle(&state, client_id).await;
+
+    let outcome = state
+        .send_to_client(
+            client_id,
+            serde_json::json!({ "type": "git_clone", "url": home, "path": "redirected" }),
+            Duration::from_secs(30),
+        )
+        .await;
+    assert!(
+        redirect_hits.load(Ordering::SeqCst) > 0,
+        "the client never contacted its own forge: {outcome:?}"
+    );
+    let text = format!("{outcome:?}");
+    assert!(
+        text.contains("redirect"),
+        "the clone should fail on the refused redirect: {text}"
+    );
+
+    // Push options, driven directly: pushes are gated behind `allow_remote_writes` in the
+    // client, and the options are the part that decides.
+    let push_forge = localhost_forge().await;
+    let (push_port, push_hits) = redirector(push_forge.port).await;
+    let push_url = format!("http://127.0.0.1:{push_port}/repo.git");
+    let push_scope = CredentialScope::bind(Some("operator"), Some("forge-token"), Some(&push_url))
+        .expect("bound");
+    let repo_dir = tempfile::tempdir().unwrap();
+    let repo_path = repo_dir.path().to_path_buf();
+    let pushed = tokio::task::spawn_blocking(move || -> Result<(), git2::Error> {
+        let repo = git2::Repository::init(&repo_path)?;
+        let signature = git2::Signature::now("operator", "operator@example.test")?;
+        {
+            let tree_id = repo.index()?.write_tree()?;
+            let tree = repo.find_tree(tree_id)?;
+            repo.commit(Some("HEAD"), &signature, &signature, "init", &tree, &[])?;
+        }
+        let head = repo
+            .head()?
+            .name()
+            .expect("HEAD names a branch")
+            .to_string();
+        let mut remote = repo.remote("origin", &push_url)?;
+        let mut options = push_options(Some(&push_scope));
+        remote.push(&[format!("{head}:{head}").as_str()], Some(&mut options))
+    })
+    .await
+    .unwrap();
+    let push_error = pushed.expect_err("a push through a refused redirect cannot succeed");
+    assert!(
+        push_hits.load(Ordering::SeqCst) > 0,
+        "push: redirector unused"
+    );
+    assert!(
+        push_error.message().contains("redirect"),
+        "the push should fail on the refused redirect: {push_error}"
+    );
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        forge.accepts.load(Ordering::SeqCst),
+        0,
+        "the clone followed the redirect to another host: {:?}",
+        forge.seen.lock().await
+    );
+    assert_eq!(
+        push_forge.accepts.load(Ordering::SeqCst),
+        0,
+        "the push followed the redirect to another host: {:?}",
+        push_forge.seen.lock().await
     );
 }

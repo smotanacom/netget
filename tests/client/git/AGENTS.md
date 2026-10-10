@@ -272,6 +272,21 @@ counts.
 
 **LLM call budget: 0.**
 
+## `credential_scope_test.rs` — where the credentials may go
+
+In-process, **zero LLM calls**, loopback only. Fake forges answer every request 401 with a
+Basic challenge and record each request head. A client opened on one forge and told to clone
+from another must send that other no `Authorization`; cloning from its own must send one.
+
+`a_redirect_to_another_host_is_refused_before_it_is_contacted` covers redirects, which the
+credential callback cannot see (libgit2 passes it the remote's original URL). A redirector on
+127.0.0.1 answers 302 to a forge on `localhost`, a different host as libgit2 compares them.
+Its control comes first: plain `git2` options with `RemoteRedirect::Initial` (libgit2's
+default) and this client's callbacks must deliver the credentials to that forge, or the rest
+proves nothing. Then a real client's `git_clone` and `credentials::push_options` driven
+directly must each fail naming the redirect, with the redirector contacted and the
+`localhost` forge never accepting a connection.
+
 ## `sandbox_test.rs` — filesystem confinement
 
 In-process, **zero LLM calls, no network**: every client points at `http://127.0.0.1:1`, so

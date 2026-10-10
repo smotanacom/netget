@@ -8,7 +8,7 @@ pub use sandbox::{GitSandbox, ALLOWED_ROOT_PARAM, ALLOW_REMOTE_WRITES_PARAM};
 
 use crate::protocol::StartupParams;
 use anyhow::{Context, Result};
-use git2::{BranchType, FetchOptions, ObjectType, Repository, StatusOptions};
+use git2::{BranchType, ObjectType, Repository, StatusOptions};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1047,13 +1047,8 @@ impl GitClient {
         path: &str,
         credentials: Option<&credentials::CredentialScope>,
     ) -> Result<Repository> {
-        let callbacks = credentials::remote_callbacks(credentials);
-
-        let mut fetch_options = FetchOptions::new();
-        fetch_options.remote_callbacks(callbacks);
-
         let mut builder = git2::build::RepoBuilder::new();
-        builder.fetch_options(fetch_options);
+        builder.fetch_options(credentials::fetch_options(credentials));
 
         let repo = builder.clone(url, std::path::Path::new(path))?;
         Ok(repo)
@@ -1068,10 +1063,7 @@ impl GitClient {
         let repo = Repository::open(path)?;
         let mut remote = repo.find_remote(remote_name)?;
 
-        let callbacks = credentials::remote_callbacks(credentials);
-
-        let mut fetch_options = FetchOptions::new();
-        fetch_options.remote_callbacks(callbacks);
+        let mut fetch_options = credentials::fetch_options(credentials);
 
         remote.fetch(
             &["refs/heads/*:refs/remotes/origin/*"],
@@ -1185,10 +1177,7 @@ impl GitClient {
 
         // Fetch first
         let mut remote = repo.find_remote(remote_name)?;
-        let callbacks = credentials::remote_callbacks(credentials);
-
-        let mut fetch_options = FetchOptions::new();
-        fetch_options.remote_callbacks(callbacks);
+        let mut fetch_options = credentials::fetch_options(credentials);
 
         remote.fetch(
             &[format!(
@@ -1244,10 +1233,7 @@ impl GitClient {
         };
 
         let mut remote = repo.find_remote(remote_name)?;
-        let callbacks = credentials::remote_callbacks(credentials);
-
-        let mut push_options = git2::PushOptions::new();
-        push_options.remote_callbacks(callbacks);
+        let mut push_options = credentials::push_options(credentials);
 
         // Push the branch
         let refspec = format!(
@@ -1338,10 +1324,7 @@ impl GitClient {
         if let Some(remote) = remote_name {
             let mut remote_obj = repo.find_remote(remote)?;
 
-            let callbacks = credentials::remote_callbacks(credentials);
-
-            let mut push_options = git2::PushOptions::new();
-            push_options.remote_callbacks(callbacks);
+            let mut push_options = credentials::push_options(credentials);
 
             // Push empty refspec to delete remote branch
             let refspec = format!(":refs/heads/{}", branch_name);

