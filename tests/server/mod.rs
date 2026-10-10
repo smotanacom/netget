@@ -501,6 +501,8 @@ pub mod inetd;
 pub mod jmap;
 #[cfg(feature = "knx")]
 pub mod knx;
+#[cfg(feature = "libp2p")]
+pub mod libp2p;
 #[cfg(feature = "lmtp")]
 pub mod lmtp;
 #[cfg(feature = "lpd")]
