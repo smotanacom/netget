@@ -132,6 +132,7 @@ fn golden_duals_map() {
         "D-Bus",
         "BFD",
         "VXLAN",
+        "rsync",
         "WS-Discovery",
         "Nostr",
         "Vault",
