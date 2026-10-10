@@ -417,7 +417,7 @@ ssh = ["russh", "russh-keys", "russh-sftp", "dep:ssh2"]
 ssh-agent = ["dep:ssh-agent-lib", "dep:tempfile"]  # SSH Key Agent protocol (server and client for key management)
 svn = []  # SVN (Subversion) uses only TCP, no extra deps
 irc = ["dep:irc"]  # IRC client support
-xmpp = ["dep:tokio-xmpp", "dep:xmpp-parsers"]  # XMPP/Jabber instant messaging client
+xmpp = ["dep:tokio-xmpp", "dep:xmpp-parsers", "dep:sasl"]  # XMPP/Jabber instant messaging client
 telnet = ["nectar"]
 smtp = ["rust-smtp-server", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:lettre"]
 ftp = []  # FTP (File Transfer Protocol) server and client - manual implementation, no extra deps
@@ -1298,6 +1298,9 @@ imap-codec = { version = "2.0.0-alpha.6", optional = true }
 # XMPP/Jabber client (instant messaging)
 tokio-xmpp = { version = "5.0", optional = true }
 xmpp-parsers = { version = "0.22", optional = true }
+# Named by tokio-xmpp's `ServerConnector::connect` signature (`sasl::common::ChannelBinding`),
+# which tokio-xmpp does not re-export; the version tokio-xmpp 5.0 itself locks.
+sasl = { version = "0.5.2", optional = true }
 
 # MQTT broker (IoT messaging)
 rumqttd = { version = "0.20", optional = true }

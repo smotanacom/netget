@@ -281,6 +281,24 @@ the stanza has been written to the transport, and no XMPP server this suite can 
 tokio-xmpp's STARTTLS/SASL negotiation — so `send_message` remains covered only by the
 `#[ignore]`d test above, against a real prosody/ejabberd.
 
+## `redial_test.rs` — an ended client dials no more
+
+No XMPP server, no LLM calls, loopback only. The listener counts every connection and drops it
+at once, so each of tokio-xmpp's attempts fails in milliseconds and the next comes on the
+library's backoff (about 1s, 3s, 7s after the first). Each test ends a client one way, waits
+500ms for a connect already under way to land, then requires **zero** new connections over
+6.5s — a window that spans at least two redials wherever in the schedule the client ended.
+
+| Test | Ends the client by |
+|---|---|
+| `a_client_whose_session_timed_out_stops_dialling` | `session_timeout_secs` 2 running out; `create` fails |
+| `an_injected_disconnect_while_connecting_stops_dialling` | `send_to_client` `disconnect` while the session is pending; `Disconnected`, then `create` fails |
+| `stopping_a_connecting_client_stops_dialling` | `remove_client`, which aborts the client's tasks |
+
+A **model-produced** `disconnect` is not driven: every event the model answers comes after
+`Online`, which no server this suite can start provides. It goes through the same
+`end_session` as the injected one, which is what the second test exercises.
+
 ## `target_test.rs` — where the client connects, and when it is `Connected`
 
 No XMPP server, no LLM calls, loopback only.

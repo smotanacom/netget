@@ -54,8 +54,8 @@ and interact with other XMPP clients.
 
 2. Resolve the target from `remote_addr` alone (`resolve_target`)
 
-3. Create a tokio-xmpp Client with DnsConfig::Addr(target): STARTTLS transport,
-   no SRV lookup
+3. Create a tokio-xmpp Client on `EndableConnector`: the STARTTLS connector with
+   DnsConfig::Addr(target), no SRV lookup, refusing to dial once the client has ended
 
 4. Register the command channel, spawn the event loop
 
@@ -130,7 +130,8 @@ as the session timeout, not as its specific cause.
 1. **Authentication:** SASL authentication via tokio-xmpp
 2. **Messages:** Send and receive chat messages
 3. **Presence:** Send presence updates (away, chat, dnd, xa), receive presence from contacts
-4. **Auto-reconnect:** Handled by tokio-xmpp, always to the same `remote_addr`
+4. **Auto-reconnect:** Handled by tokio-xmpp, always to the same `remote_addr`, and only while
+   the client has not ended (see "Ending a client" below)
 
 **⚠️ Partially Implemented:**
 
@@ -242,22 +243,50 @@ does not offer `<starttls/>` (NetGet's own XMPP server among them) is refused by
 and a self-signed certificate fails verification
 **Future:** Expose TLS configuration in startup params
 
-### 5. A failed client keeps dialling its target
+### 5. An ended client leaves one idle library task behind
 
-**Issue:** tokio-xmpp 5.0's connect-and-login loop runs in a task the library spawns itself and
-retries on every failure (1s backoff doubling to 30s) until a login succeeds. Dropping the
-`Client` does not reach it. So after this client gives up on a session — or is stopped while
-one is pending — the library goes on dialling `remote_addr` in the background until the
-process exits or a login succeeds (it then closes that fresh stream). It only ever dials the
-configured address.
-**Fix:** wrap the connector in a `ServerConnector` that refuses to dial once the client has
-ended. The trait's return type names `sasl::common::ChannelBinding`, which tokio-xmpp does not
-re-export, so that needs `sasl` (0.5, the version tokio-xmpp locks) as a direct dependency.
+tokio-xmpp's connect-and-login loop cannot be stopped from outside (see "Ending a client"), so
+once the client has ended the connector parks that loop's next attempt for good rather than
+failing it. The task holds no socket and no timer and dials nothing, but it lives until the
+process exits, holding a copy of the JID and password. An attempt already past the transport
+(in SASL or resource binding) when the client ends runs to its end; if it succeeds, tokio-xmpp
+finds the client gone and closes that stream itself.
 
 ### 6. Connection drops are not visible
 
 tokio-xmpp's `Client` stream swallows the stanza stream's `Suspended` event and does not emit
 `Disconnected`, so a session that drops and is being reconnected still shows `Connected`.
+
+## Ending a client
+
+Every way a client ends cancels one `CancellationToken` (`ended`):
+
+| Path | How |
+|---|---|
+| session timeout, or `connect()` returning or dropped without a session | a drop guard in `connect()`, disarmed on `Online` |
+| injected `disconnect` (dashboard, MCP `send_to_client`) | `command_loop` → `end_session` |
+| model-produced `disconnect` (any LLM answer, connected event included) | `execute_action_result` → `end_session` |
+| the XMPP stream ending | the event loop's exit path |
+| the client stopped (`remove_client` aborts its tasks) | a drop guard held by the event loop task |
+
+`end_session` is the one shutdown path for both kinds of `disconnect`: it cancels the token and
+drops the command handle. The event loop selects on the token, closes the stream and runs its
+normal exit (status, handle removal); actions the model listed after its `disconnect` are not
+executed, and queued events are not sent to the model. The loop takes queued stanzas before the
+token, so a `send_message` the model put before its `disconnect` is written first; a stanza
+write still waiting when the client ends gets `STREAM_CLOSE_TIMEOUT` (5s) and is then failed.
+
+The same token stops the dialling. tokio-xmpp 5.0 runs its connect-and-login loop in a task the
+library spawns itself, retrying every failure (1s backoff doubling to 30s) until a login
+succeeds, and dropping the `Client` does not reach it. Every attempt starts with
+`ServerConnector::connect`, so the client is built with `Client::new_with_connector` on
+`EndableConnector`, which wraps `StartTlsServerConnector`: once the token is cancelled an
+attempt in its transport phase is dropped with its socket, and every later attempt waits forever
+without dialling. Failing them instead would make the library log an error and retry every 30s
+for the life of the process. The trait's signature names `sasl::common::ChannelBinding`, which
+tokio-xmpp does not re-export, hence the direct `sasl` dependency (the 0.5.2 tokio-xmpp locks).
+`tests/client/xmpp/redial_test.rs` counts connections at the target after a session timeout, an
+injected `disconnect` and a stop.
 
 ## Connection Parameters
 
@@ -334,7 +363,8 @@ sudo ejabberdctl register alice localhost password
 
 ```toml
 tokio-xmpp = "5.0"
-xmpp-parsers = "0.20"
+xmpp-parsers = "0.22"
+sasl = "0.5.2"   # only for `ServerConnector`'s `ChannelBinding`; see "Ending a client"
 ```
 
 **Transitive Dependencies:**
@@ -438,10 +468,11 @@ Two structural changes came with it:
 - The channel is registered before the session is up, and the `xmpp_connected` LLM call runs
   in **its own task** once it is, so neither a pending session nor a parked call keeps the
   event loop from draining the stanza channel.
-- An injected `disconnect` signals a `Notify` the event loop selects on; the loop breaks, drops
-  the handle and then closes the stream (bounded by a 5s timeout, because `close()` waits on a
-  peer that may never have existed). After `Online` it sets `Disconnected`; before it, it fails
-  the pending `connect()` instead, which sets `Error`.
+- An injected `disconnect` goes through `end_session`, as a model-produced one does: it cancels
+  the `ended` token the event loop selects on; the loop breaks, drops the handle and then closes
+  the stream (bounded by `STREAM_CLOSE_TIMEOUT`, 5s, because `close()` waits on a peer that may
+  never have existed). After `Online` it sets `Disconnected`; before it, it fails the pending
+  `connect()` instead, which sets `Error`. The token also stops tokio-xmpp dialling again.
 
 | Outcome | When |
 |---|---|

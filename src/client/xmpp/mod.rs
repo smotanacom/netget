@@ -23,10 +23,12 @@ use crate::state::{ClientId, ClientStatus};
 
 use crate::console_error;
 use futures::StreamExt;
+use sasl::common::ChannelBinding;
 use std::time::Duration;
-use tokio_xmpp::connect::DnsConfig;
+use tokio_util::sync::CancellationToken;
+use tokio_xmpp::connect::{DnsConfig, ServerConnector, StartTlsServerConnector};
 use tokio_xmpp::jid::Jid;
-use tokio_xmpp::xmlstream::Timeouts;
+use tokio_xmpp::xmlstream::{PendingFeaturesRecv, Timeouts};
 use tokio_xmpp::{Client as XmppClient, Event as XmppEvent};
 use xmpp_parsers::{
     message::{Lang, Message, MessageType},
@@ -57,6 +59,59 @@ pub const MAX_SESSION_TIMEOUT_SECS: u64 = 600;
 
 /// XMPP's client-to-server port (RFC 6120 §14.7), used when `remote_addr` names no port.
 pub const XMPP_CLIENT_PORT: u16 = 5222;
+
+/// How long the event loop lets a stanza write or the orderly stream close run once the
+/// session has been ended. Both wait on a peer that may never answer.
+const STREAM_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// tokio-xmpp's STARTTLS connector, refusing to dial once the client has ended.
+///
+/// tokio-xmpp runs its connect-and-login loop in a task it spawns itself, retries every failed
+/// attempt with a backoff (1s doubling to 30s) until a login succeeds, and is not stopped by
+/// dropping the `Client`. Every attempt starts with [`ServerConnector::connect`], so this is the
+/// one place a dial can be refused. Once `ended` is cancelled - the session timed out, an
+/// injected or model-produced `disconnect`, the client stopped, or the event loop gone - an
+/// attempt in progress is dropped (its socket with it) and every later one waits forever
+/// without dialling. Returning an error instead would make the library log a failure and
+/// retry every 30 seconds for the life of the process; waiting leaves one idle task, holding no
+/// socket and no timer.
+///
+/// The cancellation covers the transport (TCP connect, stream header, STARTTLS, TLS). An attempt
+/// that is already past it - in SASL or resource binding - runs to its end; if it then succeeds,
+/// tokio-xmpp finds the client gone and closes that stream itself.
+#[derive(Debug, Clone)]
+struct EndableConnector {
+    inner: StartTlsServerConnector,
+    ended: CancellationToken,
+    client_id: ClientId,
+}
+
+/// What [`ServerConnector::connect`] returns.
+type ConnectResult<S> =
+    std::result::Result<(PendingFeaturesRecv<S>, ChannelBinding), tokio_xmpp::Error>;
+
+impl ServerConnector for EndableConnector {
+    type Stream = <StartTlsServerConnector as ServerConnector>::Stream;
+
+    async fn connect(
+        &self,
+        jid: &Jid,
+        ns: &'static str,
+        timeouts: Timeouts,
+    ) -> ConnectResult<Self::Stream> {
+        tokio::select! {
+            biased;
+            _ = self.ended.cancelled() => {
+                debug!(
+                    "XMPP client {} has ended; refusing tokio-xmpp's connection attempt",
+                    self.client_id
+                );
+                return std::future::pending().await;
+            }
+            result = self.inner.connect(jid, ns, timeouts) => result,
+        }
+    }
+}
 
 /// The socket address the XMPP client connects to, taken from `remote_addr` alone.
 ///
@@ -141,13 +196,24 @@ impl XmppClientConnection {
             client_id, target, jid
         ));
 
+        // Cancelled when the client ends, by whichever path ends it: the session timeout or a
+        // dropped `connect()` (the guard below), an injected or model-produced `disconnect`
+        // (`end_session`), the stream ending, or the event loop task being aborted or finishing
+        // (its own guard). The event loop closes the stream on it, and the connector refuses
+        // tokio-xmpp's reconnect attempts after it.
+        let ended = CancellationToken::new();
+
         // `DnsConfig::Addr` is a plain TCP connect to exactly this socket address: no SRV
         // lookup and no resolution of the JID's domain, which only names the account and the
         // stream's `to`.
-        let mut xmpp_client = XmppClient::new_starttls(
+        let mut xmpp_client = XmppClient::new_with_connector(
             jid.clone(),
             password,
-            DnsConfig::addr(&target.to_string()),
+            EndableConnector {
+                inner: StartTlsServerConnector::from(DnsConfig::addr(&target.to_string())),
+                ended: ended.clone(),
+                client_id,
+            },
             Timeouts::default(),
         );
 
@@ -171,10 +237,6 @@ impl XmppClientConnection {
         let (stanza_tx, mut stanza_rx) = mpsc::unbounded_channel::<StanzaRequest>();
         let stanza_tx = Arc::new(stanza_tx);
 
-        // Tells the event loop to close the stream: an injected `disconnect`, or this function
-        // giving up on the session. `Notify` keeps the request if the loop is not waiting yet.
-        let shutdown = Arc::new(tokio::sync::Notify::new());
-
         // The event loop answers this exactly once: the bound JID on the first `Online`, or
         // why the stream ended before one.
         let (session_tx, session_rx) =
@@ -188,12 +250,12 @@ impl XmppClientConnection {
         let cmd_stanza_tx = stanza_tx.clone();
         let cmd_state = app_state.clone();
         let cmd_status_tx = status_tx.clone();
-        let cmd_shutdown = shutdown.clone();
+        let cmd_ended = ended.clone();
         let cmd_task = tokio::spawn(async move {
             Self::command_loop(
                 command_rx,
                 cmd_stanza_tx,
-                cmd_shutdown,
+                cmd_ended,
                 client_id,
                 cmd_state,
                 cmd_status_tx,
@@ -212,7 +274,7 @@ impl XmppClientConnection {
         let loop_protocol = protocol.clone();
         let loop_stanza_tx = stanza_tx.clone();
         let loop_data = client_data.clone();
-        let loop_shutdown = shutdown.clone();
+        let loop_ended = ended.clone();
         let task_handle = tokio::spawn(async move {
             let llm_client = loop_llm;
             let app_state = loop_state;
@@ -220,24 +282,35 @@ impl XmppClientConnection {
             let protocol = loop_protocol;
             let stanza_tx = loop_stanza_tx;
             let client_data = loop_data;
+            let ended = loop_ended;
+            // Aborting this task (`remove_client`) drops the guard, which ends the client and
+            // so stops tokio-xmpp dialling, even though the code below never runs.
+            let _end_on_drop = ended.clone().drop_guard();
             let mut session_tx = Some(session_tx);
             let end_reason: &'static str = loop {
                 tokio::select! {
-                    // Close the stream on request.
-                    _ = loop_shutdown.notified() => {
-                        info!("XMPP client {} closing the stream on request", client_id);
-                        break "the client was closed";
-                    }
+                    // Stanzas first, then the end of the session: actions are queued in the
+                    // order they were produced, so a `send_message` the model put before its
+                    // `disconnect` is written before the stream closes.
+                    biased;
                     // Handle outgoing stanzas
                     Some(request) = stanza_rx.recv() => {
                         // `send_stanza` resolves only once the stanza has been written to the
                         // XMPP transport, so an injected send can be reported truthfully
-                        // rather than as "handed to a channel".
-                        let result = xmpp_client
-                            .send_stanza(request.stanza)
-                            .await
-                            .map(|_token| ())
-                            .map_err(|e| e.to_string());
+                        // rather than as "handed to a channel". It waits for a session that
+                        // may never come, so once the client has ended it gets
+                        // `STREAM_CLOSE_TIMEOUT` and no more.
+                        let result = tokio::select! {
+                            result = xmpp_client.send_stanza(request.stanza) => result
+                                .map(|_token| ())
+                                .map_err(|e| e.to_string()),
+                            _ = async {
+                                ended.cancelled().await;
+                                tokio::time::sleep(STREAM_CLOSE_TIMEOUT).await;
+                            } => Err(
+                                "the client ended before the stanza could be written".to_string()
+                            ),
+                        };
                         if let Err(e) = &result {
                             console_error!(status_tx, "Failed to send XMPP stanza: {}", e);
                         }
@@ -245,8 +318,19 @@ impl XmppClientConnection {
                             let _ = ack.send(result);
                         }
                     }
-                    // Handle incoming events
-                    Some(xmpp_event) = xmpp_client.next() => {
+                    // Close the stream once the client has ended.
+                    _ = ended.cancelled() => {
+                        info!("XMPP client {} closing the stream on request", client_id);
+                        break "the client was closed";
+                    }
+                    // Handle incoming events. Matched in the handler rather than the pattern: a pattern mismatch only
+                    // disables the branch, and the select would then wait on the others for
+                    // ever with the stream already gone.
+                    next_event = xmpp_client.next() => {
+                let Some(xmpp_event) = next_event else {
+                    info!("XMPP client {} connection closed", client_id);
+                    break "the XMPP stream ended";
+                };
                 trace!("XMPP client {} received event: {:?}", client_id, xmpp_event);
 
                 // `Online` is stream lifecycle, not a stanza: it is acted on here, at once,
@@ -304,6 +388,7 @@ impl XmppClientConnection {
                             protocol.clone(),
                             stanza_tx.clone(),
                             &status_tx,
+                            &ended,
                         ).await;
 
                         // Process queued events
@@ -313,6 +398,10 @@ impl XmppClientConnection {
                         drop(client_data_lock);
 
                         for queued_event in queued {
+                            // A session the model has just ended asks it nothing more.
+                            if ended.is_cancelled() {
+                                break;
+                            }
                             Self::handle_xmpp_event(
                                 queued_event,
                                 &llm_client,
@@ -322,6 +411,7 @@ impl XmppClientConnection {
                                 protocol.clone(),
                                 stanza_tx.clone(),
                                 &status_tx,
+                                &ended,
                             ).await;
                         }
                     }
@@ -336,17 +426,14 @@ impl XmppClientConnection {
                     }
                 }
                     }
-                    // No more events - connection closed
-                    else => {
-                        info!("XMPP client {} connection closed", client_id);
-                        break "the XMPP stream ended";
-                    }
                 }
             };
 
-            // Every exit path lands here: drop the command handle so the dashboard stops
-            // offering [ send ] on a dead connection, which also ends `command_loop`. Done
-            // before the stream shutdown below, which waits on a peer that may be gone.
+            // Every exit path lands here. The client has ended whichever way it ended, so
+            // tokio-xmpp may dial no more. Then drop the command handle so the dashboard stops
+            // offering [ send ] on a dead connection, which also ends `command_loop`. Both are
+            // done before the stream shutdown below, which waits on a peer that may be gone.
+            ended.cancel();
             app_state.remove_client_handle(client_id).await;
             match session_tx.take() {
                 // The session was never established. `connect()` is still waiting and turns
@@ -369,9 +456,7 @@ impl XmppClientConnection {
             // Orderly stream shutdown; harmless if the peer already went away, and bounded
             // because `close()` waits for a peer that never answers when the stream was never
             // established.
-            match tokio::time::timeout(std::time::Duration::from_secs(5), xmpp_client.send_end())
-                .await
-            {
+            match tokio::time::timeout(STREAM_CLOSE_TIMEOUT, xmpp_client.send_end()).await {
                 Ok(Err(e)) => debug!("XMPP client {} stream close: {}", client_id, e),
                 Err(_) => debug!("XMPP client {} stream close timed out", client_id),
                 Ok(Ok(())) => {}
@@ -382,6 +467,10 @@ impl XmppClientConnection {
         task_registrar
             .register_client_task(client_id, task_handle)
             .await;
+
+        // Every way out of this function short of a session ends the client, including the
+        // caller dropping this future; the success path disarms it.
+        let end_unless_online = ended.clone().drop_guard();
 
         // Wait for the server to accept the session.
         let bound_jid = match tokio::time::timeout(session_timeout, session_rx).await {
@@ -400,7 +489,7 @@ impl XmppClientConnection {
                 ));
             }
             Err(_) => {
-                shutdown.notify_one();
+                ended.cancel();
                 return Err(anyhow::anyhow!(
                     "XMPP server at {} did not establish a session within {}s (TCP connect, \
                      STARTTLS, SASL authentication and resource binding all have to succeed; \
@@ -410,6 +499,7 @@ impl XmppClientConnection {
                 ));
             }
         };
+        let _ = end_unless_online.disarm();
 
         // The connected-event LLM call runs in its own task, so a parked (manual-rule) or
         // slow call holds up neither `connect()` nor the event loop that writes stanzas.
@@ -420,6 +510,7 @@ impl XmppClientConnection {
         let connect_stanza_tx = stanza_tx.clone();
         let connect_data = client_data.clone();
         let connect_jid = bound_jid.to_string();
+        let connect_ended = ended.clone();
         let connect_task = tokio::spawn(async move {
             let Some(instruction) = connect_state.get_instruction_for_client(client_id).await
             else {
@@ -452,14 +543,19 @@ impl XmppClientConnection {
                         connect_data.lock().await.memory = mem;
                     }
 
-                    // Execute initial actions
+                    // Execute initial actions; nothing after a `disconnect` runs.
                     for action in actions {
+                        if connect_ended.is_cancelled() {
+                            break;
+                        }
                         Self::execute_action_result(
                             action,
                             connect_protocol.clone(),
                             connect_stanza_tx.clone(),
                             client_id,
+                            &connect_state,
                             &connect_status_tx,
+                            &connect_ended,
                         )
                         .await;
                     }
@@ -535,6 +631,7 @@ impl XmppClientConnection {
         protocol: Arc<XmppClientProtocol>,
         stanza_tx: Arc<mpsc::UnboundedSender<StanzaRequest>>,
         status_tx: &mpsc::UnboundedSender<String>,
+        ended: &CancellationToken,
     ) {
         let event_opt = match xmpp_event {
             // Acted on by the event loop before an event gets here.
@@ -638,14 +735,19 @@ impl XmppClientConnection {
                             client_data.lock().await.memory = mem;
                         }
 
-                        // Execute actions
+                        // Execute actions; nothing after a `disconnect` runs.
                         for action in actions {
+                            if ended.is_cancelled() {
+                                break;
+                            }
                             Self::execute_action_result(
                                 action,
                                 protocol.clone(),
                                 stanza_tx.clone(),
                                 client_id,
+                                app_state,
                                 status_tx,
+                                ended,
                             )
                             .await;
                         }
@@ -661,13 +763,17 @@ impl XmppClientConnection {
     /// Execute an action and put whatever stanza it produced on the wire.
     ///
     /// Thin wrapper over [`Self::apply_action`] for the LLM paths, which have nowhere to
-    /// report an outcome and only log.
+    /// report an outcome and only log. A `disconnect` ends the session through
+    /// [`Self::end_session`], the same path an injected one takes.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_action_result(
         action: serde_json::Value,
         protocol: Arc<XmppClientProtocol>,
         stanza_tx: Arc<mpsc::UnboundedSender<StanzaRequest>>,
         client_id: ClientId,
+        app_state: &AppState,
         status_tx: &mpsc::UnboundedSender<String>,
+        ended: &CancellationToken,
     ) {
         use crate::llm::actions::client_trait::Client;
 
@@ -676,6 +782,13 @@ impl XmppClientConnection {
                 // The LLM path does not wait for the write: it has no caller to answer, and
                 // waiting would serialise every action behind the event loop's next turn.
                 match Self::apply_action(result, &stanza_tx, client_id, false).await {
+                    Ok(XmppApplied::Disconnect) => {
+                        let _ = status_tx.send(format!(
+                            "[CLIENT] XMPP client {} disconnecting at the model's request",
+                            client_id
+                        ));
+                        Self::end_session(ended, app_state, client_id).await;
+                    }
                     Ok(applied) => trace!("XMPP client {}: {}", client_id, applied.detail()),
                     Err(e) => {
                         console_error!(status_tx, "XMPP client {} action failed: {}", client_id, e)
@@ -815,6 +928,18 @@ impl XmppClientConnection {
         }
     }
 
+    /// End the session on a `disconnect`, whether the model produced it or it was injected.
+    ///
+    /// Cancelling `ended` tells the event loop to close the stream, after which it runs its
+    /// normal exit path (status, handle removal, status_tx), and stops tokio-xmpp dialling
+    /// again. The command handle is dropped here as well, so \[ send \] disappears at once
+    /// rather than after the stream shutdown, and the command loop ends.
+    async fn end_session(ended: &CancellationToken, app_state: &AppState, client_id: ClientId) {
+        info!("XMPP client {} ending its session on disconnect", client_id);
+        ended.cancel();
+        app_state.remove_client_handle(client_id).await;
+    }
+
     /// Drain injected commands (the dashboard's \[ send \]) until the channel closes - the
     /// client was removed, or the event loop exited - or an injected `disconnect` ends the
     /// session.
@@ -827,7 +952,7 @@ impl XmppClientConnection {
     async fn command_loop(
         mut command_rx: mpsc::Receiver<crate::state::client_handles::ClientCommand>,
         stanza_tx: Arc<mpsc::UnboundedSender<StanzaRequest>>,
-        shutdown: Arc<tokio::sync::Notify>,
+        ended: CancellationToken,
         client_id: ClientId,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
@@ -884,12 +1009,7 @@ impl XmppClientConnection {
             crate::client::command_support::reply(command, outcome);
 
             if disconnect {
-                // Tell the event loop to close the stream; it then runs its normal
-                // disconnect path (status, handle removal, status_tx). The handle is dropped
-                // here as well so [ send ] disappears immediately rather than after the
-                // stream shutdown.
-                shutdown.notify_one();
-                app_state.remove_client_handle(client_id).await;
+                Self::end_session(&ended, &app_state, client_id).await;
                 break;
             }
         }
