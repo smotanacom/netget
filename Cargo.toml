@@ -150,6 +150,7 @@ portable-base = [
     "libp2p",
     "sunrpc",
     "guacamole",
+    "activitypub",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -404,6 +405,7 @@ matrix = ["urlencoding"] # Matrix homeserver (client-server API v3) and client, 
 libp2p = ["dep:x25519-dalek", "x25519-dalek/static_secrets", "dep:ed25519-dalek", "dep:sha2", "dep:hkdf", "ring"] # libp2p host and dialler over TCP (multistream-select, Noise XX, yamux, identify, ping), hand-rolled
 sunrpc = [] # ONC RPC portmapper/rpcbind (PMAP v2, RPCBIND v3-v4) server and client, hand-rolled
 guacamole = ["dep:font8x8"] # Apache Guacamole protocol server (in guacd's place) and client of guacd, hand-rolled
+activitypub = ["dep:rsa", "dep:sha2", "urlencoding"] # ActivityPub instance and actor (WebFinger, HTTP Signatures rsa-sha256, signed delivery), hyper + reqwest
 wsdiscovery = ["quick-xml"] # WS-Discovery (SOAP-over-UDP 3702) target service and discovery client, 2005/04 and 2009/01
 x11 = [] # X11 client (X Window System core protocol): windows, properties and events against an X server
 jmap = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"] # JMAP (RFC 8620/8621) server and client
@@ -738,6 +740,7 @@ dist-windows = [
     "libp2p",
     "sunrpc",
     "guacamole",
+    "activitypub",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -970,6 +973,7 @@ all-protocols = [
     "libp2p",
     "sunrpc",
     "guacamole",
+    "activitypub",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -1364,6 +1368,7 @@ tor-cert = { version = "0.36", optional = true }  # Tor certificate handling
 tor-cell = { version = "0.36", optional = true }  # Tor cell encoding/decoding (RELAY, CREATE, etc.)
 ed25519-dalek = { version = "2.1", optional = true }  # Ed25519 signatures for relay identity
 sha2 = { version = "0.10", optional = true }  # SHA-256 for ntor handshake
+rsa = { version = "0.9", optional = true, features = ["sha2"] }  # ActivityPub: HTTP signatures (rsa-sha256)
 md-5 = { version = "0.10", optional = true }  # MD5 for the RADIUS authenticators (RFC 2865 §3, §5.2) - already in the tree transitively
 md4 = { version = "0.10", optional = true }  # MD4: rsync protocol 29 file and block checksums, and its daemon auth response
 aes = { version = "0.8", optional = true }  # AES for relay cell encryption

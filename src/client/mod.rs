@@ -766,6 +766,8 @@ pub mod bolt;
 
 #[cfg(feature = "a2s")]
 pub mod a2s;
+#[cfg(feature = "activitypub")]
+pub mod activitypub;
 #[cfg(feature = "anthropic")]
 pub mod anthropic;
 #[cfg(feature = "bfd")]

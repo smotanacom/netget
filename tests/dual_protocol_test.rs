@@ -138,6 +138,7 @@ fn golden_duals_map() {
         "libp2p",
         "SunRPC",
         "Guacamole",
+        "ActivityPub",
         "WS-Discovery",
         "Nostr",
         "Vault",
