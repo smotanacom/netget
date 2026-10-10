@@ -323,6 +323,8 @@ impl Protocol for SqsClientProtocol {
         use crate::llm::actions::StartupExamples;
         use serde_json::json;
 
+        // A custom endpoint is refused without explicit credentials (`client::aws_support`),
+        // so every example names a dummy pair, which is what a local emulator accepts.
         StartupExamples::new(
             // LLM mode: LLM controls SQS operations
             json!({
@@ -331,7 +333,9 @@ impl Protocol for SqsClientProtocol {
                 "base_stack": "sqs",
                 "startup_params": {
                     "queue_url": "http://localhost:9324/000000000000/MyQueue",
-                    "endpoint_url": "http://localhost:9324"
+                    "endpoint_url": "http://localhost:9324",
+                    "access_key_id": "local",
+                    "secret_access_key": "local"
                 },
                 "instruction": "Send a test message and receive messages from the queue"
             }),
@@ -342,7 +346,9 @@ impl Protocol for SqsClientProtocol {
                 "base_stack": "sqs",
                 "startup_params": {
                     "queue_url": "http://localhost:9324/000000000000/MyQueue",
-                    "endpoint_url": "http://localhost:9324"
+                    "endpoint_url": "http://localhost:9324",
+                    "access_key_id": "local",
+                    "secret_access_key": "local"
                 },
                 "event_handlers": [{
                     "event_pattern": "sqs_message_received",
@@ -360,7 +366,9 @@ impl Protocol for SqsClientProtocol {
                 "base_stack": "sqs",
                 "startup_params": {
                     "queue_url": "http://localhost:9324/000000000000/MyQueue",
-                    "endpoint_url": "http://localhost:9324"
+                    "endpoint_url": "http://localhost:9324",
+                    "access_key_id": "local",
+                    "secret_access_key": "local"
                 },
                 "event_handlers": [
                     {

@@ -27,6 +27,7 @@ pub use actions::UsbMscProtocol;
 
 #[cfg(feature = "usb-msc")]
 pub mod disk;
+pub mod image_dir;
 
 #[cfg(feature = "usb-msc")]
 pub mod fat16;
@@ -108,6 +109,7 @@ impl UsbMscServer {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
+        image_dir: image_dir::ImageDir,
         disk_image: Option<PathBuf>,
         first_byte_timeout_secs: Option<u64>,
         idle_timeout_secs: Option<u64>,
@@ -123,7 +125,7 @@ impl UsbMscServer {
         ));
 
         let connections = Arc::new(Mutex::new(HashMap::new()));
-        let protocol = Arc::new(UsbMscProtocol::new());
+        let protocol = Arc::new(UsbMscProtocol::with_image_dir(image_dir));
 
         // The two read deadlines, argued in `src/server/usb/guard.rs` and overridable per
         // server. Copied into each connection task; the screen is the only thing that reads

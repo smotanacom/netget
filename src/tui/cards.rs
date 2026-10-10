@@ -467,35 +467,42 @@ pub fn payload_summary(value: &serde_json::Value) -> String {
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Object(map) => {
             // A request line reads as one: `GET /index.html`.
-            if let (Some(method), Some(path)) = (
+            let request_line = match (
                 map.get("method").and_then(|v| v.as_str()),
                 map.get("path")
                     .or_else(|| map.get("uri"))
                     .and_then(|v| v.as_str()),
             ) {
-                return format!("{method} {path}");
-            }
+                (Some(method), Some(path)) => Some(format!("{method} {path}")),
+                _ => None,
+            };
             let picked = PAYLOAD_KEYS.iter().find_map(|k| map.get(*k));
-            match picked {
-                Some(serde_json::Value::String(s)) => s.clone(),
-                Some(other) => other.to_string(),
-                None => {
-                    let rest: Vec<String> = map
-                        .iter()
-                        .filter(|(k, _)| *k != "type" && *k != "connection_id")
-                        .map(|(k, v)| match v {
-                            serde_json::Value::String(s) => format!("{k}={s}"),
-                            other => format!("{k}={other}"),
-                        })
-                        .collect();
-                    rest.join(" ")
-                }
+            match (request_line, picked) {
+                (Some(line), _) => line,
+                (None, picked) => match picked {
+                    Some(serde_json::Value::String(s)) => s.clone(),
+                    Some(other) => other.to_string(),
+                    None => {
+                        let rest: Vec<String> = map
+                            .iter()
+                            .filter(|(k, _)| *k != "type" && *k != "connection_id")
+                            .map(|(k, v)| match v {
+                                serde_json::Value::String(s) => format!("{k}={s}"),
+                                other => format!("{k}={other}"),
+                            })
+                            .collect();
+                        rest.join(" ")
+                    }
+                },
             }
         }
         serde_json::Value::Null => String::new(),
         other => other.to_string(),
     };
-    text.replace('\r', "").replace('\n', "⏎")
+    // A peer's bytes, so ESC/C1/BEL go too (a space each, as `line_field` does for a value
+    // that must stay one row): ratatui's `Paragraph` would otherwise hand them to the
+    // operator's terminal as the escape sequences they are.
+    crate::utils::sanitize::line_field(&text.replace('\r', "").replace('\n', "⏎"))
 }
 
 /// An access-log entry as the messages that crossed the wire: what came in

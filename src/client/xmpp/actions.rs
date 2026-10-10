@@ -122,8 +122,11 @@ impl Protocol for XmppClientProtocol {
             crate::llm::actions::ParameterDefinition {
                 name: "jid".to_string(),
                 type_hint: "string".to_string(),
-                description: "JID (Jabber ID) to connect as (e.g., user@example.com)".to_string(),
-                required: false,
+                description: "JID (Jabber ID) to connect as (e.g., user@example.com). Names \
+                              the account only: the client connects to remote_addr, never to \
+                              a server looked up from the JID's domain"
+                    .to_string(),
+                required: true,
                 example: serde_json::json!("alice@example.com"),
                 default: None,
             },
@@ -131,9 +134,22 @@ impl Protocol for XmppClientProtocol {
                 name: "password".to_string(),
                 type_hint: "string".to_string(),
                 description: "Password for authentication".to_string(),
-                required: false,
+                required: true,
                 example: serde_json::json!("secret"),
                 default: None,
+            },
+            crate::llm::actions::ParameterDefinition {
+                name: "session_timeout_secs".to_string(),
+                type_hint: "integer".to_string(),
+                description: format!(
+                    "Seconds to wait for the server to accept the session (TCP connect, \
+                     STARTTLS, SASL authentication, resource binding) before the client fails, \
+                     1..{}",
+                    super::MAX_SESSION_TIMEOUT_SECS
+                ),
+                required: false,
+                example: serde_json::json!(30),
+                default: Some(serde_json::json!(super::SESSION_TIMEOUT.as_secs())),
             },
         ]
     }
@@ -277,7 +293,11 @@ impl Protocol for XmppClientProtocol {
             .state(DevelopmentState::Experimental)
             .implementation("tokio-xmpp library for async XMPP client")
             .llm_control("Send messages, presence updates, respond to incoming stanzas")
-            .e2e_testing("Local XMPP server (prosody/ejabberd) or public test server")
+            .e2e_testing(
+                "Loopback listeners pin the connect target, the pending-session status and the \
+                 command channel; a session against a real prosody/ejabberd exists only in \
+                 #[ignore]d tests",
+            )
             .build()
     }
     fn description(&self) -> &'static str {
@@ -300,6 +320,7 @@ impl Protocol for XmppClientProtocol {
                 "type": "open_client",
                 "remote_addr": "xmpp.example.com:5222",
                 "base_stack": "xmpp",
+                "startup_params": {"jid": "alice@example.com", "password": "secret"},
                 "instruction": "Send presence and auto-reply to all incoming messages"
             }),
             // Script mode: Code-based deterministic responses
@@ -307,6 +328,7 @@ impl Protocol for XmppClientProtocol {
                 "type": "open_client",
                 "remote_addr": "xmpp.example.com:5222",
                 "base_stack": "xmpp",
+                "startup_params": {"jid": "alice@example.com", "password": "secret"},
                 "event_handlers": [{
                     "event_pattern": "xmpp_message_received",
                     "handler": {
@@ -321,6 +343,7 @@ impl Protocol for XmppClientProtocol {
                 "type": "open_client",
                 "remote_addr": "xmpp.example.com:5222",
                 "base_stack": "xmpp",
+                "startup_params": {"jid": "alice@example.com", "password": "secret"},
                 "event_handlers": [
                     {
                         "event_pattern": "xmpp_connected",

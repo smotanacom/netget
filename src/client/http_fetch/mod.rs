@@ -171,6 +171,99 @@ pub fn check_url(url: &str) -> Result<()> {
     Ok(())
 }
 
+/// `scheme://host[:port]` of `url`, host lowercased and a default port dropped, so two
+/// spellings of one origin compare equal and two origins never do.
+pub fn origin_of(url: &str) -> Result<String> {
+    let parsed = url::Url::parse(url).with_context(|| format!("{url:?} is not a URL"))?;
+    anyhow::ensure!(
+        matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some(),
+        "{url:?} is not an http(s) URL with a host"
+    );
+    Ok(parsed.origin().ascii_serialization())
+}
+
+/// Resolve an action's `path` against the client's base URL, refusing any other origin.
+///
+/// The HTTP-family clients put the startup `default_headers` (API keys, cookies) and, for
+/// WebDAV, the `auth` credential as `Authorization: Basic` on every request, and the model
+/// that chooses `path` reads the peer's responses. So a client is bound to one origin, its
+/// `remote_addr`, and every URL this returns is on it; anything else is refused by name, so
+/// the repair loop can see it and the operator can open a client for that host on purpose.
+/// A `base_url` without a scheme is `http://`.
+///
+/// - An absolute `http(s)://` `path` (any letter case) is accepted when its origin is the
+///   base's — what a model copying a `Location` header produces.
+/// - Any other `path` is appended to the base, with a `/` inserted unless it already starts
+///   with `/`, `?` or `#` or the base ends with `/`. The separator is what keeps the text in
+///   the path: appended bare, `@attacker.example/x` would become the host (the base turned
+///   into userinfo), `.attacker.example/` would extend the host and `:9999/` would set the
+///   port.
+/// - Whatever the route, the final URL is parsed with the WHATWG parser (`url`, the one
+///   reqwest uses), its scheme, host and port compared with the base's, and userinfo the
+///   base did not carry is refused. The returned string is that parse's serialization, so
+///   the request is sent to exactly the URL that was checked.
+pub fn resolve_same_origin(base_url: &str, path: &str) -> Result<String> {
+    let base = if base_url.contains("://") {
+        base_url.to_string()
+    } else {
+        format!("http://{base_url}")
+    };
+    let bound = origin_of(&base)?;
+    let base_parsed = url::Url::parse(&base).with_context(|| format!("{base:?} is not a URL"))?;
+
+    let has_scheme = |scheme: &str| {
+        path.as_bytes()
+            .get(..scheme.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(scheme.as_bytes()))
+    };
+    let is_absolute = has_scheme("http://") || has_scheme("https://");
+    let candidate = if is_absolute {
+        path.to_string()
+    } else if path.is_empty() || path.starts_with(['/', '?', '#']) || base.ends_with('/') {
+        format!("{base}{path}")
+    } else {
+        format!("{base}/{path}")
+    };
+
+    let resolved = url::Url::parse(&candidate)
+        .with_context(|| format!("path {path:?} does not form a URL"))?;
+    let asked = origin_of(resolved.as_str())?;
+    anyhow::ensure!(
+        bound == asked,
+        "path {path:?} is on {asked}, but this client is bound to {bound}; use a path \
+         relative to that origin, or open a client for {asked}"
+    );
+    anyhow::ensure!(
+        resolved.username() == base_parsed.username()
+            && resolved.password() == base_parsed.password(),
+        "path {path:?} carries credentials in the URL, which this client bound to {bound} \
+         refuses; set an Authorization header instead"
+    );
+    Ok(resolved.into())
+}
+
+/// A redirect policy that follows up to five hops, none of them to another origin.
+///
+/// reqwest's default follows ten and strips `Authorization` and `Cookie` on a host change,
+/// but not a startup `X-Api-Key`, and a redirect to an internal address is the second half
+/// of the SSRF that `resolve_same_origin` closes on the first request. A 3xx to another
+/// origin is returned to the model as the response it is.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn same_origin_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let first = attempt
+            .previous()
+            .first()
+            .map(|u| u.origin().ascii_serialization());
+        let next = attempt.url().origin().ascii_serialization();
+        if attempt.previous().len() >= 5 || first.as_deref() != Some(next.as_str()) {
+            attempt.stop()
+        } else {
+            attempt.follow()
+        }
+    })
+}
+
 /// One request being built. Errors in a header or a body are held until [`Self::send`], as
 /// reqwest's builder does.
 pub struct FetchRequest {

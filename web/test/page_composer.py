@@ -92,6 +92,7 @@ web/test/smoke.mjs also checks the bundle without a DOM.
 
 import functools
 import http.server
+import json
 import os
 import re
 import sys
@@ -407,9 +408,19 @@ def open_page(browser, origin, size=(1280, 800), init_script=None):
     elif init_script:
         page.add_init_script(init_script)
 
+    real_xterm = bool(XTERM_DIR) and all(
+        os.path.exists(os.path.join(XTERM_DIR, f)) for f in ("xterm.js", "addon-fit.js"))
+
     def route(r):
         url = r.request.url
         if url.startswith(origin):
+            # The page pins xterm.js with subresource integrity. The stub can never match the
+            # pinned hash, so the page is served without it when the stub stands in; with the
+            # real files from XTERM_DIR the hashes stay and are checked.
+            if not real_xterm and url.split("?", 1)[0].endswith(".html"):
+                resp = r.fetch()
+                body = re.sub(r'\s+integrity="[^"]*"', "", resp.text())
+                return r.fulfill(response=resp, body=body)
             return r.continue_()
         if "xterm" in url:
             base = url.rsplit("/", 1)[-1]
@@ -1136,11 +1147,11 @@ def run_you_are_selected(browser, origin):
 
 
 def run_adventure_state(browser, origin):
-    """The demo's adventure keeps its place across lines through the server's memory, with a
-    model that follows the rule and remembers nothing itself: the rule on
-    `telnet_message_received` is the last thing in each line's prompt, the Memory the stub's
-    set_memory wrote is in the next line's prompt verbatim, and "look" after "go north" names
-    the Hall. "hello" stays small talk."""
+    """The demo's adventure keeps its place across lines with a model that follows the rule and
+    remembers nothing itself: the rule on `telnet_message_received` is in each line's prompt,
+    followed by the room state adventure.js applied (the Hall, after "go north" then "look"),
+    the Memory the stub's set_memory wrote is in the next line's prompt verbatim, and "hello"
+    stays small talk."""
     page, errors = open_page(browser, origin, init_script=ADVENTURE_STUB)
     wait_for_autostart(page)
     for line, want in (("hello", "Just chatting: hello"), ("play", "You stand at the Gate."),
@@ -1149,7 +1160,10 @@ def run_adventure_state(browser, origin):
         type_line(page, line)
         expect_telnet(page, want)
     last = page.evaluate("window.__lm.prompts.map((p) => p.text)")[-1]
-    assert last.rstrip().endswith("Anything else is chat."), last[-400:]
+    rule, state = last.rfind("Anything else is chat."), last.rfind("Demo adventure state:\n")
+    assert 0 <= rule < state, last[-600:]
+    room = json.loads(last[state + len("Demo adventure state:\n"):].split("\n")[0])
+    assert (room["room"], room["result"]) == ("Hall", "look"), room
     assert "- **Memory**: room: Hall" in last, last[last.find("# Current State"):][:600]
     assert not errors, f"page errors: {errors}"
     page.close()
@@ -1287,8 +1301,8 @@ def main():
     print("ok: when create() failed, the request that waited went to the composer with the reason")
     print("ok: 'You are the model' made the next request the composer's with the model loaded; choosing the "
           "model again handed requests back with no new session; the choice survived a reload")
-    print("ok: the adventure kept its place across lines through the server's memory with a stub model that "
-          "follows the rule and remembers nothing: \"look\" after \"go north\" named the Hall")
+    print("ok: the adventure kept its place across lines with a stub model that "
+          "follows the rule and remembers nothing: \"look\" after \"go north\" named the Hall, and the prompt carried adventure.js's room state after the rule")
     print("ok: at 390x844 the select showed the short labels, each fitting the select, and the full ones "
           "again at 1280" + (f"; the dashboard stacked its columns at {mobile_font}px" if mobile_font else ""))
     print(f"real Prompt API in this browser: availability() = {real!r}"

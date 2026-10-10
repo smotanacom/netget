@@ -6,5 +6,7 @@ mod e2e_test;
 mod fetch_client_test;
 #[cfg(all(test, feature = "http"))]
 mod real_server_test;
+#[cfg(all(test, feature = "http"))]
+pub mod same_origin_test;
 #[cfg(all(test, feature = "http", feature = "tcp"))]
 mod transport_test;

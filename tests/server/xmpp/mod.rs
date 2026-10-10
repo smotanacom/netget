@@ -11,3 +11,6 @@ pub mod llm_failure_test;
 
 #[cfg(all(test, feature = "xmpp"))]
 pub mod connection_bounds_test;
+
+#[cfg(all(test, feature = "xmpp"))]
+pub mod xml_escape_test;

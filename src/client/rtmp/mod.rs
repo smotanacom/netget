@@ -25,6 +25,8 @@ const OUT_CHUNK_SIZE: usize = 4096;
 const MAX_DATA_MESSAGES: usize = 20;
 
 struct Conn {
+    /// Where `rtmp_publish` may read FLV files from; see `client::media_root`.
+    media_root: crate::client::media_root::MediaRoot,
     w: WriteHalf<TcpStream>,
     msgs: mpsc::Receiver<Result<(Message, u64)>>,
     writer: chunk::Writer,
@@ -150,6 +152,14 @@ pub async fn connect(ctx: ConnectContext) -> Result<SocketAddr> {
         !app.is_empty() && app.len() <= 256 && !crate::utils::sanitize::has_controls(&app),
         "app is a name"
     );
+    let media_root = crate::client::media_root::MediaRoot::new(
+        ctx.startup_params
+            .as_ref()
+            .map(|p| p.get_optional_string(crate::client::media_root::MEDIA_ROOT_PARAM))
+            .transpose()?
+            .flatten()
+            .as_deref(),
+    )?;
     let mut stream = tokio::time::timeout(TIMEOUT, TcpStream::connect(&ctx.remote_addr))
         .await
         .context("RTMP connect timed out")??;
@@ -178,6 +188,7 @@ pub async fn connect(ctx: ConnectContext) -> Result<SocketAddr> {
         }
     }));
     let mut conn = Conn {
+        media_root,
         w,
         msgs,
         writer: chunk::Writer::default(),
@@ -520,11 +531,16 @@ async fn publish(conn: &mut Conn, a: &Value) -> Result<Value> {
     let stream = a["stream"].as_str().unwrap_or_default().to_owned();
     let path = a["flv_file"].as_str().unwrap_or_default();
     let realtime = a["realtime"].as_bool().unwrap_or(true);
-    let meta = tokio::fs::metadata(path)
+    // The peer this file goes to is the peer whose responses the model reads: confined
+    // to `media_root`, or it is a file-exfiltration primitive. See `client::media_root`.
+    let path = conn
+        .media_root
+        .resolve(path, "the rtmp_publish 'flv_file'")?;
+    let meta = tokio::fs::metadata(&path)
         .await
-        .with_context(|| format!("reading {path}"))?;
-    ensure!(meta.len() <= MAX_FLV, "{path} is over 64 MiB");
-    let file = tokio::fs::read(path).await?;
+        .with_context(|| format!("reading {}", path.display()))?;
+    ensure!(meta.len() <= MAX_FLV, "{} is over 64 MiB", path.display());
+    let file = tokio::fs::read(&path).await?;
     let tags = flv_tags(&file)?;
     let mut t = Tally::default();
     conn.command(0, "releaseStream", &[Value::Null, json!(stream)])

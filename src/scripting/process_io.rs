@@ -16,11 +16,76 @@ pub struct ProcessGroup {
     job: std::os::windows::io::OwnedHandle,
 }
 
+/// Environment variables an interpreter child never inherits.
+///
+/// Handler scripts run as the operator and are not sandboxed — `AGENTS.md`'s trust
+/// boundary — but a script's job is to answer a network event, and the one secret this
+/// process holds for its own use is the model backend's API key. Nothing a handler does
+/// needs it, while a handler supplied over MCP, loaded from a `.netget` file or written by
+/// the model in operator chat could `print(os.environ["NETGET_API_KEY"])` into its stderr,
+/// which is logged. The same goes for every other credential-shaped name: the names below
+/// are removed exactly, any variable whose name contains one of [`SECRET_NAME_PARTS`] is
+/// removed, and so is any whose name ends with one of [`SECRET_NAME_SUFFIXES`]. All three
+/// compare case-insensitively. `PATH`, `HOME`, `LANG` and the rest pass through, so
+/// interpreters still find their modules.
+///
+/// This is defence in depth, not a boundary. A script runs as the same user as NetGet, so it
+/// can read `~/.aws/credentials`, `~/.netrc` or the parent's environment through
+/// `/proc/<ppid>/environ` where the platform exposes it; removing names from the child's
+/// environment only keeps a secret out of the place a careless handler would print it from.
+pub const STRIPPED_ENV: &[&str] = &[
+    "NETGET_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "NETGET_MCP_TOKEN",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "NPM_TOKEN",
+];
+
+/// Substrings (upper case) of an environment variable name that mark it as a credential.
+pub const SECRET_NAME_PARTS: &[&str] = &[
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "API_KEY",
+    "APIKEY",
+    "ACCESS_TOKEN",
+    "AUTH_TOKEN",
+    "PRIVATE_KEY",
+    "CREDENTIAL",
+];
+
+/// Suffixes (upper case) of an environment variable name that mark it as a credential:
+/// `HF_TOKEN`, `CI_JOB_TOKEN`, `STRIPE_SECRET`, `MINIO_ACCESS_KEY`. The `_TOKEN` and
+/// `_ACCESS_KEY` cases are the ones no entry in [`SECRET_NAME_PARTS`] covers.
+pub const SECRET_NAME_SUFFIXES: &[&str] =
+    &["_TOKEN", "_SECRET", "_PASSWORD", "_API_KEY", "_ACCESS_KEY"];
+
+/// Whether an environment variable named `name` is withheld from interpreter children.
+pub fn env_is_stripped(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    STRIPPED_ENV.contains(&upper.as_str())
+        || SECRET_NAME_PARTS.iter().any(|part| upper.contains(part))
+        || SECRET_NAME_SUFFIXES
+            .iter()
+            .any(|suffix| upper.ends_with(suffix))
+}
+
 impl ProcessGroup {
+    /// Put the child in its own process group (so a timeout can kill its descendants) and
+    /// withhold credential-bearing environment variables from it; see [`STRIPPED_ENV`].
+    /// Every interpreter spawn in this module's callers goes through here.
     pub fn configure(command: &mut tokio::process::Command) {
         #[cfg(unix)]
         command.process_group(0);
-        let _ = command;
+        for (name, _) in std::env::vars_os() {
+            if name.to_str().is_some_and(env_is_stripped) {
+                command.env_remove(&name);
+            }
+        }
     }
 
     pub fn new(child: &tokio::process::Child) -> io::Result<Self> {

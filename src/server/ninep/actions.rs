@@ -302,7 +302,7 @@ impl Protocol for NinepProtocol {
         "9P2000 file server (Plan 9's file protocol) whose files and directories the handler supplies"
     }
     fn keywords(&self) -> Vec<&'static str> {
-        vec!["9p", "9p2000", "plan 9", "styx", "file server", "ninep"]
+        vec!["9p", "9p2000", "plan 9", "styx", "ninep"]
     }
     fn get_async_actions(&self, _: &AppState) -> Vec<ActionDefinition> {
         vec![]
