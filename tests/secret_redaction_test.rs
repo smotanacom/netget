@@ -95,3 +95,49 @@ fn bearer_credentials_and_http_auth_headers_are_hidden_without_hiding_usage() {
         "redaction must not change the credential used on the wire"
     );
 }
+
+/// Four client parameters that are credentials without being called one. Each reached the
+/// `open_client` summary and the executor's DEBUG line verbatim: `is_sensitive_key` matched
+/// `password` but not `passcode`, nothing in `community`, nothing in `proxy_auth`, and
+/// `auth` only as the substring of `auth_token` / `authorization`. A bare `auth` is hidden
+/// when it is a string; an `auth` object (Vault's answer) is still walked, as the first test
+/// in this file requires.
+#[test]
+fn credentials_that_are_not_called_one_are_redacted_and_their_describers_are_not() {
+    let shown = redact_sensitive(&json!({
+        "passcode": "stomp-pass",
+        "community": "public",
+        "proxy_auth": "user:pw",
+        "auth": "alice:s3cret",
+        "Auth": "alice:s3cret",
+        "nested": {"community_string": "private", "PROXY-AUTH": "u:p"},
+        // Describers of a mechanism, not the credential itself.
+        "auth_type": "basic",
+        "auth_url": "https://idp.example/authorize",
+        "authenticated": true,
+        "auth_method": "password-less",
+        "routing_key": "orders.created",
+        "access_key_id": "AKIA-not-a-secret",
+        "key_type": "ed25519",
+        "secret_access_key": "this one is"
+    }));
+    for key in [
+        "passcode",
+        "community",
+        "proxy_auth",
+        "auth",
+        "Auth",
+        "secret_access_key",
+    ] {
+        assert_eq!(shown[key], json!(REDACTED), "{key} must be hidden");
+    }
+    assert_eq!(shown["nested"]["community_string"], json!(REDACTED));
+    assert_eq!(shown["nested"]["PROXY-AUTH"], json!(REDACTED));
+    assert_eq!(shown["auth_type"], json!("basic"));
+    assert_eq!(shown["auth_url"], json!("https://idp.example/authorize"));
+    assert_eq!(shown["authenticated"], json!(true));
+    assert_eq!(shown["auth_method"], json!("password-less"));
+    assert_eq!(shown["routing_key"], json!("orders.created"));
+    assert_eq!(shown["access_key_id"], json!("AKIA-not-a-secret"));
+    assert_eq!(shown["key_type"], json!("ed25519"));
+}
