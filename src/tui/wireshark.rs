@@ -982,10 +982,13 @@ pub fn shell_word(value: &str) -> String {
         return value.to_string();
     }
     if cfg!(windows) {
+        // Double quotes are the one form cmd.exe and PowerShell both read, and each expands
+        // something inside them: cmd.exe `%VAR%`, PowerShell `$(...)` and the backtick
+        // escape. A value carrying any of those is refused rather than quoted.
         if has_controls(value)
             || value
                 .chars()
-                .any(|c| matches!(c, '%' | '^' | '&' | '|' | '<' | '>' | '"'))
+                .any(|c| matches!(c, '%' | '^' | '&' | '|' | '<' | '>' | '"' | '$' | '`'))
         {
             return "<value-not-representable-for-cmd.exe>".to_string();
         }

@@ -709,6 +709,9 @@ impl Server for UsbMscProtocol {
                 let path = self
                     .image_dir()?
                     .resolve(disk_image_path, "the mount_disk 'disk_image'")?;
+                // The device is looked up before the image is opened, so an action with no
+                // device to mount on creates no image file.
+                self.resolve_handler(&action)?;
                 let disk = super::disk::DiskImage::open_or_create(&path, size_mb)
                     .with_context(|| format!("Failed to open disk image '{}'", path.display()))?;
                 let sectors = disk.total_sectors();

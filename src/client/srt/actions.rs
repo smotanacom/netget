@@ -33,7 +33,7 @@ fn send_file() -> ActionDefinition {
             parameter("path", "string", "Path of a .ts file under the client's media_root directory (64 MiB at most); a relative path is resolved against that directory, and nothing outside it is read", true),
             parameter("bitrate_kbps", "number", "Pacing bitrate in kbit/s, 100 to 50000 (default 2000)", false),
         ],
-        json!({"type": "srt_send_file", "path": "/tmp/clip.ts", "bitrate_kbps": 2000}),
+        json!({"type": "srt_send_file", "path": "clip.ts", "bitrate_kbps": 2000}),
     )
 }
 fn send_text() -> ActionDefinition {

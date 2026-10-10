@@ -37,7 +37,7 @@ fn publish() -> ActionDefinition {
             parameter("flv_file", "string", "Path of an FLV file under the client's media_root directory (64 MiB at most); a relative path is resolved against that directory, and nothing outside it is read", true),
             parameter("realtime", "boolean", "Pace tags by their timestamps (default true); false sends as fast as possible", false),
         ],
-        json!({"type": "rtmp_publish", "stream": "abc123", "flv_file": "/tmp/clip.flv"}),
+        json!({"type": "rtmp_publish", "stream": "abc123", "flv_file": "clip.flv"}),
     )
 }
 fn disconnect() -> ActionDefinition {
