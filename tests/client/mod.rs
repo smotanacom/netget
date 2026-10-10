@@ -384,6 +384,8 @@ pub mod dbus;
 pub mod epp;
 #[cfg(feature = "guacamole")]
 pub mod guacamole;
+#[cfg(feature = "hls")]
+pub mod hls;
 #[cfg(feature = "inetd")]
 pub mod inetd;
 #[cfg(feature = "jmap")]
