@@ -31,6 +31,8 @@ impl Protocol for SnmpProtocol {
             send_snmp_response_action(),
             send_snmp_error_action(),
             ignore_request_action(),
+            acknowledge_notification_action(),
+            ignore_notification_action(),
         ]
     }
     fn protocol_name(&self) -> &'static str {
@@ -59,8 +61,8 @@ impl Protocol for SnmpProtocol {
             .well_known_udp_port(161)
             .implementation("rasn-snmp v0.18 for parsing + manual BER encoding")
             .llm_control("OID responses (sysDescr, ifTable, custom MIBs)")
-            .e2e_testing("Net-SNMP's own snmpget/snmpgetnext (tests/server/snmp/test.rs), run with -On -Oe so the assertions pin the decoded type tag and value rather than the local MIB set. Not ignored, and it hard-fails rather than skipping when the binaries are absent. Not the `snmp` Rust crate, whatever the older notes said")
-            .notes("SNMPv1/v2c only. request-id and community are echoed from the request automatically. send_trap is defined but never leaves the process. Incoming BER is depth- and length-screened before rasn decodes it: rasn 0.18 recurses without a bound on constructed OCTET STRINGs, and a 60 KB datagram was enough to stack-overflow the whole process")
+            .e2e_testing("Net-SNMP's own snmpget/snmpgetnext (tests/server/snmp/test.rs), run with -On -Oe so the assertions pin the decoded type tag and value rather than the local MIB set. Not ignored, and it hard-fails rather than skipping when the binaries are absent. Not the `snmp` Rust crate, whatever the older notes said. Notifications (tests/server/snmp/notification_test.rs): Net-SNMP's snmptrap (v1 and v2c) and snmpinform send to NetGet, and snmptrapd receives NetGet's v2c trap, v2c inform (acknowledged) and v1 trap")
+            .notes("SNMPv1/v2c only (no SNMPv3/USM). request-id and community are echoed from the request automatically. Notifications both ways: send_trap sends v1/v2c traps and v2c informs (resent until acknowledged), and received traps and informs are snmp_notification events, an inform acknowledged only when the handler says so. Incoming BER is depth- and length-screened before rasn decodes it: rasn 0.18 recurses without a bound on constructed OCTET STRINGs, and a 60 KB datagram was enough to stack-overflow the whole process")
             .build()
     }
     fn description(&self) -> &'static str {
@@ -140,6 +142,73 @@ impl Server for SnmpProtocol {
             .await
         })
     }
+    fn execute_action_with_state<'a>(
+        &'a self,
+        action: serde_json::Value,
+        state: AppState,
+        server_id: Option<crate::state::ServerId>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<ActionResult>> + Send + 'a>,
+    > {
+        if action.get("type").and_then(|v| v.as_str()) != Some("send_trap") {
+            let result = self.execute_action(action);
+            return Box::pin(async move { result });
+        }
+        Box::pin(async move {
+            let out = super::notify::build(&action)?;
+            let kind = if out.inform { "inform" } else { "trap" };
+            let target = out.target.clone();
+            let log_state = state.clone();
+            let send = async move {
+                let outcome = super::notify::send(&out).await;
+                if let Some(id) = server_id {
+                    log_state
+                        .record_access_log(
+                            crate::state::AccessLogOwner::Server(id.as_u32()),
+                            "SNMP",
+                            None,
+                            "snmp_notification_sent",
+                            json!({"kind": kind, "target": out.target}),
+                            vec![match &outcome {
+                                Ok(result) => result.clone(),
+                                Err(e) => json!({"sent": false, "error": format!("{e:#}")}),
+                            }],
+                        )
+                        .await;
+                }
+                match outcome {
+                    Ok(result) => {
+                        let acknowledged = result["acknowledged"].as_bool();
+                        tracing::info!(
+                            "SNMP {} to {} sent{} ({})",
+                            kind,
+                            out.target,
+                            match acknowledged {
+                                Some(true) => ", acknowledged",
+                                Some(false) => ", never acknowledged",
+                                None => "",
+                            },
+                            result
+                        );
+                    }
+                    Err(e) => tracing::warn!("SNMP {} to {} failed: {:#}", kind, out.target, e),
+                }
+            };
+            // An inform waits for its Response; run it beside the request that asked for it
+            // rather than in front of that request's own answer.
+            match server_id {
+                Some(id) => {
+                    state.spawn_server_task(id, send).await;
+                }
+                None => send.await,
+            }
+            Ok(ActionResult::Custom {
+                name: "send_trap".into(),
+                data: json!({"kind": kind, "target": target}),
+            })
+        })
+    }
+
     fn execute_action(&self, action: serde_json::Value) -> Result<ActionResult> {
         let action_type = action
             .get("type")
@@ -151,33 +220,22 @@ impl Server for SnmpProtocol {
             "send_snmp_response" => self.execute_send_snmp_response(action),
             "send_snmp_error" => self.execute_send_snmp_error(action),
             "ignore_request" => Ok(ActionResult::NoAction),
+            "acknowledge_notification" => Ok(ActionResult::Custom {
+                name: "acknowledge_notification".into(),
+                data: json!({}),
+            }),
+            "ignore_notification" => Ok(ActionResult::NoAction),
             _ => Err(anyhow::anyhow!("Unknown SNMP action: {}", action_type)),
         }
     }
 }
 
 impl SnmpProtocol {
-    /// Execute send_trap async action
+    /// `send_trap` without a running server only validates and encodes: the datagram goes out
+    /// from `execute_action_with_state`, which every executor path calls.
     fn execute_send_trap(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let _target = action
-            .get("target")
-            .and_then(|v| v.as_str())
-            .context("Missing 'target' parameter")?;
-
-        let variables = action
-            .get("variables")
-            .and_then(|v| v.as_array())
-            .context("Missing 'variables' parameter")?;
-
-        // Encode trap data as JSON for now
-        // The caller will need to convert this to actual SNMP trap format
-        let trap_data = json!({
-            "variables": variables
-        });
-
-        Ok(ActionResult::Output(
-            serde_json::to_vec(&trap_data).context("Failed to serialize trap data")?,
-        ))
+        super::notify::build(&action)?;
+        Ok(ActionResult::NoAction)
     }
 
     /// Execute send_snmp_response sync action
@@ -263,39 +321,162 @@ impl SnmpProtocol {
     }
 }
 
-/// Action definition for send_trap (async)
+fn param(name: &str, type_hint: &str, description: &str, required: bool) -> Parameter {
+    Parameter {
+        name: name.to_string(),
+        type_hint: type_hint.to_string(),
+        description: description.to_string(),
+        required,
+    }
+}
+
+/// Action definition for send_trap: a v1 or v2c trap, or a v2c inform.
 fn send_trap_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_trap".to_string(),
-        description: "NOT IMPLEMENTED: this action validates its arguments and returns, but no trap datagram is ever sent to 'target'. It is listed here only so existing instructions do not fail outright - do not rely on it to notify anything.".to_string(),
+        description: "Send an SNMP notification to a manager: a v2c trap (default), a v2c inform that is resent until the manager acknowledges it, or a v1 trap. sysUpTime.0 and snmpTrapOID.0 are added for v2c; the result is logged".to_string(),
         parameters: vec![
-            Parameter {
-                name: "target".to_string(),
-                type_hint: "string".to_string(),
-                description: "Target address in format 'IP:port'".to_string(),
-                required: true,
-            },
-            Parameter {
-                name: "variables".to_string(),
-                type_hint: "array".to_string(),
-                description: "Array of variable bindings with oid, type, and value".to_string(),
-                required: true,
-            },
+            param("target", "string", "The manager: host or host:port (port 162 when omitted)", true),
+            param("trap_oid", "string", "v2c: the notification's OID (snmpTrapOID.0), e.g. 1.3.6.1.6.3.1.1.5.3 linkDown, 1.3.6.1.6.3.1.1.5.4 linkUp", false),
+            param("variables", "array", "Variable bindings [{oid, type, value}]; type is integer, string (encoding hex for binary), oid, ipaddress, counter, gauge, timeticks, counter64 (v2c only) or null", false),
+            param("version", "string", "v2c (default) or v1", false),
+            param("inform", "boolean", "v2c: send an InformRequest and wait for the manager's acknowledgement (default false: a trap)", false),
+            param("community", "string", "Community string (default public)", false),
+            param("uptime", "number", "sysUpTime / time-stamp in hundredths of a second (default: time since NetGet started)", false),
+            param("enterprise", "string", "v1: the enterprise OID (default 1.3.6.1.4.1.8072.9999)", false),
+            param("generic_trap", "number", "v1: 0 coldStart, 1 warmStart, 2 linkDown, 3 linkUp, 4 authenticationFailure, 5 egpNeighborLoss, 6 enterpriseSpecific (default)", false),
+            param("specific_trap", "number", "v1: the enterprise-specific trap number (default 0)", false),
+            param("agent_addr", "string", "v1: the agent's IPv4 address in the trap (default 0.0.0.0)", false),
         ],
         example: json!({
             "type": "send_trap",
             "target": "127.0.0.1:162",
+            "trap_oid": "1.3.6.1.6.3.1.1.5.3",
             "variables": [
-                {"oid": "1.3.6.1.2.1.1.3.0", "type": "timeticks", "value": 12345}
+                {"oid": "1.3.6.1.2.1.2.2.1.1.2", "type": "integer", "value": 2}
             ]
         }),
         log_template: Some(
             LogTemplate::new()
-                .with_info("-> SNMP trap to {target}")
+                .with_info("-> SNMP notification to {target}")
                 .with_debug("SNMP send_trap: target={target}, {variables_len} vars"),
         ),
     }
 }
+
+fn acknowledge_notification_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "acknowledge_notification".to_string(),
+        description: "Accept the notification. For an inform this sends the Response the sender is waiting for; for a trap nothing goes on the wire".to_string(),
+        parameters: vec![],
+        example: json!({"type": "acknowledge_notification"}),
+        log_template: Some(
+            LogTemplate::new()
+                .with_info("SNMP notification acknowledged")
+                .with_debug("SNMP acknowledge_notification"),
+        ),
+    }
+}
+
+fn ignore_notification_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "ignore_notification".to_string(),
+        description:
+            "Do not accept it: an inform gets no Response, so its sender retries and then gives up"
+                .to_string(),
+        parameters: vec![],
+        example: json!({"type": "ignore_notification"}),
+        log_template: Some(
+            LogTemplate::new()
+                .with_info("SNMP notification ignored")
+                .with_debug("SNMP ignore_notification"),
+        ),
+    }
+}
+
+pub static SNMP_NOTIFICATION_EVENT: LazyLock<EventType> =
+    LazyLock::new(|| {
+        EventType::new(
+            "snmp_notification",
+            "A trap or inform arrived from an agent",
+            json!({"type": "acknowledge_notification"}),
+        )
+        .with_parameters(vec![
+        param(
+            "kind",
+            "string",
+            "trap or inform (an inform waits for acknowledgement)",
+            true,
+        ),
+        param("version", "string", "The SNMP version the notification used: v1 or v2c", true),
+        param(
+            "community",
+            "string",
+            "Community string the sender used",
+            true,
+        ),
+        param(
+            "trap_oid",
+            "string",
+            "v2c: snmpTrapOID.0, the notification's identity (e.g. 1.3.6.1.6.3.1.1.5.3 linkDown)",
+            false,
+        ),
+        param(
+            "uptime",
+            "number",
+            "The sender's sysUpTime (v2c) or time-stamp (v1), hundredths of a second",
+            false,
+        ),
+        param("enterprise", "string", "v1: the enterprise OID", false),
+        param(
+            "agent_addr",
+            "string",
+            "v1: the agent address the trap names",
+            false,
+        ),
+        param(
+            "generic_trap",
+            "number",
+            "v1: 0 coldStart … 6 enterpriseSpecific",
+            false,
+        ),
+        param(
+            "specific_trap",
+            "number",
+            "v1: the enterprise-specific trap number",
+            false,
+        ),
+        param(
+            "variables",
+            "array",
+            "The other variable bindings [{oid, type, value}] (binary strings carry encoding hex)",
+            true,
+        ),
+        param(
+            "request_id",
+            "number",
+            "v2c: the PDU's request id (an inform's acknowledgement echoes it automatically)",
+            false,
+        ),
+        param(
+            "client_ip",
+            "string",
+            "Where the notification came from",
+            true,
+        ),
+    ])
+        .with_actions(vec![
+            acknowledge_notification_action(),
+            ignore_notification_action(),
+            send_trap_action(),
+        ])
+        .with_log_template(
+            LogTemplate::new()
+                .with_info("SNMP {kind} from {client_ip}")
+                .with_debug("SNMP {version} {kind} from {client_ip}: {trap_oid} {variables}")
+                .with_trace("SNMP: {json_pretty(.)}"),
+        )
+    });
 
 /// Action definition for send_snmp_response (sync)
 fn send_snmp_response_action() -> ActionDefinition {
@@ -441,6 +622,7 @@ pub static SNMP_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         send_snmp_response_action(),
         send_snmp_error_action(),
         ignore_request_action(),
+        send_trap_action(),
     ])
     .with_log_template(
         LogTemplate::new()
@@ -508,5 +690,5 @@ pub fn answer_with_for_request(request_type: &str, oids: &[String]) -> String {
 }
 
 pub fn get_snmp_event_types() -> Vec<EventType> {
-    vec![SNMP_REQUEST_EVENT.clone()]
+    vec![SNMP_REQUEST_EVENT.clone(), SNMP_NOTIFICATION_EVENT.clone()]
 }

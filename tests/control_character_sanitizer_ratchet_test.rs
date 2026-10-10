@@ -37,12 +37,6 @@ use std::path::{Path, PathBuf};
 /// The count is the number of occurrences allowed in that file. It may only go down.
 const ALLOWED: &[(&str, usize, &str)] = &[
     (
-        "src/client/dc/mod.rs",
-        1,
-        "validator: NMDC has no escape for a nickname, so validate_nmdc_nickname refuses one \
-         with whitespace, a control character or a protocol delimiter rather than altering it",
-    ),
-    (
         "src/server/proxy/filter.rs",
         2,
         "validator: a model-supplied header value, or a request path or query part, with a \

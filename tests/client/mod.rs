@@ -384,6 +384,8 @@ pub mod dbus;
 pub mod epp;
 #[cfg(feature = "guacamole")]
 pub mod guacamole;
+#[cfg(feature = "hls")]
+pub mod hls;
 #[cfg(feature = "inetd")]
 pub mod inetd;
 #[cfg(feature = "jmap")]
@@ -418,6 +420,10 @@ pub mod rcon;
 pub mod restconf;
 #[cfg(feature = "rsync")]
 pub mod rsync;
+#[cfg(feature = "rtp")]
+pub mod rtp;
+#[cfg(feature = "rtsp")]
+pub mod rtsp;
 #[cfg(feature = "smpp")]
 pub mod smpp;
 #[cfg(feature = "stratum")]

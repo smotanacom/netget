@@ -1,5 +1,6 @@
 //! Redis server implementation with RESP protocol
 pub mod actions;
+pub mod resp3;
 
 use crate::llm::action_helper::call_llm;
 use crate::llm::actions::protocol_trait::ActionResult;
@@ -320,6 +321,32 @@ impl RedisHandler {
         }
     }
 
+    /// Write one reply and count it. The guard is dropped before the next `call_llm` await.
+    async fn write_reply<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        write_half: &Arc<tokio::sync::Mutex<W>>,
+        reply: &[u8],
+    ) -> Result<()> {
+        {
+            let mut writer = write_half.lock().await;
+            writer.write_all(reply).await?;
+            writer.flush().await?;
+        }
+        if let Some(server_id) = self.server_id {
+            self.app_state
+                .update_connection_stats(
+                    server_id,
+                    self.connection_id,
+                    None,
+                    Some(reply.len() as u64),
+                    None,
+                    Some(1),
+                )
+                .await;
+        }
+        Ok(())
+    }
+
     async fn run(self, stream: TcpStream) -> Result<()> {
         // Copied out before `self` is partially moved into the tasks below.
         let first_byte_timeout = self.first_byte_timeout;
@@ -493,11 +520,47 @@ impl RedisHandler {
                         let command_for_log = crate::utils::truncate_for_log(&command_str, 512);
                         log.debug(format!("Redis command: {}", command_for_log));
 
+                        // HELLO is protocol negotiation and is answered here. With AUTH it
+                        // also carries credentials, which only the handler can judge, so it
+                        // goes to the model like AUTH does and the switch waits on its
+                        // answer: anything but an error accepts.
+                        let mut hello_switch: Option<u8> = None;
+                        if let Some(args) = hello_args(&frame) {
+                            match resp3::parse_hello(&args) {
+                                Err(message) => {
+                                    self.write_reply(&write_half, &encode_error(&message))
+                                        .await?;
+                                    offset += consumed;
+                                    continue;
+                                }
+                                Ok(hello) => {
+                                    let target =
+                                        hello.protover.unwrap_or(protocol.protocol_version());
+                                    if hello.auth.is_none() {
+                                        protocol.set_protocol_version(target);
+                                        log.info(format!(
+                                            "Redis connection {} speaks RESP{} (HELLO)",
+                                            self.connection_id, target
+                                        ));
+                                        let reply = resp3::hello_reply(
+                                            target,
+                                            u64::from(self.connection_id.as_u32()),
+                                        );
+                                        self.write_reply(&write_half, &reply).await?;
+                                        offset += consumed;
+                                        continue;
+                                    }
+                                    hello_switch = Some(target);
+                                }
+                            }
+                        }
+
                         // Create command event
                         let event = Event::new(
                             &REDIS_COMMAND_EVENT,
                             serde_json::json!({
                                 "command": command_str.clone(),
+                                "protocol": protocol.protocol_version(),
                             }),
                         );
 
@@ -598,25 +661,25 @@ impl RedisHandler {
                             }
                         }
 
+                        if let Some(target) = hello_switch {
+                            if response.starts_with(b"-") {
+                                log.info(format!(
+                                    "Redis connection {} decision=model_reject: HELLO with AUTH \
+                                     refused; staying on RESP{}",
+                                    self.connection_id,
+                                    protocol.protocol_version()
+                                ));
+                            } else {
+                                protocol.set_protocol_version(target);
+                                response = resp3::hello_reply(
+                                    target,
+                                    u64::from(self.connection_id.as_u32()),
+                                );
+                            }
+                        }
+
                         if !response.is_empty() {
-                            {
-                                // Guard dropped before the next `call_llm` await.
-                                let mut writer = write_half.lock().await;
-                                writer.write_all(&response).await?;
-                                writer.flush().await?;
-                            }
-                            if let Some(server_id) = self.server_id {
-                                self.app_state
-                                    .update_connection_stats(
-                                        server_id,
-                                        self.connection_id,
-                                        None,
-                                        Some(response.len() as u64),
-                                        None,
-                                        Some(1),
-                                    )
-                                    .await;
-                            }
+                            self.write_reply(&write_half, &response).await?;
                         }
 
                         if close_after_write {
@@ -644,6 +707,22 @@ impl RedisHandler {
             buffer.drain(..offset);
         }
     }
+}
+
+/// The arguments of a `HELLO` command, or `None` for any other command.
+fn hello_args(frame: &Frame) -> Option<Vec<String>> {
+    let Frame::Array(parts) = frame else {
+        return None;
+    };
+    let text = |f: &Frame| match f {
+        Frame::BulkString(b) | Frame::SimpleString(b) => String::from_utf8_lossy(b).to_string(),
+        Frame::Integer(i) => i.to_string(),
+        other => format!("{other:?}"),
+    };
+    let first = parts.first().map(text)?;
+    first
+        .eq_ignore_ascii_case("HELLO")
+        .then(|| parts[1..].iter().map(text).collect())
 }
 
 /// Convert RESP frame to command string for display

@@ -1,6 +1,6 @@
 # Redis Protocol E2E Tests
 
-Seven files, all declared in `tests/server/redis/mod.rs`.
+Eight files, all declared in `tests/server/redis/mod.rs`.
 
 | File | Tests | What it proves | LLM calls |
 |---|---|---|---|
@@ -10,6 +10,7 @@ Seven files, all declared in `tests/server/redis/mod.rs`.
 | `resp_framing_test.rs` | 3 | Model output cannot split a frame; `stop_server` stops sessions | 0 |
 | `llm_failure_test.rs` | 1 | The RESP error a client sees when the backend fails | 1 |
 | `peer_inject_test.rs` | 1 | Dashboard injection reaches the socket | 0 |
+| `resp3_test.rs` | 2 | `HELLO 3` and every RESP3 type through redis-cli `-3` and redis-py 5, the RESP2 downgrades, a push, and credentials in `HELLO` | 0 |
 | `resp_depth_test.rs` | 4 | A RESP nesting bomb or an impossible declared length is refused before the decoder, and the process survives | 0 |
 
 ## Running
@@ -169,8 +170,11 @@ right.
 
 ## Known limitations of the suite
 
-- **RESP3 is not tested** because the server does not implement it (no `HELLO 3`).
-  Neither client sends `HELLO 3`.
+- **RESP3 is tested in `resp3_test.rs` only**, with a python handler: redis-cli `-3`
+  renders map, set, double, boolean, verbatim and null (7.0 has no case for a big number
+  and stops with "Unknown reply type: 13", so redis-py carries that one), and redis-py's
+  pure-Python RESP3 parser reads them all, plus a push before a reply. `redis-py` must be
+  importable from `NETGET_REDIS_PYTHON` (default `python3`); the test fails otherwise.
 - **Inline commands** (`PING\r\n` typed into `nc`) are not tested; only RESP
   arrays decode, and both redis-cli and redis-rs always send arrays.
 - **Pipelining** — the read loop processes several frames from one read in order,

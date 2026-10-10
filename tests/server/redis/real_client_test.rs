@@ -19,7 +19,7 @@
 //!   desynchronisation `resp_framing_test.rs` guards the *cause* of — fails here as a
 //!   mismatched line rather than passing as a same-typed value.
 //!
-//! What this does not add: RESP3 (the server implements no `HELLO 3`), inline commands, and
+//! What this does not add: RESP3 (`resp3_test.rs` covers it), inline commands, and
 //! pipelining — redis-cli, like redis-rs, sends one RESP array per command and waits.
 //!
 //! Run with:

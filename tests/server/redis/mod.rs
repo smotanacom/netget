@@ -9,6 +9,8 @@ mod peer_inject_test;
 #[cfg(all(test, feature = "redis"))]
 mod real_client_test;
 #[cfg(all(test, feature = "redis"))]
+mod resp3_test;
+#[cfg(all(test, feature = "redis"))]
 mod resp_depth_test;
 #[cfg(all(test, feature = "redis"))]
 mod resp_framing_test;

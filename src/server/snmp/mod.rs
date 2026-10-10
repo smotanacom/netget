@@ -1,5 +1,6 @@
 //! SNMP agent implementation using rasn-snmp library
 pub mod actions;
+pub mod notify;
 
 use crate::server::connection::ConnectionId;
 use anyhow::Result;
@@ -14,6 +15,7 @@ use rasn::{ber, types::Integer};
 use rasn_snmp::{v1, v2, v2c};
 
 use crate::llm::action_helper::call_llm;
+use crate::llm::actions::protocol_trait::ActionResult;
 use crate::llm::ollama_client::OllamaClient;
 use crate::protocol::Event;
 use crate::server::SnmpProtocol;
@@ -253,6 +255,28 @@ impl SnmpServer {
                         // TRACE: Log full payload
                         let hex_str = hex::encode(&data);
                         console_trace!(status_tx, "SNMP data (hex): {}", hex_str);
+
+                        // A trap or an inform is a notification, not a request: it has no
+                        // variables to answer and goes to the handler as one event.
+                        if check_ber_structure(&data, MAX_BER_DEPTH).is_ok() {
+                            if let Some(received) = notify::parse(&data) {
+                                let llm = llm_client.clone();
+                                let state = app_state.clone();
+                                let status = status_tx.clone();
+                                let socket = socket.clone();
+                                let protocol = protocol.clone();
+                                app_state
+                                    .spawn_server_task(server_id, async move {
+                                        Self::handle_notification(
+                                            received, peer_addr, llm, state, status, socket,
+                                            protocol, server_id,
+                                        )
+                                        .await;
+                                    })
+                                    .await;
+                                continue;
+                            }
+                        }
 
                         // Parse the SNMP message
                         let parsed = match Self::parse_snmp_message(&data) {
@@ -545,6 +569,74 @@ impl SnmpServer {
             .await;
 
         Ok(local_addr)
+    }
+
+    /// Ask the handler about a trap or inform; acknowledge an inform only if it says so.
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_notification(
+        received: notify::Received,
+        peer_addr: SocketAddr,
+        llm_client: OllamaClient,
+        app_state: Arc<AppState>,
+        status_tx: mpsc::UnboundedSender<String>,
+        socket: Arc<UdpSocket>,
+        protocol: Arc<SnmpProtocol>,
+        server_id: crate::state::ServerId,
+    ) {
+        let mut data = received.data;
+        data["client_ip"] = serde_json::json!(peer_addr.ip().to_string());
+        let event = Event::new(&actions::SNMP_NOTIFICATION_EVENT, data);
+        let acknowledged = match call_llm(
+            &llm_client,
+            &app_state,
+            server_id,
+            None,
+            &event,
+            protocol.as_ref(),
+        )
+        .await
+        {
+            Ok(result) => result.protocol_results.iter().any(|r| {
+                matches!(r, ActionResult::Custom { name, .. } if name == "acknowledge_notification")
+            }),
+            Err(e) => {
+                // Not acknowledging is the only safe failure: an inform's sender then retries.
+                warn!(
+                    "SNMP {} from {} decision=fail_closed_llm_error: {}",
+                    received.kind, peer_addr, e
+                );
+                return;
+            }
+        };
+        let Some(ack) = received.acknowledgement else {
+            info!(
+                "SNMP trap from {} decision={}",
+                peer_addr,
+                if acknowledged {
+                    "model_accept"
+                } else {
+                    "model_ignore"
+                }
+            );
+            return;
+        };
+        if !acknowledged {
+            info!(
+                "SNMP inform from {} decision=model_ignore: not acknowledged",
+                peer_addr
+            );
+            return;
+        }
+        match socket.send_to(&ack, peer_addr).await {
+            Ok(_) => {
+                info!(
+                    "SNMP inform from {} decision=model_accept: acknowledged",
+                    peer_addr
+                );
+                let _ = status_tx.send(format!("[INFO] SNMP inform from {peer_addr} acknowledged"));
+            }
+            Err(e) => error!("SNMP inform acknowledgement to {} failed: {}", peer_addr, e),
+        }
     }
 
     /// Parse SNMP message and extract relevant information

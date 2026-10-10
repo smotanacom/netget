@@ -266,7 +266,7 @@ pub static RTCP_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     )
 });
 
-fn send_rtp_audio_action() -> ActionDefinition {
+pub fn send_rtp_audio_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_rtp_audio".to_string(),
         description: "Stream synthesized G.711 audio to the caller as RTP packets. Describe the \
@@ -368,7 +368,7 @@ fn send_rtp_audio_action() -> ActionDefinition {
     }
 }
 
-fn send_rtcp_sender_report_action() -> ActionDefinition {
+pub fn send_rtcp_sender_report_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_rtcp_sender_report".to_string(),
         description: "Send a minimal RTCP Sender Report (RFC 3550 §6.4.1) to the caller."
