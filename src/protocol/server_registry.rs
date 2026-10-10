@@ -482,6 +482,10 @@ impl ServerRegistry {
         self.register(Arc::new(
             crate::server::sunrpc::actions::SunRpcProtocol::new(),
         ));
+        #[cfg(feature = "guacamole")]
+        self.register(Arc::new(
+            crate::server::guacamole::actions::GuacamoleProtocol::new(),
+        ));
         #[cfg(feature = "wsdiscovery")]
         self.register(Arc::new(
             crate::server::wsdiscovery::actions::WsDiscoveryProtocol::new(),
@@ -1724,6 +1728,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("Matrix", "matrix"),
     ("libp2p", "libp2p"),
     ("SunRPC", "sunrpc"),
+    ("Guacamole", "guacamole"),
     ("WS-Discovery", "wsdiscovery"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
