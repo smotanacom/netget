@@ -138,6 +138,7 @@ portable-base = [
     "capnp-rpc",
     "knx",
     "consul",
+    "milter",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -378,6 +379,7 @@ zipkin = ["dep:flate2"] # Zipkin collector/read API and span reporter
 capnp-rpc = ["dep:tempfile"] # Cap'n Proto RPC server and client, schema-typed
 knx = [] # KNXnet/IP tunnelling gateway and client
 consul = ["urlencoding"] # Consul agent HTTP API server and client
+milter = [] # Mail filter (milter) protocol server and MTA-side client
 jmap = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"] # JMAP (RFC 8620/8621) server and client
 webtransport = ["dep:rustls", "dep:wtransport", "dep:wtransport-proto", "dep:sha2"] # WebTransport over HTTP/3 (draft-02) server and client
 graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
@@ -698,6 +700,7 @@ dist-windows = [
     "capnp-rpc",
     "knx",
     "consul",
+    "milter",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -916,6 +919,7 @@ all-protocols = [
     "capnp-rpc",
     "knx",
     "consul",
+    "milter",
     "sflow",
     "prometheus-remote-write",
     "ssh",

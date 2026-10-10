@@ -126,6 +126,7 @@ fn golden_duals_map() {
         "Cap'n Proto RPC",
         "KNX/IP",
         "Consul",
+        "Milter",
         "Nostr",
         "Vault",
         "Bolt",

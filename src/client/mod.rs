@@ -782,6 +782,8 @@ pub mod lmtp;
 pub mod lpd;
 #[cfg(feature = "lwm2m")]
 pub mod lwm2m;
+#[cfg(feature = "milter")]
+pub mod milter;
 #[cfg(feature = "minecraft")]
 pub mod minecraft;
 #[cfg(feature = "msgpack-rpc")]

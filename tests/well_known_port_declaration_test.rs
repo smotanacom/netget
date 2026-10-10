@@ -198,6 +198,11 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
         "webrtc",
         "WebRTC media and data ride ICE-negotiated ephemeral UDP ports; there is no fixed one",
     ),
+    (
+        "milter",
+        "no registry or specification assigns a milter port; each filter's socket is local MTA \
+         configuration and the filters disagree (OpenDKIM 8891, OpenDMARC 8893, rspamd 11332)",
+    ),
 ];
 
 fn server_action_files() -> Vec<(String, PathBuf)> {

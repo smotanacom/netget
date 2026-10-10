@@ -448,6 +448,10 @@ impl ServerRegistry {
         self.register(Arc::new(
             crate::server::consul::actions::ConsulProtocol::new(),
         ));
+        #[cfg(feature = "milter")]
+        self.register(Arc::new(
+            crate::server::milter::actions::MilterProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1675,6 +1679,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("Cap'n Proto RPC", "capnp-rpc"),
     ("KNX/IP", "knx"),
     ("Consul", "consul"),
+    ("Milter", "milter"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),
