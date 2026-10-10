@@ -11,3 +11,7 @@ on port 4784.
 - Meticulous keyed MD5 with key id 7 comes Up.
 
 Mutation-checked: discarding the model's actions fails the session test at "Up at 0.400".
+
+BIRD's BFD sockets set SO_PRIORITY 7, which needs CAP_NET_ADMIN. Run unprivileged without
+it, every BFD socket fails and sessions never leave Down. CI therefore runs
+`setcap cap_net_admin+ep` on the bird binary; locally, run as root or do the same.
