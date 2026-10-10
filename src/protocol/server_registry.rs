@@ -470,6 +470,10 @@ impl ServerRegistry {
         self.register(Arc::new(crate::server::rsync::actions::RsyncProtocol::new()));
         #[cfg(feature = "pfcp")]
         self.register(Arc::new(crate::server::pfcp::actions::PfcpProtocol::new()));
+        #[cfg(feature = "matrix")]
+        self.register(Arc::new(
+            crate::server::matrix::actions::MatrixProtocol::new(),
+        ));
         #[cfg(feature = "wsdiscovery")]
         self.register(Arc::new(
             crate::server::wsdiscovery::actions::WsDiscoveryProtocol::new(),
@@ -1709,6 +1713,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("VXLAN", "vxlan"),
     ("rsync", "rsync"),
     ("PFCP", "pfcp"),
+    ("Matrix", "matrix"),
     ("WS-Discovery", "wsdiscovery"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),

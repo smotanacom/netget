@@ -146,6 +146,7 @@ portable-base = [
     "vxlan",
     "rsync",
     "pfcp",
+    "matrix",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -396,6 +397,7 @@ bfd = ["dep:md-5", "dep:sha1"] # BFD (RFC 5880/5881/5883) speaker and client, ha
 vxlan = [] # VXLAN (RFC 7348) and Geneve (RFC 8926) tunnel endpoint and overlay host, hand-rolled
 rsync = ["dep:md4"] # rsync daemon (rsync://, protocol 29) and client, hand-rolled; md4 for its checksums
 pfcp = [] # PFCP (3GPP TS 29.244, the 5G N4 interface) UPF and SMF, hand-rolled
+matrix = ["urlencoding"] # Matrix homeserver (client-server API v3) and client, hyper HTTP/1.1
 wsdiscovery = ["quick-xml"] # WS-Discovery (SOAP-over-UDP 3702) target service and discovery client, 2005/04 and 2009/01
 x11 = [] # X11 client (X Window System core protocol): windows, properties and events against an X server
 jmap = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"] # JMAP (RFC 8620/8621) server and client
@@ -726,6 +728,7 @@ dist-windows = [
     "vxlan",
     "rsync",
     "pfcp",
+    "matrix",
     "wsdiscovery",
     "x11",
     "sflow",
@@ -954,6 +957,7 @@ all-protocols = [
     "vxlan",
     "rsync",
     "pfcp",
+    "matrix",
     "wsdiscovery",
     "x11",
     "sflow",
