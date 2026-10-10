@@ -812,6 +812,8 @@ pub mod ninep;
 pub mod oci_registry;
 #[cfg(feature = "pfcp")]
 pub mod pfcp;
+#[cfg(feature = "pulsar")]
+pub mod pulsar;
 #[cfg(feature = "radsec")]
 pub mod radsec;
 #[cfg(feature = "rcon")]
@@ -824,8 +826,12 @@ pub mod rsync;
 pub mod rtp;
 #[cfg(feature = "smpp")]
 pub mod smpp;
+#[cfg(feature = "stratum")]
+pub mod stratum;
 #[cfg(feature = "sunrpc")]
 pub mod sunrpc;
+#[cfg(feature = "tr069")]
+pub mod tr069;
 #[cfg(feature = "vxlan")]
 pub mod vxlan;
 #[cfg(feature = "webtransport")]
@@ -834,6 +840,8 @@ pub mod webtransport;
 pub mod wsdiscovery;
 #[cfg(feature = "x11")]
 pub mod x11;
+#[cfg(feature = "zabbix")]
+pub mod zabbix;
 #[cfg(feature = "zenoh")]
 pub mod zenoh;
 #[cfg(feature = "zeromq")]

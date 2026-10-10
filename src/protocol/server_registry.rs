@@ -490,6 +490,16 @@ impl ServerRegistry {
         self.register(Arc::new(
             crate::server::activitypub::actions::ActivityPubProtocol::new(),
         ));
+        #[cfg(feature = "stratum")]
+        self.register(Arc::new(
+            crate::server::stratum::actions::StratumProtocol::new(),
+        ));
+        #[cfg(feature = "pulsar")]
+        self.register(Arc::new(
+            crate::server::pulsar::actions::PulsarProtocol::new(),
+        ));
+        #[cfg(feature = "tr069")]
+        self.register(Arc::new(crate::server::tr069::actions::Tr069Protocol::new()));
         #[cfg(feature = "wsdiscovery")]
         self.register(Arc::new(
             crate::server::wsdiscovery::actions::WsDiscoveryProtocol::new(),
@@ -1734,6 +1744,9 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("SunRPC", "sunrpc"),
     ("Guacamole", "guacamole"),
     ("ActivityPub", "activitypub"),
+    ("Stratum", "stratum"),
+    ("Apache Pulsar", "pulsar"),
+    ("TR-069 (CWMP)", "tr069"),
     ("WS-Discovery", "wsdiscovery"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
