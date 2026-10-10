@@ -8667,6 +8667,7 @@ dependencies = [
  "rfb",
  "ring 0.17.14",
  "rmcp",
+ "rsa",
  "rsntp",
  "rss",
  "rumqttc",
