@@ -673,6 +673,14 @@ jobs:
           python3 -m pip install --user 'smbprotocol==1.17.*'
           python3 -c "import smbprotocol, smbclient; print('smbprotocol ok')"
 
+      # redis::resp3_test's second RESP3 client is redis-py 5 with protocol=3: its own
+      # pure-Python RESP3 parser, credentials sent inside HELLO, and a push handler.
+      - name: Install the Redis client library (redis-py)
+        continue-on-error: true
+        run: |
+          python3 -m pip install --user 'redis==5.2.*'
+          python3 -c "import redis; print('redis-py', redis.__version__)"
+
       # client/modbus::real_server_test runs a pymodbus 3.15 device (its own framer and
       # datastore, in Python; NetGet's Modbus client frames with NetGet's codec) and reads what
       # the model wrote back with mbpoll, installed above. 3.15 because the test's device script
@@ -1089,7 +1097,7 @@ jobs:
             oci_registry::e2e_test ollama::real_client_test openvpn:: \
             postgresql::real_client_test \
             prometheus::real_client_test otlp::real_client_test \
-            pypi::e2e_test quic::independent_peer_test radius::real_client_test redis::real_client_test \
+            pypi::e2e_test quic::independent_peer_test radius::real_client_test redis::real_client_test redis::resp3_test \
             rtsp::ffprobe_test s3::real_client_test sip::real_client_test \
             smb::real_client_test statsd::real_client_test graphite::real_client_test \
             sqs::real_client_test ssh::real_client_test stun::real_client_test \
@@ -1279,6 +1287,9 @@ jobs:
           kdig -V
           redis-cli --version
           redis-server --version
+          # server::redis::resp3_test's second RESP3 client (redis-py, protocol=3).
+          python3 -m pip install --user --break-system-packages 'redis==5.2.*'
+          python3 -c "import redis; print('redis-py', redis.__version__)"
           # /usr/sbin, which the real-server helper also searches.
           nginx -v
 
