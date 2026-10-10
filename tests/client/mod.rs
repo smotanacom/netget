@@ -420,10 +420,10 @@ pub mod restconf;
 pub mod rsync;
 #[cfg(feature = "smpp")]
 pub mod smpp;
-#[cfg(feature = "sunrpc")]
-pub mod sunrpc;
 #[cfg(feature = "stratum")]
 pub mod stratum;
+#[cfg(feature = "sunrpc")]
+pub mod sunrpc;
 #[cfg(feature = "tr069")]
 pub mod tr069;
 #[cfg(feature = "vxlan")]
