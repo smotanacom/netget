@@ -1090,16 +1090,6 @@ log_template/server:Memcached/send_memcached_stats
 log_template/server:Memcached/send_memcached_status
 log_template/server:Memcached/send_memcached_values
 log_template/server:Memcached/send_memcached_version
-log_template/server:RADIUS/radius_access_request/action/send_access_accept
-log_template/server:RADIUS/radius_access_request/action/send_access_challenge
-log_template/server:RADIUS/radius_access_request/action/send_access_reject
-log_template/server:RADIUS/radius_accounting_request/action/send_accounting_response
-log_template/server:RADIUS/radius_status_server/action/send_access_accept
-log_template/server:RADIUS/radius_status_server/action/send_access_reject
-log_template/server:RADIUS/send_access_accept
-log_template/server:RADIUS/send_access_challenge
-log_template/server:RADIUS/send_access_reject
-log_template/server:RADIUS/send_accounting_response
 log_template/server:SSDP/no_response
 log_template/server:SSDP/send_ssdp_notify
 log_template/server:SSDP/send_ssdp_response

@@ -161,6 +161,19 @@ impl RadiusServer {
                     }
                 };
 
+                // A Message-Authenticator that does not verify (RFC 3579 §3.2): the sender
+                // does not hold the shared secret, so the packet is silently discarded.
+                if let Err(e) = packet::verify_request_message_authenticator(&data, &secret) {
+                    Log::new(Some(&status_tx)).warn(format!(
+                        "RADIUS dropped {} id={} from {}: {}",
+                        packet::code_name(request.code),
+                        request.identifier,
+                        peer_addr,
+                        e
+                    ));
+                    continue;
+                }
+
                 // Accounting-Request carries a verifiable authenticator. A mismatch means
                 // the sender does not hold the shared secret, so the packet is dropped —
                 // this is the one inbound integrity check RADIUS actually affords.
@@ -237,7 +250,7 @@ impl RadiusServer {
         state.add_connection_to_server(server_id, conn_state).await;
     }
 
-    /// Ask the model, then apply the fail-closed rule.
+    /// Ask the model, apply the fail-closed rule and send the reply on the UDP socket.
     #[allow(clippy::too_many_arguments)]
     async fn handle_request(
         request: RadiusPacket,
@@ -249,6 +262,59 @@ impl RadiusServer {
         server_id: ServerId,
         secret: Arc<Vec<u8>>,
     ) {
+        let (code, identifier) = (request.code, request.identifier);
+        let Some(reply) = Self::answer(
+            request,
+            peer_addr,
+            None,
+            llm_client,
+            state,
+            status_tx.clone(),
+            server_id,
+            secret,
+        )
+        .await
+        else {
+            debug!(
+                "RADIUS sending nothing for {} id={} from {}",
+                packet::code_name(code),
+                identifier,
+                peer_addr
+            );
+            return;
+        };
+
+        match socket.send_to(&reply, peer_addr).await {
+            Ok(sent) => {
+                trace!(
+                    "RADIUS sent {} bytes to {}: {}",
+                    sent,
+                    peer_addr,
+                    hex::encode(&reply)
+                );
+            }
+            Err(e) => {
+                Log::new(Some(&status_tx))
+                    .error(format!("RADIUS failed to reply to {}: {}", peer_addr, e));
+            }
+        }
+    }
+
+    /// Ask the model about one request and apply the fail-closed rule: the reply to send, or
+    /// `None` when the request must go unanswered (accounting the model did not acknowledge, or
+    /// a code that is not a request). Shared by the UDP server and RadSec, which carries the
+    /// same packets over TLS.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn answer(
+        request: RadiusPacket,
+        peer_addr: SocketAddr,
+        connection_id: Option<ConnectionId>,
+        llm_client: crate::llm::ollama_client::OllamaClient,
+        state: Arc<AppState>,
+        status_tx: mpsc::UnboundedSender<String>,
+        server_id: ServerId,
+        secret: Arc<Vec<u8>>,
+    ) -> Option<Vec<u8>> {
         let protocol = actions::RadiusProtocol::for_request(actions::RequestContext {
             identifier: request.identifier,
             authenticator: request.authenticator,
@@ -286,11 +352,19 @@ impl RadiusServer {
                     other,
                     peer_addr
                 );
-                return;
+                return None;
             }
         };
 
-        let llm_outcome = call_llm(&llm_client, &state, server_id, None, &event, &protocol).await;
+        let llm_outcome = call_llm(
+            &llm_client,
+            &state,
+            server_id,
+            connection_id,
+            &event,
+            &protocol,
+        )
+        .await;
 
         let (decision, reply) =
             Self::decide(&request, llm_outcome, &protocol, &status_tx, peer_addr);
@@ -314,31 +388,7 @@ impl RadiusServer {
         } else {
             log.info(&summary);
         }
-
-        let Some(reply) = reply else {
-            debug!(
-                "RADIUS sending nothing for {} id={} from {}",
-                packet::code_name(request.code),
-                request.identifier,
-                peer_addr
-            );
-            return;
-        };
-
-        match socket.send_to(&reply, peer_addr).await {
-            Ok(sent) => {
-                trace!(
-                    "RADIUS sent {} bytes to {}: {}",
-                    sent,
-                    peer_addr,
-                    hex::encode(&reply)
-                );
-            }
-            Err(e) => {
-                Log::new(Some(&status_tx))
-                    .error(format!("RADIUS failed to reply to {}: {}", peer_addr, e));
-            }
-        }
+        reply
     }
 
     /// **The fail-closed rule.**

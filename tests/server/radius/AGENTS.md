@@ -126,14 +126,13 @@ blocking `test` job never compiles it. Nor does `single-feature`, whose list is
 not among them. If `radius` is ever added to `CI_FEATURES`, the workflow must install
 `freeradius-utils` the same way it already installs `bind9-dnsutils` for the `dig` test.
 
-Note that `radclient` sends a **Message-Authenticator** (attribute 80) by default. NetGet
-neither verifies nor returns one; `radclient` 3.2.x does not require it, so the exchange
-succeeds. This is stated in `src/server/radius/AGENTS.md` and in `metadata()` rather than
-papered over: a NAS configured to demand Message-Authenticator will reject our replies.
+`radclient` sends a **Message-Authenticator** (attribute 80) by default; NetGet verifies it
+and puts its own first in every Access reply, which radclient then checks. The fail-closed
+test pins that signed reply byte for byte against Python's `hmac`/`hashlib`.
 
 ## What is deliberately not tested, because it is not implemented
 
-CHAP, MS-CHAP, EAP and Message-Authenticator. There is no test asserting they work, because
+CHAP, MS-CHAP and EAP. There is no test asserting they work, because
 they do not, and `metadata()` says so. Adding a test that merely asserts "CHAP-Password
 appears in the event as hex" would read as coverage of CHAP and is worse than nothing.
 

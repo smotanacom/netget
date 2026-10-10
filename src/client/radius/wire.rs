@@ -19,23 +19,7 @@ use crate::server::radius::packet::{
 };
 use md5::{Digest, Md5};
 
-/// HMAC-MD5 (RFC 2104), which RFC 3579's Message-Authenticator is.
-pub fn hmac_md5(key: &[u8], message: &[u8]) -> [u8; 16] {
-    let mut block = [0u8; 64];
-    if key.len() > 64 {
-        block[..16].copy_from_slice(&Md5::digest(key));
-    } else {
-        block[..key.len()].copy_from_slice(key);
-    }
-    let mut inner = Md5::new();
-    inner.update(block.map(|b| b ^ 0x36));
-    inner.update(message);
-    let inner = inner.finalize();
-    let mut outer = Md5::new();
-    outer.update(block.map(|b| b ^ 0x5c));
-    outer.update(inner);
-    outer.finalize().into()
-}
+pub use crate::server::radius::packet::hmac_md5;
 
 /// CHAP-Password's value: the CHAP identifier, then `MD5(id | password | challenge)`.
 ///

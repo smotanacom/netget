@@ -110,3 +110,12 @@ All four conditions of the client bar hold, on `tests/client/radius/real_server_
 Passed three consecutive runs at `--test-threads=100` before promotion, against FreeRADIUS
 3.2.10. CI's registry-audit runs Ubuntu 22.04's FreeRADIUS 3.0.26. Not claimed: EAP, MS-CHAP,
 CoA, and the challenge path against a real server.
+
+## The transport's link: UDP, or a RadSec stream
+
+`Transport` owns a `Link` rather than a socket: `Link::Udp` is this client, unchanged;
+`Link::Stream` is RadSec (`src/client/radsec/`), the same packets on one TLS connection, read by
+`packet::read_frames` (a Length outside 20..=4096 ends it). On a stream nothing is
+retransmitted (RFC 6614 §2.5) and the reply-address check does not apply; a request waits the
+same total time before it is reported as a timeout. Everything else — signing, reply
+verification, challenges, turns, injected commands — is shared.

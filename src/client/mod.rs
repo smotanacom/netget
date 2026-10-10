@@ -794,6 +794,8 @@ pub mod msgpack_rpc;
 pub mod ninep;
 #[cfg(feature = "oci-registry")]
 pub mod oci_registry;
+#[cfg(feature = "radsec")]
+pub mod radsec;
 #[cfg(feature = "rcon")]
 pub mod rcon;
 #[cfg(feature = "restconf")]
