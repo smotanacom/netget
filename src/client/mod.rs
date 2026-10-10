@@ -788,6 +788,8 @@ pub mod lmtp;
 pub mod lpd;
 #[cfg(feature = "lwm2m")]
 pub mod lwm2m;
+#[cfg(feature = "matrix")]
+pub mod matrix;
 #[cfg(feature = "milter")]
 pub mod milter;
 #[cfg(feature = "minecraft")]

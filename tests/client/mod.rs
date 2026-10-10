@@ -390,6 +390,8 @@ pub mod knx;
 pub mod lmtp;
 #[cfg(feature = "lpd")]
 pub mod lpd;
+#[cfg(feature = "matrix")]
+pub mod matrix;
 #[cfg(feature = "milter")]
 pub mod milter;
 #[cfg(feature = "minecraft")]
