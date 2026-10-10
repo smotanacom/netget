@@ -408,9 +408,19 @@ def open_page(browser, origin, size=(1280, 800), init_script=None):
     elif init_script:
         page.add_init_script(init_script)
 
+    real_xterm = bool(XTERM_DIR) and all(
+        os.path.exists(os.path.join(XTERM_DIR, f)) for f in ("xterm.js", "addon-fit.js"))
+
     def route(r):
         url = r.request.url
         if url.startswith(origin):
+            # The page pins xterm.js with subresource integrity. The stub can never match the
+            # pinned hash, so the page is served without it when the stub stands in; with the
+            # real files from XTERM_DIR the hashes stay and are checked.
+            if not real_xterm and url.split("?", 1)[0].endswith(".html"):
+                resp = r.fetch()
+                body = re.sub(r'\s+integrity="[^"]*"', "", resp.text())
+                return r.fulfill(response=resp, body=body)
             return r.continue_()
         if "xterm" in url:
             base = url.rsplit("/", 1)[-1]
