@@ -40,7 +40,6 @@ async fn add_placeholder(state: &Arc<AppState>, proto: &str) -> ServerId {
     state.add_server(server).await
 }
 
-
 #[cfg(feature = "telnet")]
 #[tokio::test]
 async fn stopping_telnet_server_releases_tcp_port() {
