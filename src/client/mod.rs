@@ -6,11 +6,15 @@
 
 // Shared plumbing: budget-checked LLM entry point used by every client protocol.
 // See the module docs for why clients need a hard call ceiling.
+/// Credential policy the AWS-SDK clients share.
+pub mod aws_support;
 pub mod command_support;
 /// The HTTP round trip the HTTP-family clients share: reqwest natively, hyper's HTTP/1.1
 /// client over the virtual loopback in the browser build.
 pub mod http_fetch;
 pub mod llm_budget;
+/// The directory a media client may read local files from (`srt`, `rtmp`).
+pub mod media_root;
 pub mod response_reader;
 pub mod wire_values;
 

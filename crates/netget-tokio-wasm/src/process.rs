@@ -64,6 +64,10 @@ impl Command {
         self
     }
 
+    pub fn env_remove<K: AsRef<OsStr>>(&mut self, _key: K) -> &mut Command {
+        self
+    }
+
     pub fn env_clear(&mut self) -> &mut Command {
         self
     }

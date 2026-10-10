@@ -113,7 +113,7 @@ impl Protocol for WebdavClientProtocol {
                         Parameter {
                             name: "path".to_string(),
                             type_hint: "string".to_string(),
-                            description: "Resource path (e.g., /dav/folder/)".to_string(),
+                            description: "Resource path (e.g., /dav/folder/), resolved against the client's base URL. An absolute URL is accepted only on that same origin; another host needs its own client".to_string(),
                             required: true,
                         },
                         Parameter {
@@ -316,7 +316,7 @@ impl Protocol for WebdavClientProtocol {
                     Parameter {
                         name: "path".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Resource path".to_string(),
+                        description: "Resource path, resolved against the client's base URL. An absolute URL is accepted only on that same origin; another host needs its own client".to_string(),
                         required: true,
                     },
                     Parameter {

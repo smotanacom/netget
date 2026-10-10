@@ -33,17 +33,66 @@ pub const SENSITIVE_KEY_PARTS: &[&str] = &[
     "authtoken",
     "authorization",
     "cookie",
+    // A credential that is not called one: the HTTP proxy client's `proxy_auth`
+    // (`user:password`).
+    "proxy_auth",
 ];
+
+/// Substrings of a key name whose value is masked wherever it is displayed, without making
+/// the request that carries it private.
+///
+/// STOMP's `passcode` and the SNMP `community` string are credentials, but every SNMP event
+/// and every STOMP CONNECT carries one, so treating them as [`SENSITIVE_KEY_PARTS`] would turn
+/// off tracing and the access-log detail for the whole of both protocols. They are hidden
+/// from the `open_client` summary, the executor's DEBUG line and startup-parameter errors
+/// ([`redact_sensitive`], [`is_shown_redacted`]) and nothing else.
+pub const DISPLAY_ONLY_KEY_PARTS: &[&str] = &["passcode", "community"];
 
 /// What a redacted value is shown as.
 pub const REDACTED: &str = "<redacted>";
 
 /// Whether a key names a credential.
+///
+/// Bare `key` is not matched: `routing_key`, `access_key_id` and `key_type` are not secrets,
+/// and the ones that are (`api_key`, `private_key`, `secret_access_key`) match on their own
+/// part. Bare `auth` is a value-shaped case, see [`is_sensitive_entry`].
 pub fn is_sensitive_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase().replace('-', "_");
     key == "token"
         || key.ends_with("_token")
         || SENSITIVE_KEY_PARTS.iter().any(|part| key.contains(part))
+}
+
+/// Whether a key/value pair holds a credential.
+///
+/// [`is_sensitive_key`] on the name, plus one case the name alone cannot decide: a key that
+/// is exactly `auth` holding a **string** is a credential (the WebDAV client's `auth` is
+/// `username:password`), while an `auth` **object** is a block to walk — Vault's answer
+/// carries `auth.client_token` beside `auth.token_type`, and only the first is hidden.
+/// `auth_type`, `auth_url`, `authenticated` and `auth_method` describe a mechanism and are
+/// shown, which a substring match would have hidden for nothing.
+pub fn is_sensitive_entry(key: &str, value: &Value) -> bool {
+    if value.is_null() {
+        return false;
+    }
+    if is_sensitive_key(key) {
+        return true;
+    }
+    let key = key.to_ascii_lowercase();
+    key == "auth" && value.is_string()
+}
+
+/// Whether a key/value pair is shown as [`REDACTED`]: every [`is_sensitive_entry`], plus the
+/// [`DISPLAY_ONLY_KEY_PARTS`].
+pub fn is_shown_redacted(key: &str, value: &Value) -> bool {
+    if value.is_null() {
+        return false;
+    }
+    if is_sensitive_entry(key, value) {
+        return true;
+    }
+    let key = key.to_ascii_lowercase();
+    DISPLAY_ONLY_KEY_PARTS.iter().any(|part| key.contains(part))
 }
 
 /// Whether this request offers an action that can carry credentials. Such model
@@ -89,7 +138,7 @@ pub fn contains_credentials(value: &Value) -> bool {
                     if bytes > MAX_BYTES {
                         return true;
                     }
-                    if !value.is_null() && is_sensitive_key(key) {
+                    if is_sensitive_entry(key, value) {
                         return true;
                     }
                     pending.push((value, depth + 1));
@@ -133,7 +182,7 @@ fn redact_at(value: &Value, depth: usize) -> Value {
         Value::Object(map) => Value::Object(
             map.iter()
                 .map(|(k, v)| {
-                    let shown = if is_sensitive_key(k) && !v.is_null() {
+                    let shown = if is_shown_redacted(k, v) {
                         Value::String(REDACTED.to_string())
                     } else {
                         redact_at(v, depth + 1)
