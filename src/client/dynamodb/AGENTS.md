@@ -209,6 +209,11 @@ pair; neither line exists anywhere in the code.
   sign requests to a model-settable host with the operator's ambient identity, and on EC2 or
   under an assumed role the session token rides along in `x-amz-security-token`. Any value
   works for a local emulator. `tests/client/dynamodb/ambient_credentials_test.rs`.
+- ✅ `region` is validated before the SDK sees it (`client::aws_support::validate_region`):
+  1–32 characters of `a-z`, `0-9` and `-`, not starting or ending with `-`. Without an
+  endpoint the SDK builds the host as `dynamodb.` + region + `.amazonaws.com`, so a
+  model-set `"region": "attacker.example/x"` would send requests signed with the ambient
+  identity to `attacker.example`. Same test file.
 - ✅ Explicit credentials via startup parameters
 - ✅ Custom endpoint for local testing
 - ✅ AWS Signature v4 (handled by SDK)

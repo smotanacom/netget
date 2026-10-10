@@ -34,3 +34,34 @@ pub fn refuse_ambient_credentials(
         _ => Ok(()),
     }
 }
+
+/// The longest region name accepted. AWS's own run to about 14 characters
+/// (`ap-southeast-4`, `us-gov-west-1`); the bound leaves room for new ones and for
+/// emulator-specific names while keeping the value a single short DNS label.
+pub const MAX_REGION_LEN: usize = 32;
+
+/// Refuse a `region` that could change the host the SDK derives from it.
+///
+/// Accepted: 1..=[`MAX_REGION_LEN`] characters of `a-z`, `0-9` and `-`, not starting or
+/// ending with `-`. That covers every AWS region and the names local emulators accept, and
+/// it cannot carry a `.`, `/`, `@`, `:` or anything else that would make
+/// `<service>.<region>.amazonaws.com` name a different host.
+pub fn validate_region(client: &str, region: &str) -> anyhow::Result<()> {
+    let shaped = !region.is_empty()
+        && region.len() <= MAX_REGION_LEN
+        && region
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !region.starts_with('-')
+        && !region.ends_with('-');
+    if shaped {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "{client} client refused: region {region:?} is not a region name. A region is 1 to \
+             {MAX_REGION_LEN} characters of a-z, 0-9 and '-', not starting or ending with '-' \
+             (for example us-east-1); the SDK builds the request host from it, so anything else \
+             could send signed requests to a different host."
+        )
+    }
+}

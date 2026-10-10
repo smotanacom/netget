@@ -62,6 +62,8 @@ impl DynamoDbClient {
             .transpose()?
             .flatten()
             .unwrap_or_else(|| "us-east-1".to_string());
+        // The SDK builds `https://dynamodb.<region>.amazonaws.com` from this; see `aws_support`.
+        crate::client::aws_support::validate_region("DynamoDB", &region)?;
 
         let endpoint_url = startup_params
             .as_ref()
@@ -799,6 +801,7 @@ impl DynamoDbClient {
     ) -> Result<aws_config::SdkConfig> {
         use aws_config::BehaviorVersion;
 
+        crate::client::aws_support::validate_region("DynamoDB", region)?;
         let mut config_loader = aws_config::defaults(BehaviorVersion::latest())
             .region(aws_config::Region::new(region.to_string()));
 

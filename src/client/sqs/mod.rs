@@ -83,6 +83,10 @@ impl SqsClient {
             .map(|p| p.get_optional_string("region"))
             .transpose()?
             .flatten();
+        // The SDK builds `https://sqs.<region>.amazonaws.com` from this; see `aws_support`.
+        if let Some(region) = &region {
+            crate::client::aws_support::validate_region("SQS", region)?;
+        }
 
         let endpoint_url = startup_params
             .as_ref()
