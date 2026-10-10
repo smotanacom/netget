@@ -822,6 +822,8 @@ pub mod rcon;
 pub mod restconf;
 #[cfg(feature = "rsync")]
 pub mod rsync;
+#[cfg(feature = "rtp")]
+pub mod rtp;
 #[cfg(feature = "smpp")]
 pub mod smpp;
 #[cfg(feature = "stratum")]
